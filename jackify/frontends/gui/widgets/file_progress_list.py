@@ -149,14 +149,6 @@ class FileProgressItem(QWidget):
         layout.addWidget(percent_label)
         self.percent_label = percent_label
         
-        # Speed display (if available)
-        speed_label = QLabel()
-        speed_label.setFixedWidth(60)
-        speed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        speed_label.setStyleSheet("color: #888; font-size: 10px;")
-        layout.addWidget(speed_label)
-        self.speed_label = speed_label
-        
         # Progress indicator: either progress bar (with %) or animated spinner (no %)
         progress_bar = QProgressBar()
         progress_bar.setFixedHeight(12)
@@ -223,7 +215,6 @@ class FileProgressItem(QWidget):
         if no_progress_bar:
             self._animation_timer.stop()  # Stop animation for items without progress bars
             self.percent_label.setText("")  # No percentage
-            self.speed_label.setText("")  # No speed
             self.progress_bar.setVisible(False)  # Hide progress bar
             return
 
@@ -244,14 +235,12 @@ class FileProgressItem(QWidget):
                 if not self._animation_timer.isActive():
                     self._animation_timer.start()
                 
-                self.speed_label.setText("")  # No speed for summary
                 self.progress_bar.setRange(0, 100)
                 # Progress bar value will be updated by animation timer
             else:
                 # No max for summary - use custom animated spinner
                 self._is_indeterminate = True
                 self.percent_label.setText("")
-                self.speed_label.setText("")
                 self.progress_bar.setRange(0, 100)  # Use determinate range for custom animation
                 if not self._animation_timer.isActive():
                     self._animation_timer.start()
@@ -271,7 +260,6 @@ class FileProgressItem(QWidget):
             self._is_indeterminate = False
             self._animation_timer.stop()
             self.percent_label.setText("Queued")
-            self.speed_label.setText("")
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
             return
@@ -295,15 +283,12 @@ class FileProgressItem(QWidget):
             if not self._animation_timer.isActive():
                 self._animation_timer.start()
 
-            # Update speed label immediately (doesn't need animation)
-            self.speed_label.setText(self.file_progress.speed_display)
             self.progress_bar.setRange(0, 100)
             # Progress bar value will be updated by animation timer
         else:
             # No progress data (e.g., texture conversions, BSA building) - use custom animated spinner
             self._is_indeterminate = True
             self.percent_label.setText("")  # Clear percent label
-            self.speed_label.setText("")  # No speed
             self.progress_bar.setRange(0, 100)  # Use determinate range for custom animation
             # Start animation timer for custom spinner
             if not self._animation_timer.isActive():

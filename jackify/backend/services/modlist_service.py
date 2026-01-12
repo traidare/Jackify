@@ -275,8 +275,16 @@ class ModlistService:
                 actual_download_path = Path(download_dir_context)
             download_dir_str = str(actual_download_path)
             
-            api_key = context['nexus_api_key']
-            oauth_info = context.get('nexus_oauth_info')
+            # CRITICAL: Re-check authentication right before launching engine
+            # This ensures we use current auth state, not stale cached values from context
+            # (e.g., if user revoked OAuth after context was created)
+            from ..services.nexus_auth_service import NexusAuthService
+            auth_service = NexusAuthService()
+            current_api_key, current_oauth_info = auth_service.get_auth_for_engine()
+            
+            # Use current auth state, fallback to context values only if current check failed
+            api_key = current_api_key or context.get('nexus_api_key')
+            oauth_info = current_oauth_info or context.get('nexus_oauth_info')
 
             # Path to the engine binary (copied from working code)
             engine_path = get_jackify_engine_path()
@@ -311,6 +319,10 @@ class ModlistService:
                 # Environment setup - prefer NEXUS_OAUTH_INFO (supports auto-refresh) over NEXUS_API_KEY
                 if oauth_info:
                     os.environ['NEXUS_OAUTH_INFO'] = oauth_info
+                    # CRITICAL: Set client_id so engine can refresh tokens with correct client_id
+                    # Engine's RefreshToken method reads this to use our "jackify" client_id instead of hardcoded "wabbajack"
+                    from jackify.backend.services.nexus_oauth_service import NexusOAuthService
+                    os.environ['NEXUS_OAUTH_CLIENT_ID'] = NexusOAuthService.CLIENT_ID
                     # Also set NEXUS_API_KEY for backward compatibility
                     if api_key:
                         os.environ['NEXUS_API_KEY'] = api_key
@@ -549,18 +561,42 @@ class ModlistService:
                 success = modlist_menu.run_modlist_configuration_phase(config_context)
                 debug_callback(f"Configuration phase result: {success}")
                 
-                # Restore stdout before calling completion callback
+                # Restore stdout before ENB detection and completion callback
                 if original_stdout:
                     sys.stdout = original_stdout
                     original_stdout = None
                 
+                # Configure ENB for Linux compatibility (non-blocking)
+                # Do this BEFORE completion callback so we can pass detection status
+                enb_detected = False
+                try:
+                    from ..handlers.enb_handler import ENBHandler
+                    enb_handler = ENBHandler()
+                    enb_success, enb_message, enb_detected = enb_handler.configure_enb_for_linux(context.install_dir)
+                    
+                    if enb_message:
+                        if enb_success:
+                            logger.info(enb_message)
+                            if progress_callback:
+                                progress_callback(enb_message)
+                        else:
+                            logger.warning(enb_message)
+                            # Non-blocking: continue workflow even if ENB config fails
+                except Exception as e:
+                    logger.warning(f"ENB configuration skipped due to error: {e}")
+                    # Continue workflow - ENB config is optional
+                
+                # Store ENB detection status in context for GUI to use
+                context.enb_detected = enb_detected
+                
                 if completion_callback:
                     if success:
                         debug_callback("Configuration completed successfully, calling completion callback")
-                        completion_callback(True, "Configuration completed successfully!", context.name)
+                        # Pass ENB detection status through callback
+                        completion_callback(True, "Configuration completed successfully!", context.name, enb_detected)
                     else:
                         debug_callback("Configuration failed, calling completion callback with failure")
-                        completion_callback(False, "Configuration failed", context.name)
+                        completion_callback(False, "Configuration failed", context.name, False)
                 
                 return success
                 

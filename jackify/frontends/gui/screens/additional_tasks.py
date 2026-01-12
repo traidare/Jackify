@@ -65,7 +65,7 @@ class AdditionalTasksScreen(QWidget):
         header_layout.addSpacing(10)
 
         # Description area with fixed height
-        desc = QLabel("TTW automation and additional tools.")
+        desc = QLabel("TTW automation, Wabbajack installer, and additional tools.")
         desc.setWordWrap(True)
         desc.setStyleSheet("color: #ccc; font-size: 13px;")
         desc.setAlignment(Qt.AlignHCenter)
@@ -89,10 +89,10 @@ class AdditionalTasksScreen(QWidget):
     
     def _setup_menu_buttons(self, layout):
         """Set up the menu buttons section"""
-        # Menu options - ONLY TTW and placeholder
+        # Menu options
         MENU_ITEMS = [
             ("Install TTW", "ttw_install", "Install Tale of Two Wastelands using TTW_Linux_Installer"),
-            ("Coming Soon...", "coming_soon", "Additional tools will be added in future updates"),
+            ("Install Wabbajack", "wabbajack_install", "Install Wabbajack.exe via Proton (automated setup)"),
             ("Return to Main Menu", "return_main_menu", "Go back to the main menu"),
         ]
         
@@ -146,6 +146,8 @@ class AdditionalTasksScreen(QWidget):
         """Handle button clicks"""
         if action_id == "ttw_install":
             self._show_ttw_info()
+        elif action_id == "wabbajack_install":
+            self._show_wabbajack_installer()
         elif action_id == "coming_soon":
             self._show_coming_soon_info()
         elif action_id == "return_main_menu":
@@ -156,6 +158,12 @@ class AdditionalTasksScreen(QWidget):
         if self.stacked_widget:
             # Navigate to TTW installation screen (index 5)
             self.stacked_widget.setCurrentIndex(5)
+
+    def _show_wabbajack_installer(self):
+        """Navigate to Wabbajack installer screen"""
+        if self.stacked_widget:
+            # Navigate to Wabbajack installer screen (index 7)
+            self.stacked_widget.setCurrentIndex(7)
 
     def _show_coming_soon_info(self):
         """Show coming soon info"""

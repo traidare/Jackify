@@ -102,7 +102,6 @@ class NexusOAuthService:
             # Determine executable path (DEV mode vs AppImage)
             # Check multiple indicators for AppImage execution
             is_appimage = (
-                getattr(sys, 'frozen', False) or  # PyInstaller frozen
                 'APPIMAGE' in env or              # AppImage environment variable
                 'APPDIR' in env or               # AppImage directory variable
                 (sys.argv[0] and sys.argv[0].endswith('.AppImage'))  # Executable name
@@ -127,7 +126,8 @@ class NexusOAuthService:
                 # Running from source (DEV mode)
                 # Need to ensure we run from the correct directory
                 src_dir = Path(__file__).parent.parent.parent.parent  # Go up to src/
-                exec_path = f"cd {src_dir} && {sys.executable} -m jackify.frontends.gui"
+                # Use bash -c with proper quoting for paths with spaces
+                exec_path = f'bash -c \'cd "{src_dir}" && "{sys.executable}" -m jackify.frontends.gui "$@"\' --'
                 logger.info(f"DEV mode exec path: {exec_path}")
                 logger.info(f"Source directory: {src_dir}")
 
@@ -139,29 +139,43 @@ class NexusOAuthService:
             else:
                 # Check if Exec path matches current mode
                 current_content = desktop_file.read_text()
-                if f"Exec={exec_path} %u" not in current_content:
+                # Check for both quoted (AppImage) and unquoted (DEV mode with bash -c) formats
+                if is_appimage:
+                    expected_exec = f'Exec="{exec_path}" %u'
+                else:
+                    expected_exec = f"Exec={exec_path} %u"
+
+                if expected_exec not in current_content:
                     needs_update = True
                     logger.info(f"Updating desktop file with new Exec path: {exec_path}")
 
+                # Explicitly detect and fix malformed entries (unquoted paths with spaces)
+                # Check if any Exec line exists without quotes but contains spaces
+                if is_appimage and ' ' in exec_path:
+                    import re
+                    # Look for Exec=<path with spaces> without quotes
+                    if re.search(r'Exec=[^"]\S*\s+\S*\.AppImage', current_content):
+                        needs_update = True
+                        logger.info("Fixing malformed desktop file (unquoted path with spaces)")
+
             if needs_update:
                 desktop_file.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 # Build desktop file content with proper working directory
                 if is_appimage:
-                    # AppImage doesn't need working directory
+                    # AppImage - quote path to handle spaces
                     desktop_content = f"""[Desktop Entry]
 Type=Application
 Name=Jackify
 Comment=Wabbajack modlist manager for Linux
-Exec={exec_path} %u
+Exec="{exec_path}" %u
 Icon=com.jackify.app
 Terminal=false
 Categories=Game;Utility;
 MimeType=x-scheme-handler/jackify;
 """
                 else:
-                    # DEV mode needs working directory set to src/
-                    # exec_path already contains the correct format: "cd {src_dir} && {sys.executable} -m jackify.frontends.gui"
+                    # DEV mode - exec_path already contains bash -c with proper quoting
                     src_dir = Path(__file__).parent.parent.parent.parent  # Go up to src/
                     desktop_content = f"""[Desktop Entry]
 Type=Application

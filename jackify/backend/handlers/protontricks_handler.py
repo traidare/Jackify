@@ -28,7 +28,8 @@ class ProtontricksHandler:
 
     def __init__(self, steamdeck: bool, logger=None):
         self.logger = logger or logging.getLogger(__name__)
-        self.which_protontricks = None  # 'flatpak' or 'native'
+        self.which_protontricks = None  # 'flatpak', 'native', or 'bundled'
+        self.flatpak_install_type = None  # 'user' or 'system' (for flatpak installations)
         self.protontricks_version = None
         self.protontricks_path = None
         self.steamdeck = steamdeck # Store steamdeck status
@@ -209,19 +210,36 @@ class ProtontricksHandler:
             except Exception as e:
                 logger.error(f"Error reading protontricks executable: {e}")
 
-        # Check if flatpak protontricks is installed
+        # Check if flatpak protontricks is installed (check both user and system)
         try:
             env = self._get_clean_subprocess_env()
-            result = subprocess.run(
-                ["flatpak", "list"],
+
+            # Check user installation first
+            result_user = subprocess.run(
+                ["flatpak", "list", "--user"],
                 capture_output=True,
                 text=True,
                 env=env
             )
-            if result.returncode == 0 and "com.github.Matoking.protontricks" in result.stdout:
-                logger.info("Flatpak Protontricks is installed")
+            if result_user.returncode == 0 and "com.github.Matoking.protontricks" in result_user.stdout:
+                logger.info("Flatpak Protontricks is installed (user-level)")
                 self.which_protontricks = 'flatpak'
+                self.flatpak_install_type = 'user'
                 return True
+
+            # Check system installation
+            result_system = subprocess.run(
+                ["flatpak", "list", "--system"],
+                capture_output=True,
+                text=True,
+                env=env
+            )
+            if result_system.returncode == 0 and "com.github.Matoking.protontricks" in result_system.stdout:
+                logger.info("Flatpak Protontricks is installed (system-level)")
+                self.which_protontricks = 'flatpak'
+                self.flatpak_install_type = 'system'
+                return True
+
         except FileNotFoundError:
             logger.warning("'flatpak' command not found. Cannot check for Flatpak Protontricks.")
         except Exception as e:
@@ -230,7 +248,46 @@ class ProtontricksHandler:
         # Not found
         logger.warning("Protontricks not found (native or flatpak).")
         return False
-    
+
+    def _get_flatpak_run_args(self) -> List[str]:
+        """
+        Get the correct flatpak run arguments based on installation type.
+        Returns list starting with ['flatpak', 'run', '--user'|'--system', ...]
+        """
+        base_args = ["flatpak", "run"]
+
+        if self.flatpak_install_type == 'user':
+            base_args.append("--user")
+        elif self.flatpak_install_type == 'system':
+            base_args.append("--system")
+        # If flatpak_install_type is None, don't add flag (shouldn't happen in normal flow)
+
+        return base_args
+
+    def _get_flatpak_alias_string(self, command=None) -> str:
+        """
+        Get the correct flatpak alias string based on installation type.
+        Args:
+            command: Optional command override (e.g., 'protontricks-launch').
+                     If None, returns base protontricks alias.
+        Returns:
+            String like 'flatpak run --user com.github.Matoking.protontricks'
+        """
+        flag = f"--{self.flatpak_install_type}" if self.flatpak_install_type else ""
+
+        if command:
+            # For commands like protontricks-launch
+            if flag:
+                return f"flatpak run {flag} --command={command} com.github.Matoking.protontricks"
+            else:
+                return f"flatpak run --command={command} com.github.Matoking.protontricks"
+        else:
+            # Base protontricks command
+            if flag:
+                return f"flatpak run {flag} com.github.Matoking.protontricks"
+            else:
+                return f"flatpak run com.github.Matoking.protontricks"
+
     def check_protontricks_version(self):
         """
         Check if the protontricks version is sufficient
@@ -238,7 +295,7 @@ class ProtontricksHandler:
         """
         try:
             if self.which_protontricks == 'flatpak':
-                cmd = ["flatpak", "run", "com.github.Matoking.protontricks", "-V"]
+                cmd = self._get_flatpak_run_args() + ["com.github.Matoking.protontricks", "-V"]
             else:
                 cmd = ["protontricks", "-V"]
             
@@ -296,7 +353,7 @@ class ProtontricksHandler:
                 cmd = [python_exe, "-m", "protontricks.cli.main"]
                 cmd.extend([str(a) for a in args])
         elif self.which_protontricks == 'flatpak':
-            cmd = ["flatpak", "run", "com.github.Matoking.protontricks"]
+            cmd = self._get_flatpak_run_args() + ["com.github.Matoking.protontricks"]
             cmd.extend(args)
         else:  # native
             cmd = ["protontricks"]
@@ -443,15 +500,17 @@ class ProtontricksHandler:
                 protontricks_alias_exists = "alias protontricks=" in content
                 launch_alias_exists = "alias protontricks-launch" in content
                 
-                # Add missing aliases
+                # Add missing aliases with correct flag based on installation type
                 with open(bashrc_path, 'a') as f:
                     if not protontricks_alias_exists:
                         logger.info("Adding protontricks alias to ~/.bashrc")
-                        f.write("\nalias protontricks='flatpak run com.github.Matoking.protontricks'\n")
-                    
+                        alias_cmd = self._get_flatpak_alias_string()
+                        f.write(f"\nalias protontricks='{alias_cmd}'\n")
+
                     if not launch_alias_exists:
                         logger.info("Adding protontricks-launch alias to ~/.bashrc")
-                        f.write("\nalias protontricks-launch='flatpak run --command=protontricks-launch com.github.Matoking.protontricks'\n")
+                        launch_alias_cmd = self._get_flatpak_alias_string(command='protontricks-launch')
+                        f.write(f"\nalias protontricks-launch='{launch_alias_cmd}'\n")
                 
                 return True
             else:
@@ -500,7 +559,7 @@ class ProtontricksHandler:
         try:
             cmd = [] # Initialize cmd list
             if self.which_protontricks == 'flatpak':
-                cmd = ["flatpak", "run", "com.github.Matoking.protontricks", "-l"]
+                cmd = self._get_flatpak_run_args() + ["com.github.Matoking.protontricks", "-l"]
             elif self.protontricks_path:
                 cmd = [self.protontricks_path, "-l"]
             else:
@@ -672,9 +731,9 @@ class ProtontricksHandler:
             # Bundled-runtime fix: Use cleaned environment
             env = self._get_clean_subprocess_env()
             env["WINEDEBUG"] = "-all"
-            
+
             if self.which_protontricks == 'flatpak':
-                cmd = ["flatpak", "run", "com.github.Matoking.protontricks", "--no-bwrap", appid, "win10"]
+                cmd = self._get_flatpak_run_args() + ["com.github.Matoking.protontricks", "--no-bwrap", appid, "win10"]
             else:
                 cmd = ["protontricks", "--no-bwrap", appid, "win10"]
             
@@ -700,19 +759,21 @@ class ProtontricksHandler:
                 if os.path.exists(bashrc_path):
                     with open(bashrc_path, 'r') as f:
                         content = f.read()
-                        protontricks_alias_exists = "alias protontricks='flatpak run com.github.Matoking.protontricks'" in content
-                        launch_alias_exists = "alias protontricks-launch='flatpak run --command=protontricks-launch com.github.Matoking.protontricks'" in content
-                
-                # Add aliases if they don't exist
+                        protontricks_alias_exists = "alias protontricks=" in content
+                        launch_alias_exists = "alias protontricks-launch=" in content
+
+                # Add aliases if they don't exist with correct flag based on installation type
                 with open(bashrc_path, 'a') as f:
                     if not protontricks_alias_exists:
                         f.write("\n# Jackify: Protontricks alias\n")
-                        f.write("alias protontricks='flatpak run com.github.Matoking.protontricks'\n")
+                        alias_cmd = self._get_flatpak_alias_string()
+                        f.write(f"alias protontricks='{alias_cmd}'\n")
                         logger.debug("Added protontricks alias to ~/.bashrc")
-                    
+
                     if not launch_alias_exists:
                         f.write("\n# Jackify: Protontricks-launch alias\n")
-                        f.write("alias protontricks-launch='flatpak run --command=protontricks-launch com.github.Matoking.protontricks'\n")
+                        launch_alias_cmd = self._get_flatpak_alias_string(command='protontricks-launch')
+                        f.write(f"alias protontricks-launch='{launch_alias_cmd}'\n")
                         logger.debug("Added protontricks-launch alias to ~/.bashrc")
                 
                 logger.info("Protontricks aliases created successfully")
@@ -769,7 +830,7 @@ class ProtontricksHandler:
             # Use bundled Python module
             cmd = [python_exe, "-m", "protontricks.cli.launch", "--appid", appid, str(installer_path)]
         elif self.which_protontricks == 'flatpak':
-            cmd = ["flatpak", "run", "--command=protontricks-launch", "com.github.Matoking.protontricks", "--appid", appid, str(installer_path)]
+            cmd = self._get_flatpak_run_args() + ["--command=protontricks-launch", "com.github.Matoking.protontricks", "--appid", appid, str(installer_path)]
         else:  # native
             launch_path = shutil.which("protontricks-launch")
             if not launch_path:

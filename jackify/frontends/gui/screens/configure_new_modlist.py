@@ -1,6 +1,7 @@
 """
 ConfigureNewModlistScreen for Jackify GUI
 """
+import logging
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QHBoxLayout, QLineEdit, QPushButton, QGridLayout, QFileDialog, QTextEdit, QSizePolicy, QTabWidget, QDialog, QListWidget, QListWidgetItem, QMessageBox, QProgressDialog, QCheckBox, QMainWindow
 from PySide6.QtCore import Qt, QSize, QThread, Signal, QTimer, QProcess, QMetaObject
 from PySide6.QtGui import QPixmap, QTextCursor
@@ -27,6 +28,8 @@ from ..dialogs import SuccessDialog
 from PySide6.QtWidgets import QApplication
 from jackify.frontends.gui.services.message_service import MessageService
 from jackify.shared.resolution_utils import get_resolution_fallback
+
+logger = logging.getLogger(__name__)
 
 def debug_print(message):
     """Print debug message only if debug mode is enabled"""
@@ -97,7 +100,6 @@ class SelectionDialog(QDialog):
         self.accept()
 
 class ConfigureNewModlistScreen(QWidget):
-    steam_restart_finished = Signal(bool, str)
     resize_request = Signal(str)
     def __init__(self, stacked_widget=None, main_menu_index=0):
         super().__init__()
@@ -426,8 +428,6 @@ class ConfigureNewModlistScreen(QWidget):
         self.top_timer.start(2000)
         # --- Start Configuration button ---
         self.start_btn.clicked.connect(self.validate_and_start_configure)
-        # --- Connect steam_restart_finished signal ---
-        self.steam_restart_finished.connect(self._on_steam_restart_finished)
         
         # Initialize empty controls list - will be populated after UI is built
         self._actionable_controls = []
@@ -852,34 +852,7 @@ class ConfigureNewModlistScreen(QWidget):
             MessageService.warning(self, "Missing Name", "Please specify a name for your modlist", safety_level="low")
             self._enable_controls_after_operation()
             return
-        # --- Shortcut creation will be handled by automated workflow ---
-        from jackify.backend.handlers.shortcut_handler import ShortcutHandler
-        from jackify.backend.services.platform_detection_service import PlatformDetectionService
-        platform_service = PlatformDetectionService.get_instance()
-        steamdeck = platform_service.is_steamdeck
-        shortcut_handler = ShortcutHandler(steamdeck=steamdeck)  # Still needed for Steam restart
         
-        # Check if auto-restart is enabled
-        auto_restart_enabled = hasattr(self, 'auto_restart_checkbox') and self.auto_restart_checkbox.isChecked()
-        
-        if auto_restart_enabled:
-            # Auto-accept Steam restart - proceed without dialog
-            self._safe_append_text("Auto-accepting Steam restart (unattended mode enabled)")
-            reply = QMessageBox.Yes  # Simulate user clicking Yes
-        else:
-            # --- User confirmation before restarting Steam ---
-            reply = MessageService.question(
-                self, "Ready to Configure Modlist",
-                "Would you like to restart Steam and begin post-install configuration now? Restarting Steam could close any games you have open!",
-                safety_level="medium"
-            )
-        
-        debug_print(f"DEBUG: Steam restart dialog returned: {reply!r}")
-        if reply not in (QMessageBox.Yes, QMessageBox.Ok, QMessageBox.AcceptRole):
-            self._enable_controls_after_operation()
-            if self.stacked_widget:
-                self.stacked_widget.setCurrentIndex(0)
-            return
         # Handle resolution saving
         resolution = self.resolution_combo.currentText()
         if resolution and resolution != "Leave unchanged":
@@ -893,41 +866,9 @@ class ConfigureNewModlistScreen(QWidget):
             if self.resolution_service.has_saved_resolution():
                 self.resolution_service.clear_saved_resolution()
                 debug_print("DEBUG: Saved resolution cleared")
-        # --- Steam Configuration (progress dialog, thread, and signal) ---
-        progress = QProgressDialog("Steam Configuration...", None, 0, 0, self)
-        progress.setWindowTitle("Steam Configuration")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        progress.show()
-        def do_restart():
-            try:
-                ok = shortcut_handler.secure_steam_restart()
-                out = ''
-            except Exception as e:
-                ok = False
-                out = str(e)
-                self._safe_append_text(f"[ERROR] Exception during Steam restart: {e}")
-            self.steam_restart_finished.emit(ok, out)
-        threading.Thread(target=do_restart, daemon=True).start()
-        self._steam_restart_progress = progress
-
-    def _on_steam_restart_finished(self, success, out):
-        if hasattr(self, '_steam_restart_progress'):
-            self._steam_restart_progress.close()
-            del self._steam_restart_progress
-        self._enable_controls_after_operation()
-        if success:
-            self._safe_append_text("Steam restarted successfully.")
-
-            # Start configuration immediately - the CLI will handle any manual steps
-            from jackify import __version__ as jackify_version
-            self._safe_append_text(f"Jackify v{jackify_version}")
-            self._safe_append_text("Starting modlist configuration...")
-            self.configure_modlist()
-        else:
-            self._safe_append_text("Failed to restart Steam.\n" + str(out))
-            MessageService.critical(self, "Steam Restart Failed", "Failed to restart Steam automatically. Please restart Steam manually, then try again.", safety_level="medium")
+        
+        # Start configuration - automated workflow handles Steam restart internally
+        self.configure_modlist()
 
     def configure_modlist(self):
         # CRITICAL: Reload config from disk to pick up any settings changes from Settings dialog
@@ -1061,6 +1002,16 @@ class ConfigureNewModlistScreen(QWidget):
         """Handle error from the automated prefix workflow"""
         self._safe_append_text(f"Error during automated Steam setup: {error_message}")
         self._safe_append_text("Please check the logs for details.")
+        
+        # Show critical error dialog to user (don't silently fail)
+        from jackify.backend.services.message_service import MessageService
+        MessageService.critical(
+            self,
+            "Steam Setup Error",
+            f"Error during automated Steam setup:\n\n{error_message}\n\nPlease check the console output for details.",
+            safety_level="medium"
+        )
+        
         self._enable_controls_after_operation()
 
     def show_shortcut_conflict_dialog(self, conflicts):
@@ -1331,7 +1282,7 @@ class ConfigureNewModlistScreen(QWidget):
             # Create new config thread with updated context
             class ConfigThread(QThread):
                 progress_update = Signal(str)
-                configuration_complete = Signal(bool, str, str)
+                configuration_complete = Signal(bool, str, str, bool)
                 error_occurred = Signal(str)
                 
                 def __init__(self, context):
@@ -1369,8 +1320,8 @@ class ConfigureNewModlistScreen(QWidget):
                         def progress_callback(message):
                             self.progress_update.emit(message)
                             
-                        def completion_callback(success, message, modlist_name):
-                            self.configuration_complete.emit(success, message, modlist_name)
+                        def completion_callback(success, message, modlist_name, enb_detected=False):
+                            self.configuration_complete.emit(success, message, modlist_name, enb_detected)
                             
                         def manual_steps_callback(modlist_name, retry_count):
                             # This shouldn't happen since automated prefix creation is complete
@@ -1432,7 +1383,7 @@ class ConfigureNewModlistScreen(QWidget):
             
             class ConfigThread(QThread):
                 progress_update = Signal(str)
-                configuration_complete = Signal(bool, str, str)
+                configuration_complete = Signal(bool, str, str, bool)
                 error_occurred = Signal(str)
                 
                 def __init__(self, context):
@@ -1471,8 +1422,8 @@ class ConfigureNewModlistScreen(QWidget):
                         def progress_callback(message):
                             self.progress_update.emit(message)
                             
-                        def completion_callback(success, message, modlist_name):
-                            self.configuration_complete.emit(success, message, modlist_name)
+                        def completion_callback(success, message, modlist_name, enb_detected=False):
+                            self.configuration_complete.emit(success, message, modlist_name, enb_detected)
                             
                         def manual_steps_callback(modlist_name, retry_count):
                             # This shouldn't happen since manual steps should be done
@@ -1507,7 +1458,7 @@ class ConfigureNewModlistScreen(QWidget):
             self._safe_append_text(f"Error continuing configuration: {e}")
             MessageService.critical(self, "Configuration Error", f"Failed to continue configuration: {e}", safety_level="medium")
 
-    def on_configuration_complete(self, success, message, modlist_name):
+    def on_configuration_complete(self, success, message, modlist_name, enb_detected=False):
         """Handle configuration completion (same as Tuxborn)"""
         # Re-enable all controls when workflow completes
         self._enable_controls_after_operation()
@@ -1528,6 +1479,16 @@ class ConfigureNewModlistScreen(QWidget):
                 parent=self
             )
             success_dialog.show()
+            
+            # Show ENB Proton dialog if ENB was detected (use stored detection result, no re-detection)
+            if enb_detected:
+                try:
+                    from ..dialogs.enb_proton_dialog import ENBProtonDialog
+                    enb_dialog = ENBProtonDialog(modlist_name=modlist_name, parent=self)
+                    enb_dialog.exec()  # Modal dialog - blocks until user clicks OK
+                except Exception as e:
+                    # Non-blocking: if dialog fails, just log and continue
+                    logger.warning(f"Failed to show ENB dialog: {e}")
         else:
             self._safe_append_text(f"Configuration failed: {message}")
             MessageService.critical(self, "Configuration Failed", 

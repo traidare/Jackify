@@ -48,10 +48,11 @@ logger = logging.getLogger(__name__) # Standard logger init
 
 # Helper function to get path to jackify-install-engine
 def get_jackify_engine_path():
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # Running inside the bundled AppImage (frozen)
-        # Engine is expected at <bundle_root>/jackify/engine/jackify-engine
-        return os.path.join(sys._MEIPASS, 'jackify', 'engine', 'jackify-engine')
+    appdir = os.environ.get('APPDIR')
+    if appdir:
+        # Running inside AppImage
+        # Engine is expected at <appdir>/opt/jackify/engine/jackify-engine
+        return os.path.join(appdir, 'opt', 'jackify', 'engine', 'jackify-engine')
     else:
         # Running in a normal Python environment from source
         # Current file is in src/jackify/backend/handlers/modlist_install_cli.py
@@ -617,8 +618,17 @@ class ModlistInstallCLI:
 
             modlist_arg = self.context.get('modlist_value') or self.context.get('machineid')
             machineid = self.context.get('machineid')
-            api_key = self.context['nexus_api_key']
-            oauth_info = self.context.get('nexus_oauth_info')
+            
+            # CRITICAL: Re-check authentication right before launching engine
+            # This ensures we use current auth state, not stale cached values from context
+            # (e.g., if user revoked OAuth after context was created)
+            from jackify.backend.services.nexus_auth_service import NexusAuthService
+            auth_service = NexusAuthService()
+            current_api_key, current_oauth_info = auth_service.get_auth_for_engine()
+            
+            # Use current auth state, fallback to context values only if current check failed
+            api_key = current_api_key or self.context.get('nexus_api_key')
+            oauth_info = current_oauth_info or self.context.get('nexus_oauth_info')
 
             # Path to the engine binary
             engine_path = get_jackify_engine_path()
@@ -687,7 +697,11 @@ class ModlistInstallCLI:
                 # Prefer NEXUS_OAUTH_INFO (supports auto-refresh) over NEXUS_API_KEY (legacy)
                 if oauth_info:
                     os.environ['NEXUS_OAUTH_INFO'] = oauth_info
-                    self.logger.debug(f"Set NEXUS_OAUTH_INFO for engine (supports auto-refresh)")
+                    # CRITICAL: Set client_id so engine can refresh tokens with correct client_id
+                    # Engine's RefreshToken method reads this to use our "jackify" client_id instead of hardcoded "wabbajack"
+                    from jackify.backend.services.nexus_oauth_service import NexusOAuthService
+                    os.environ['NEXUS_OAUTH_CLIENT_ID'] = NexusOAuthService.CLIENT_ID
+                    self.logger.debug(f"Set NEXUS_OAUTH_INFO and NEXUS_OAUTH_CLIENT_ID={NexusOAuthService.CLIENT_ID} for engine (supports auto-refresh)")
                     # Also set NEXUS_API_KEY for backward compatibility
                     if api_key:
                         os.environ['NEXUS_API_KEY'] = api_key
@@ -701,6 +715,8 @@ class ModlistInstallCLI:
                         del os.environ['NEXUS_API_KEY']
                     if 'NEXUS_OAUTH_INFO' in os.environ:
                         del os.environ['NEXUS_OAUTH_INFO']
+                    if 'NEXUS_OAUTH_CLIENT_ID' in os.environ:
+                        del os.environ['NEXUS_OAUTH_CLIENT_ID']
                     self.logger.debug(f"No Nexus auth available, cleared inherited env vars")
 
                 os.environ['DOTNET_SYSTEM_GLOBALIZATION_INVARIANT'] = "1"
@@ -780,6 +796,16 @@ class ModlistInstallCLI:
                         if chunk == b'\n':
                             # Complete line - decode and print
                             line = buffer.decode('utf-8', errors='replace')
+                            # Filter FILE_PROGRESS spam but keep the status line before it
+                            if '[FILE_PROGRESS]' in line:
+                                parts = line.split('[FILE_PROGRESS]', 1)
+                                if parts[0].strip():
+                                    line = parts[0].rstrip()
+                                else:
+                                    # Skip this line entirely if it's only FILE_PROGRESS
+                                    buffer = b''
+                                    last_progress_time = time.time()
+                                    continue
                             # Enhance Nexus download errors with modlist context
                             enhanced_line = self._enhance_nexus_error(line)
                             print(enhanced_line, end='')
@@ -788,6 +814,16 @@ class ModlistInstallCLI:
                         elif chunk == b'\r':
                             # Carriage return - decode and print without newline
                             line = buffer.decode('utf-8', errors='replace')
+                            # Filter FILE_PROGRESS spam but keep the status line before it
+                            if '[FILE_PROGRESS]' in line:
+                                parts = line.split('[FILE_PROGRESS]', 1)
+                                if parts[0].strip():
+                                    line = parts[0].rstrip()
+                                else:
+                                    # Skip this line entirely if it's only FILE_PROGRESS
+                                    buffer = b''
+                                    last_progress_time = time.time()
+                                    continue
                             # Enhance Nexus download errors with modlist context
                             enhanced_line = self._enhance_nexus_error(line)
                             print(enhanced_line, end='')

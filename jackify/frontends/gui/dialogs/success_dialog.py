@@ -54,6 +54,7 @@ class SuccessDialog(QDialog):
         card.setFrameShadow(QFrame.Raised)
         card.setFixedWidth(440)
         card.setMinimumHeight(380)
+        card.setMaximumHeight(16777215)  # Remove max height constraint to allow expansion
         card_layout = QVBoxLayout(card)
         card_layout.setSpacing(12)
         card_layout.setContentsMargins(28, 28, 28, 28)
@@ -64,7 +65,7 @@ class SuccessDialog(QDialog):
             "  border: 1px solid #353a40; "
             "}"
         )
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
 
         # Success title (less saturated green)
         title_label = QLabel("Success!")
@@ -87,21 +88,22 @@ class SuccessDialog(QDialog):
         else:
             message_html = message_text
         message_label = QLabel(message_html)
+        # Center the success message within the wider card for all screen sizes
         message_label.setAlignment(Qt.AlignCenter)
         message_label.setWordWrap(True)
+        message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         message_label.setStyleSheet(
             "QLabel { "
             "  font-size: 15px; "
             "  color: #e0e0e0; "
             "  line-height: 1.3; "
             "  margin-bottom: 6px; "
-            "  max-width: 400px; "
-            "  min-width: 200px; "
             "  word-wrap: break-word; "
             "}"
         )
         message_label.setTextFormat(Qt.RichText)
-        card_layout.addWidget(message_label)
+        # Ensure the label itself is centered in the card layout and uses full width
+        card_layout.addWidget(message_label, alignment=Qt.AlignCenter)
 
         # Time taken
         time_label = QLabel(f"Completed in {self.time_taken}")
@@ -226,13 +228,13 @@ class SuccessDialog(QDialog):
         base_message = ""
         if self.workflow_type == "tuxborn":
             base_message = f"You can now launch Tuxborn from Steam and enjoy your modded {game_display} experience!"
+        elif self.workflow_type == "install" and self.modlist_name == "Wabbajack":
+            base_message = "You can now launch Wabbajack from Steam and install modlists. Once the modlist install is complete, you can run \"Configure New Modlist\" in Jackify to complete the configuration for running the modlist on Linux."
         else:
             base_message = f"You can now launch {self.modlist_name} from Steam and enjoy your modded {game_display} experience!"
 
-        # Add GE-Proton recommendation
-        proton_note = "\n\nNOTE: If you experience ENB issues, consider using GE-Proton 10-14 instead of Valve's Proton 10 (known ENB compatibility issues)."
-
-        return base_message + proton_note 
+        # Note: ENB-specific Proton warning is now shown in a separate dialog when ENB is detected
+        return base_message 
 
     def _update_countdown(self):
         if self._countdown > 0:

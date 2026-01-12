@@ -570,3 +570,56 @@ class NativeSteamService:
         except Exception as e:
             logger.error(f"Error removing shortcut: {e}")
             return False
+    
+    def create_steam_library_symlinks(self, app_id: int) -> bool:
+        """
+        Create symlink to libraryfolders.vdf in Wine prefix for game detection.
+        
+        This allows Wabbajack running in the prefix to detect Steam games.
+        Based on Wabbajack-Proton-AuCu implementation.
+        
+        Args:
+            app_id: Steam AppID (unsigned)
+            
+        Returns:
+            True if successful
+        """
+        # Ensure Steam user detection is completed first
+        if not self.steam_path:
+            if not self.find_steam_user():
+                logger.error("Cannot create symlinks: Steam user detection failed")
+                return False
+        
+        # Find libraryfolders.vdf
+        libraryfolders_vdf = self.steam_path / "config" / "libraryfolders.vdf"
+        if not libraryfolders_vdf.exists():
+            logger.error(f"libraryfolders.vdf not found at: {libraryfolders_vdf}")
+            return False
+        
+        # Get compatdata path for this AppID
+        compat_data = self.steam_path / f"steamapps/compatdata/{app_id}"
+        if not compat_data.exists():
+            logger.error(f"Compatdata directory not found: {compat_data}")
+            return False
+        
+        # Target directory in Wine prefix
+        prefix_config_dir = compat_data / "pfx/drive_c/Program Files (x86)/Steam/config"
+        prefix_config_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Symlink target
+        symlink_target = prefix_config_dir / "libraryfolders.vdf"
+        
+        try:
+            # Remove existing symlink/file if it exists
+            if symlink_target.exists() or symlink_target.is_symlink():
+                symlink_target.unlink()
+            
+            # Create symlink
+            symlink_target.symlink_to(libraryfolders_vdf)
+            logger.info(f"Created symlink: {symlink_target} -> {libraryfolders_vdf}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating symlink: {e}")
+            return False

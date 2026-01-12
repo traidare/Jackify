@@ -23,6 +23,7 @@ class ModlistContext:
     mo2_exe_path: Optional[Path] = None
     skip_confirmation: bool = False
     engine_installed: bool = False  # True if installed via jackify-engine
+    enb_detected: bool = False  # True if ENB was detected during configuration
     
     def __post_init__(self):
         """Convert string paths to Path objects."""

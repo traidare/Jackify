@@ -30,7 +30,7 @@ from jackify.backend.utils.nexus_premium_detector import is_non_premium_indicato
 from jackify.backend.handlers.progress_parser import ProgressStateManager
 from jackify.frontends.gui.widgets.progress_indicator import OverallProgressIndicator
 from jackify.frontends.gui.widgets.file_progress_list import FileProgressList
-from jackify.shared.progress_models import InstallationPhase, InstallationProgress
+from jackify.shared.progress_models import InstallationPhase, InstallationProgress, OperationType
 # Modlist gallery (imported at module level to avoid import delay when opening dialog)
 from jackify.frontends.gui.screens.modlist_gallery import ModlistGalleryDialog
 
@@ -409,6 +409,8 @@ class InstallModlistScreen(QWidget):
         self.file_progress_list = FileProgressList()  # Shows all active files (scrolls if needed)
         self._premium_notice_shown = False
         self._premium_failure_active = False
+        self._stalled_download_start_time = None  # Track when downloads stall
+        self._stalled_download_notified = False
         self._post_install_sequence = self._build_post_install_sequence()
         self._post_install_total_steps = len(self._post_install_sequence)
         self._post_install_current_step = 0
@@ -2065,6 +2067,9 @@ class InstallModlistScreen(QWidget):
             self.file_progress_list.clear()
             self.file_progress_list.start_cpu_tracking()  # Start tracking CPU during installation
             self._premium_notice_shown = False
+            self._stalled_download_start_time = None  # Reset stall detection
+            self._stalled_download_notified = False
+            self._token_error_notified = False  # Reset token error notification
             self._premium_failure_active = False
             self._post_install_active = False
             self._post_install_current_step = 0
@@ -2203,6 +2208,10 @@ class InstallModlistScreen(QWidget):
                     env_vars = {'NEXUS_API_KEY': self.api_key}
                     if self.oauth_info:
                         env_vars['NEXUS_OAUTH_INFO'] = self.oauth_info
+                        # CRITICAL: Set client_id so engine can refresh tokens with correct client_id
+                        # Engine's RefreshToken method reads this to use our "jackify" client_id instead of hardcoded "wabbajack"
+                        from jackify.backend.services.nexus_oauth_service import NexusOAuthService
+                        env_vars['NEXUS_OAUTH_CLIENT_ID'] = NexusOAuthService.CLIENT_ID
                     env = get_clean_subprocess_env(env_vars)
                     self.process_manager = ProcessManager(cmd, env=env, text=False)
                     ansi_escape = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
@@ -2479,8 +2488,54 @@ class InstallModlistScreen(QWidget):
             self._write_to_log_file(message)
             return
         
-        # Detect known engine bugs and provide helpful guidance
+        # CRITICAL: Detect token/auth errors and ALWAYS show them (even when not in debug mode)
         msg_lower = message.lower()
+        token_error_keywords = [
+            'token has expired',
+            'token expired',
+            'oauth token',
+            'authentication failed',
+            'unauthorized',
+            '401',
+            '403',
+            'refresh token',
+            'authorization failed',
+            'nexus.*premium.*required',
+            'premium.*required',
+        ]
+        
+        is_token_error = any(keyword in msg_lower for keyword in token_error_keywords)
+        if is_token_error:
+            # CRITICAL ERROR - always show, even if console is hidden
+            if not hasattr(self, '_token_error_notified'):
+                self._token_error_notified = True
+                # Show error dialog immediately
+                from jackify.frontends.gui.services.message_service import MessageService
+                MessageService.error(
+                    self,
+                    "Authentication Error",
+                    (
+                        "Nexus Mods authentication has failed. This may be due to:\n\n"
+                        "• OAuth token expired and refresh failed\n"
+                        "• Nexus Premium required for this modlist\n"
+                        "• Network connectivity issues\n\n"
+                        "Please check the console output (Show Details) for more information.\n"
+                        "You may need to re-authorize in Settings."
+                    ),
+                    safety_level="high"
+                )
+                # Also show in console
+                guidance = (
+                    "\n[Jackify] ⚠️ CRITICAL: Authentication/Token Error Detected!\n"
+                    "[Jackify] This may cause downloads to stop. Check the error message above.\n"
+                    "[Jackify] If OAuth token expired, go to Settings and re-authorize.\n"
+                )
+                self._safe_append_text(guidance)
+                # Force console to be visible so user can see the error
+                if not self.show_details_checkbox.isChecked():
+                    self.show_details_checkbox.setChecked(True)
+        
+        # Detect known engine bugs and provide helpful guidance
         if 'destination array was not long enough' in msg_lower or \
            ('argumentexception' in msg_lower and 'downloadmachineurl' in msg_lower):
             # This is a known bug in jackify-engine 0.4.0 during .wabbajack download
@@ -2543,6 +2598,62 @@ class InstallModlistScreen(QWidget):
         if progress_state.bsa_building_total > 0 and progress_state.bsa_building_current > 0:
             bsa_percent = (progress_state.bsa_building_current / progress_state.bsa_building_total) * 100.0
             progress_state.overall_percent = min(99.0, bsa_percent)  # Cap at 99% until fully complete
+
+        # CRITICAL: Detect stalled downloads (0.0MB/s for extended period)
+        # This catches cases where token refresh fails silently or network issues occur
+        # IMPORTANT: Only check during DOWNLOAD phase, not during VALIDATE phase
+        # Validation checks existing files and shows 0.0MB/s, which is expected behavior
+        import time
+        if progress_state.phase == InstallationPhase.DOWNLOAD:
+            speed_display = progress_state.get_overall_speed_display()
+            # Check if speed is 0 or very low (< 0.1MB/s) for more than 2 minutes
+            # Only trigger if we're actually in download phase (not validation)
+            is_stalled = not speed_display or speed_display == "0.0B/s" or \
+                        (speed_display and any(x in speed_display.lower() for x in ['0.0mb/s', '0.0kb/s', '0b/s']))
+            
+            # Additional check: Only consider it stalled if we have active download files
+            # If no files are being downloaded, it might just be between downloads
+            has_active_downloads = any(
+                f.operation == OperationType.DOWNLOAD and not f.is_complete 
+                for f in progress_state.active_files
+            )
+            
+            if is_stalled and has_active_downloads:
+                if self._stalled_download_start_time is None:
+                    self._stalled_download_start_time = time.time()
+                else:
+                    stalled_duration = time.time() - self._stalled_download_start_time
+                    # Warn after 2 minutes of stalled downloads
+                    if stalled_duration > 120 and not self._stalled_download_notified:
+                        self._stalled_download_notified = True
+                        from jackify.frontends.gui.services.message_service import MessageService
+                        MessageService.warning(
+                            self,
+                            "Download Stalled",
+                            (
+                                "Downloads have been stalled (0.0MB/s) for over 2 minutes.\n\n"
+                                "Possible causes:\n"
+                                "• OAuth token expired and refresh failed\n"
+                                "• Network connectivity issues\n"
+                                "• Nexus Mods server issues\n\n"
+                                "Please check the console output (Show Details) for error messages.\n"
+                                "If authentication failed, you may need to re-authorize in Settings."
+                            ),
+                            safety_level="low"
+                        )
+                        # Force console to be visible
+                        if not self.show_details_checkbox.isChecked():
+                            self.show_details_checkbox.setChecked(True)
+                        # Add warning to console
+                        self._safe_append_text(
+                            "\n[Jackify] ⚠️ WARNING: Downloads have stalled (0.0MB/s for 2+ minutes)\n"
+                            "[Jackify] This may indicate an authentication or network issue.\n"
+                            "[Jackify] Check the console above for error messages.\n"
+                        )
+            else:
+                # Downloads are active - reset stall timer
+                self._stalled_download_start_time = None
+                self._stalled_download_notified = False
 
         # Update progress indicator widget
         self.progress_indicator.update_progress(progress_state)
@@ -3748,7 +3859,7 @@ class InstallModlistScreen(QWidget):
                 self.steam_restart_progress = None
         # Controls are managed by the proper control management system
 
-    def on_configuration_complete(self, success, message, modlist_name):
+    def on_configuration_complete(self, success, message, modlist_name, enb_detected=False):
         """Handle configuration completion on main thread"""
         try:
             # Stop CPU tracking now that everything is complete
@@ -3819,6 +3930,16 @@ class InstallModlistScreen(QWidget):
                     parent=self
                 )
                 success_dialog.show()
+                
+                # Show ENB Proton dialog if ENB was detected (use stored detection result, no re-detection)
+                if enb_detected:
+                    try:
+                        from ..dialogs.enb_proton_dialog import ENBProtonDialog
+                        enb_dialog = ENBProtonDialog(modlist_name=modlist_name, parent=self)
+                        enb_dialog.exec()  # Modal dialog - blocks until user clicks OK
+                    except Exception as e:
+                        # Non-blocking: if dialog fails, just log and continue
+                        logger.warning(f"Failed to show ENB dialog: {e}")
             elif hasattr(self, '_manual_steps_retry_count') and self._manual_steps_retry_count >= 3:
                 # Max retries reached - show failure message
                 MessageService.critical(self, "Manual Steps Failed", 
@@ -4176,7 +4297,7 @@ class InstallModlistScreen(QWidget):
             # Create new config thread with updated context
             class ConfigThread(QThread):
                 progress_update = Signal(str)
-                configuration_complete = Signal(bool, str, str)
+                configuration_complete = Signal(bool, str, str, bool)
                 error_occurred = Signal(str)
 
                 def __init__(self, context, is_steamdeck):
@@ -4216,8 +4337,8 @@ class InstallModlistScreen(QWidget):
                         def progress_callback(message):
                             self.progress_update.emit(message)
                             
-                        def completion_callback(success, message, modlist_name):
-                            self.configuration_complete.emit(success, message, modlist_name)
+                        def completion_callback(success, message, modlist_name, enb_detected=False):
+                            self.configuration_complete.emit(success, message, modlist_name, enb_detected)
                             
                         def manual_steps_callback(modlist_name, retry_count):
                             # This shouldn't happen since automated prefix creation is complete

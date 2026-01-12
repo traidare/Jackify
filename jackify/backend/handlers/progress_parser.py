@@ -844,6 +844,7 @@ class ProgressStateManager:
         self._file_history = {}
         self._wabbajack_entry_name = None
         self._synthetic_flag = "_synthetic_wabbajack"
+        self._previous_phase = None  # Track phase changes to reset stale data
     
     def process_line(self, line: str) -> bool:
         """
@@ -862,13 +863,56 @@ class ProgressStateManager:
         
         updated = False
         
-        # Update phase
-        if parsed.phase:
+        # Update phase - detect phase changes to reset stale data
+        phase_changed = False
+        if parsed.phase and parsed.phase != self.state.phase:
+            # Phase is changing - selectively reset stale data from previous phase
+            previous_phase = self.state.phase
+            
+            # Only reset data sizes when transitioning FROM VALIDATE phase
+            # Validation phase data sizes are from .wabbajack file and shouldn't persist
+            if previous_phase == InstallationPhase.VALIDATE and not parsed.data_info:
+                # Clear old validation data sizes (e.g., 339.0MB/339.1MB from .wabbajack)
+                if self.state.data_total > 0:
+                    self.state.data_processed = 0
+                    self.state.data_total = 0
+                    updated = True
+            
+            # Clear "Validating" phase name immediately when transitioning away from VALIDATE
+            # This ensures stale phase name doesn't persist into download phase
+            if previous_phase == InstallationPhase.VALIDATE:
+                # Transitioning away from VALIDATE - always clear old phase_name
+                # The new phase will either provide a new phase_name or get_phase_label() will derive it
+                if self.state.phase_name and 'validat' in self.state.phase_name.lower():
+                    self.state.phase_name = ""
+                    updated = True
+            
+            phase_changed = True
+            self._previous_phase = self.state.phase
             self.state.phase = parsed.phase
             updated = True
+        elif parsed.phase:
+            self.state.phase = parsed.phase
+            updated = True
+        
+        # Update phase name - clear old phase name if phase changed but no new phase_name provided
         if parsed.phase_name:
             self.state.phase_name = parsed.phase_name
             updated = True
+        elif phase_changed:
+            # Phase changed but no new phase_name - clear old phase_name to prevent stale display
+            # This ensures "Validating" doesn't stick when we transition to DOWNLOAD
+            if self.state.phase_name and self.state.phase != InstallationPhase.VALIDATE:
+                # Only clear if we're not in VALIDATE phase anymore
+                self.state.phase_name = ""
+                updated = True
+        
+        # CRITICAL: Always clear "Validating" phase_name if we're in DOWNLOAD phase
+        # This catches cases where phase didn't change but we're downloading, or phase_name got set again
+        if self.state.phase == InstallationPhase.DOWNLOAD:
+            if self.state.phase_name and 'validat' in self.state.phase_name.lower():
+                self.state.phase_name = ""
+                updated = True
         
         # Update overall progress
         if parsed.overall_percent is not None:

@@ -92,15 +92,16 @@ def get_jackify_engine_path():
         logger.debug(f"Using engine from environment variable: {env_engine_path}")
         return env_engine_path
     
-    # Priority 2: Frozen bundle (most specific detection)
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # Running inside a frozen bundle
-        # Engine is expected at <bundle_root>/jackify/engine/jackify-engine
-        engine_path = os.path.join(sys._MEIPASS, 'jackify', 'engine', 'jackify-engine')
+    # Priority 2: AppImage bundle (most specific detection)
+    appdir = os.environ.get('APPDIR')
+    if appdir:
+        # Running inside AppImage
+        # Engine is expected at <appdir>/opt/jackify/engine/jackify-engine
+        engine_path = os.path.join(appdir, 'opt', 'jackify', 'engine', 'jackify-engine')
         if os.path.exists(engine_path):
             return engine_path
         # Fallback: log warning but continue to other detection methods
-        logger.warning(f"Frozen-bundle engine not found at expected path: {engine_path}")
+        logger.warning(f"AppImage engine not found at expected path: {engine_path}")
     
     # Priority 3: Check if THIS process is actually running from Jackify AppImage
     # (not just inheriting APPDIR from another AppImage like Cursor)
@@ -125,7 +126,6 @@ def get_jackify_engine_path():
         
     # If all else fails, log error and return the source path anyway
     logger.error(f"jackify-engine not found in any expected location. Tried:")
-    logger.error(f"  Frozen bundle: {getattr(sys, '_MEIPASS', 'N/A')}/jackify/engine/jackify-engine")
     logger.error(f"  AppImage: {appdir or 'N/A'}/opt/jackify/engine/jackify-engine") 
     logger.error(f"  Source: {engine_path}")
     logger.error("This will likely cause installation failures.")
@@ -739,8 +739,17 @@ class ModlistInstallCLI:
 
             modlist_arg = self.context.get('modlist_value') or self.context.get('machineid')
             machineid = self.context.get('machineid')
-            api_key = self.context.get('nexus_api_key')
-            oauth_info = self.context.get('nexus_oauth_info')
+            
+            # CRITICAL: Re-check authentication right before launching engine
+            # This ensures we use current auth state, not stale cached values from context
+            # (e.g., if user revoked OAuth after context was created)
+            from jackify.backend.services.nexus_auth_service import NexusAuthService
+            auth_service = NexusAuthService()
+            current_api_key, current_oauth_info = auth_service.get_auth_for_engine()
+            
+            # Use current auth state, fallback to context values only if current check failed
+            api_key = current_api_key or self.context.get('nexus_api_key')
+            oauth_info = current_oauth_info or self.context.get('nexus_oauth_info')
 
             # Path to the engine binary
             engine_path = get_jackify_engine_path()
@@ -791,7 +800,11 @@ class ModlistInstallCLI:
                 # Prefer NEXUS_OAUTH_INFO (supports auto-refresh) over NEXUS_API_KEY (legacy)
                 if oauth_info:
                     os.environ['NEXUS_OAUTH_INFO'] = oauth_info
-                    self.logger.debug(f"Set NEXUS_OAUTH_INFO for engine (supports auto-refresh)")
+                    # CRITICAL: Set client_id so engine can refresh tokens with correct client_id
+                    # Engine's RefreshToken method reads this to use our "jackify" client_id instead of hardcoded "wabbajack"
+                    from jackify.backend.services.nexus_oauth_service import NexusOAuthService
+                    os.environ['NEXUS_OAUTH_CLIENT_ID'] = NexusOAuthService.CLIENT_ID
+                    self.logger.debug(f"Set NEXUS_OAUTH_INFO and NEXUS_OAUTH_CLIENT_ID={NexusOAuthService.CLIENT_ID} for engine (supports auto-refresh)")
                     # Also set NEXUS_API_KEY for backward compatibility
                     if api_key:
                         os.environ['NEXUS_API_KEY'] = api_key
@@ -805,6 +818,8 @@ class ModlistInstallCLI:
                         del os.environ['NEXUS_API_KEY']
                     if 'NEXUS_OAUTH_INFO' in os.environ:
                         del os.environ['NEXUS_OAUTH_INFO']
+                    if 'NEXUS_OAUTH_CLIENT_ID' in os.environ:
+                        del os.environ['NEXUS_OAUTH_CLIENT_ID']
                     self.logger.debug(f"No Nexus auth available, cleared inherited env vars")
 
                 os.environ['DOTNET_SYSTEM_GLOBALIZATION_INVARIANT'] = "1"
@@ -844,11 +859,29 @@ class ModlistInstallCLI:
                     if chunk == b'\n':
                         # Complete line - decode and print
                         line = buffer.decode('utf-8', errors='replace')
+                        # Filter FILE_PROGRESS spam but keep the status line before it
+                        if '[FILE_PROGRESS]' in line:
+                            parts = line.split('[FILE_PROGRESS]', 1)
+                            if parts[0].strip():
+                                line = parts[0].rstrip()
+                            else:
+                                # Skip this line entirely if it's only FILE_PROGRESS
+                                buffer = b''
+                                continue
                         print(line, end='')
                         buffer = b''
                     elif chunk == b'\r':
                         # Carriage return - decode and print without newline
                         line = buffer.decode('utf-8', errors='replace')
+                        # Filter FILE_PROGRESS spam but keep the status line before it
+                        if '[FILE_PROGRESS]' in line:
+                            parts = line.split('[FILE_PROGRESS]', 1)
+                            if parts[0].strip():
+                                line = parts[0].rstrip()
+                            else:
+                                # Skip this line entirely if it's only FILE_PROGRESS
+                                buffer = b''
+                                continue
                         print(line, end='')
                         sys.stdout.flush()
                         buffer = b''
@@ -856,7 +889,16 @@ class ModlistInstallCLI:
                 # Print any remaining buffer content
                 if buffer:
                     line = buffer.decode('utf-8', errors='replace')
-                    print(line, end='')
+                    # Filter FILE_PROGRESS spam but keep the status line before it
+                    if '[FILE_PROGRESS]' in line:
+                        parts = line.split('[FILE_PROGRESS]', 1)
+                        if parts[0].strip():
+                            line = parts[0].rstrip()
+                        else:
+                            # Skip this line entirely if it's only FILE_PROGRESS
+                            line = ''
+                    if line:
+                        print(line, end='')
                 
                 proc.wait()
                 # Clear process reference after completion

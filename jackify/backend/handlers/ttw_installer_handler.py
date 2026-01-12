@@ -293,9 +293,13 @@ class TTWInstallerHandler:
 
         try:
             env = get_clean_subprocess_env()
+            # CRITICAL: cwd must be the directory containing the executable, not the extraction root
+            # This is because AppContext.BaseDirectory (used by TTW installer to find BundledBinaries)
+            # is the directory containing the executable, not the working directory
+            exe_dir = str(self.ttw_installer_executable_path.parent)
             process = subprocess.Popen(
                 cmd,
-                cwd=str(self.ttw_installer_dir),
+                cwd=exe_dir,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -401,37 +405,20 @@ class TTWInstallerHandler:
 
         try:
             env = get_clean_subprocess_env()
-
-            # Ensure lz4 is in PATH (critical for TTW_Linux_Installer)
-            import shutil
-            appdir = env.get('APPDIR')
-            if appdir:
-                tools_dir = os.path.join(appdir, 'opt', 'jackify', 'tools')
-                bundled_lz4 = os.path.join(tools_dir, 'lz4')
-                if os.path.exists(bundled_lz4) and os.access(bundled_lz4, os.X_OK):
-                    current_path = env.get('PATH', '')
-                    path_parts = [p for p in current_path.split(':') if p and p != tools_dir]
-                    env['PATH'] = f"{tools_dir}:{':'.join(path_parts)}"
-                    self.logger.info(f"Added bundled lz4 to PATH: {tools_dir}")
-
-            # Verify lz4 is available
-            lz4_path = shutil.which('lz4', path=env.get('PATH', ''))
-            if not lz4_path:
-                system_lz4 = shutil.which('lz4')
-                if system_lz4:
-                    lz4_dir = os.path.dirname(system_lz4)
-                    env['PATH'] = f"{lz4_dir}:{env.get('PATH', '')}"
-                    self.logger.info(f"Added system lz4 to PATH: {lz4_dir}")
-                else:
-                    return None, "lz4 is required but not found in PATH"
+            # Note: TTW_Linux_Installer bundles its own lz4 and will find it via AppContext.BaseDirectory
+            # We set cwd to the executable's directory so AppContext.BaseDirectory matches the working directory
 
             # Open output file for writing
             output_fh = open(output_file, 'w', encoding='utf-8', buffering=1)
 
             # Start process with output redirected to file
+            # CRITICAL: cwd must be the directory containing the executable, not the extraction root
+            # This is because AppContext.BaseDirectory (used by TTW installer to find BundledBinaries)
+            # is the directory containing the executable, not the working directory
+            exe_dir = str(self.ttw_installer_executable_path.parent)
             process = subprocess.Popen(
                 cmd,
-                cwd=str(self.ttw_installer_dir),
+                cwd=exe_dir,
                 env=env,
                 stdout=output_fh,
                 stderr=subprocess.STDOUT,
@@ -552,9 +539,13 @@ class TTWInstallerHandler:
 
         try:
             env = get_clean_subprocess_env()
+            # CRITICAL: cwd must be the directory containing the executable, not the extraction root
+            # This is because AppContext.BaseDirectory (used by TTW installer to find BundledBinaries)
+            # is the directory containing the executable, not the working directory
+            exe_dir = str(self.ttw_installer_executable_path.parent)
             process = subprocess.Popen(
                 cmd,
-                cwd=str(self.ttw_installer_dir),
+                cwd=exe_dir,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

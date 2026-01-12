@@ -2502,7 +2502,7 @@ class InstallTTWScreen(QWidget):
                 self.steam_restart_progress = None
         # Controls are managed by the proper control management system
 
-    def on_configuration_complete(self, success, message, modlist_name):
+    def on_configuration_complete(self, success, message, modlist_name, enb_detected=False):
         """Handle configuration completion on main thread"""
         try:
             # Re-enable controls now that installation/configuration is complete
@@ -2539,6 +2539,8 @@ class InstallTTWScreen(QWidget):
                     parent=self
                 )
                 success_dialog.show()
+                
+                # Note: TTW workflow does NOT need ENB detection/dialog
             elif hasattr(self, '_manual_steps_retry_count') and self._manual_steps_retry_count >= 3:
                 # Max retries reached - show failure message
                 MessageService.critical(self, "Manual Steps Failed", 
@@ -2935,8 +2937,8 @@ class InstallTTWScreen(QWidget):
                         def progress_callback(message):
                             self.progress_update.emit(message)
                             
-                        def completion_callback(success, message, modlist_name):
-                            self.configuration_complete.emit(success, message, modlist_name)
+                        def completion_callback(success, message, modlist_name, enb_detected=False):
+                            self.configuration_complete.emit(success, message, modlist_name, enb_detected)
                             
                         def manual_steps_callback(modlist_name, retry_count):
                             # This shouldn't happen since automated prefix creation is complete

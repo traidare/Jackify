@@ -48,40 +48,55 @@ class WinetricksHandler:
         self.logger.error(f"Bundled winetricks not found. Tried paths: {possible_paths}")
         return None
 
-    def _get_bundled_cabextract(self) -> Optional[str]:
+    def _get_bundled_tool(self, tool_name: str, fallback_to_system: bool = True) -> Optional[str]:
         """
-        Get the path to the bundled cabextract binary, checking same locations as winetricks
+        Get the path to a bundled tool binary, checking same locations as winetricks.
+        
+        Args:
+            tool_name: Name of the tool (e.g., 'cabextract', 'wget', 'unzip')
+            fallback_to_system: If True, fall back to system PATH if bundled version not found
+            
+        Returns:
+            Path to the tool, or None if not found
         """
         possible_paths = []
 
         # AppImage environment - same pattern as winetricks detection
         if os.environ.get('APPDIR'):
-            appdir_path = os.path.join(os.environ['APPDIR'], 'opt', 'jackify', 'tools', 'cabextract')
+            appdir_path = os.path.join(os.environ['APPDIR'], 'opt', 'jackify', 'tools', tool_name)
             possible_paths.append(appdir_path)
 
         # Development environment - relative to module location, same as winetricks
         module_dir = Path(__file__).parent.parent.parent  # Go from handlers/ up to jackify/
-        dev_path = module_dir / 'tools' / 'cabextract'
+        dev_path = module_dir / 'tools' / tool_name
         possible_paths.append(str(dev_path))
 
         # Try each path until we find one that works
         for path in possible_paths:
             if os.path.exists(path) and os.access(path, os.X_OK):
-                self.logger.debug(f"Found bundled cabextract at: {path}")
+                self.logger.debug(f"Found bundled {tool_name} at: {path}")
                 return str(path)
 
-        # Fallback to system PATH
-        try:
-            import shutil
-            system_cabextract = shutil.which('cabextract')
-            if system_cabextract:
-                self.logger.debug(f"Using system cabextract: {system_cabextract}")
-                return system_cabextract
-        except Exception:
-            pass
+        # Fallback to system PATH if requested
+        if fallback_to_system:
+            try:
+                import shutil
+                system_tool = shutil.which(tool_name)
+                if system_tool:
+                    self.logger.debug(f"Using system {tool_name}: {system_tool}")
+                    return system_tool
+            except Exception:
+                pass
 
-        self.logger.warning("Bundled cabextract not found in tools directory")
+        self.logger.debug(f"Bundled {tool_name} not found in tools directory")
         return None
+
+    def _get_bundled_cabextract(self) -> Optional[str]:
+        """
+        Get the path to the bundled cabextract binary.
+        Maintains backward compatibility with existing code.
+        """
+        return self._get_bundled_tool('cabextract', fallback_to_system=True)
 
     def is_available(self) -> bool:
         """
@@ -251,13 +266,81 @@ class WinetricksHandler:
             self.logger.error(f"Cannot run winetricks: Failed to get Proton wine binary: {e}")
             return False
 
-        # Set up bundled cabextract for winetricks
-        bundled_cabextract = self._get_bundled_cabextract()
-        if bundled_cabextract:
-            env['PATH'] = f"{os.path.dirname(bundled_cabextract)}:{env.get('PATH', '')}"
-            self.logger.info(f"Using bundled cabextract: {bundled_cabextract}")
+        # Set up bundled tools directory for winetricks
+        # Get tools directory from any bundled tool (winetricks, cabextract, etc.)
+        tools_dir = None
+        bundled_tools = []
+        
+        # Check for bundled tools and collect their directory
+        tool_names = ['cabextract', 'wget', 'unzip', '7z', 'xz', 'sha256sum']
+        for tool_name in tool_names:
+            bundled_tool = self._get_bundled_tool(tool_name, fallback_to_system=False)
+            if bundled_tool:
+                bundled_tools.append(tool_name)
+                if tools_dir is None:
+                    tools_dir = os.path.dirname(bundled_tool)
+        
+        # Prepend tools directory to PATH if we have any bundled tools
+        if tools_dir:
+            env['PATH'] = f"{tools_dir}:{env.get('PATH', '')}"
+            self.logger.info(f"Using bundled tools directory: {tools_dir}")
+            self.logger.info(f"Bundled tools available: {', '.join(bundled_tools)}")
         else:
-            self.logger.warning("Bundled cabextract not found, relying on system PATH")
+            self.logger.debug("No bundled tools found, relying on system PATH")
+
+        # CRITICAL: Check for winetricks dependencies BEFORE attempting installation
+        # This helps diagnose failures on systems where dependencies are missing
+        self.logger.info("=== Checking winetricks dependencies ===")
+        missing_deps = []
+        dependency_checks = {
+            'wget': 'wget',
+            'curl': 'curl',
+            'aria2c': 'aria2c',
+            'unzip': 'unzip',
+            '7z': ['7z', '7za', '7zr'],
+            'xz': 'xz',
+            'sha256sum': ['sha256sum', 'sha256', 'shasum'],
+            'perl': 'perl'
+        }
+        
+        for dep_name, commands in dependency_checks.items():
+            found = False
+            if isinstance(commands, str):
+                commands = [commands]
+            
+            # First check for bundled version
+            bundled_tool = None
+            for cmd in commands:
+                bundled_tool = self._get_bundled_tool(cmd, fallback_to_system=False)
+                if bundled_tool:
+                    self.logger.info(f"  ✓ {dep_name}: {bundled_tool} (bundled)")
+                    found = True
+                    break
+            
+            # If not bundled, check system PATH
+            if not found:
+                for cmd in commands:
+                    try:
+                        result = subprocess.run(['which', cmd], capture_output=True, timeout=2)
+                        if result.returncode == 0:
+                            cmd_path = result.stdout.decode().strip()
+                            self.logger.info(f"  ✓ {dep_name}: {cmd_path} (system)")
+                            found = True
+                            break
+                    except Exception:
+                        pass
+            
+            if not found:
+                missing_deps.append(dep_name)
+                self.logger.warning(f"  ✗ {dep_name}: NOT FOUND (neither bundled nor system)")
+        
+        if missing_deps:
+            self.logger.warning(f"Missing winetricks dependencies: {', '.join(missing_deps)}")
+            self.logger.warning("Winetricks may fail if these are required for component installation")
+            self.logger.warning("Critical dependencies: wget/curl/aria2c (download), unzip/7z (extract)")
+        else:
+            self.logger.info("All winetricks dependencies found")
+        self.logger.info("========================================")
 
         # Set winetricks cache to jackify_data_dir for self-containment
         from jackify.shared.paths import get_jackify_data_dir
@@ -389,40 +472,80 @@ class WinetricksHandler:
                         'attempt': attempt
                     }
 
-                    self.logger.error(f"Winetricks command failed (Attempt {attempt}/{max_attempts}). Return Code: {result.returncode}")
-                    self.logger.error(f"Stdout: {result.stdout.strip()}")
-                    self.logger.error(f"Stderr: {result.stderr.strip()}")
+                    # CRITICAL: Always log full error details (not just in debug mode)
+                    # This helps diagnose failures on systems we can't replicate
+                    self.logger.error("=" * 80)
+                    self.logger.error(f"WINETRICKS FAILED (Attempt {attempt}/{max_attempts})")
+                    self.logger.error(f"Return Code: {result.returncode}")
+                    self.logger.error("")
+                    self.logger.error("STDOUT:")
+                    if result.stdout.strip():
+                        for line in result.stdout.strip().split('\n'):
+                            self.logger.error(f"  {line}")
+                    else:
+                        self.logger.error("  (empty)")
+                    self.logger.error("")
+                    self.logger.error("STDERR:")
+                    if result.stderr.strip():
+                        for line in result.stderr.strip().split('\n'):
+                            self.logger.error(f"  {line}")
+                    else:
+                        self.logger.error("  (empty)")
+                    self.logger.error("=" * 80)
 
                     # Enhanced error diagnostics with actionable information
                     stderr_lower = result.stderr.lower()
                     stdout_lower = result.stdout.lower()
+                    
+                    # Log which diagnostic category matches
+                    diagnostic_found = False
 
                     if "command not found" in stderr_lower or "no such file" in stderr_lower:
                         self.logger.error("DIAGNOSTIC: Winetricks or dependency binary not found")
                         self.logger.error("  - Bundled winetricks may be missing dependencies")
+                        self.logger.error("  - Check dependency check output above for missing tools")
                         self.logger.error("  - Will attempt protontricks fallback if all attempts fail")
+                        diagnostic_found = True
                     elif "permission denied" in stderr_lower:
                         self.logger.error("DIAGNOSTIC: Permission issue detected")
                         self.logger.error(f"  - Check permissions on: {self.winetricks_path}")
                         self.logger.error(f"  - Check permissions on WINEPREFIX: {env.get('WINEPREFIX', 'N/A')}")
+                        diagnostic_found = True
                     elif "timeout" in stderr_lower:
                         self.logger.error("DIAGNOSTIC: Timeout issue detected during component download/install")
+                        self.logger.error("  - Network may be slow or unstable")
+                        self.logger.error("  - Component download may be taking too long")
+                        diagnostic_found = True
                     elif "sha256sum mismatch" in stderr_lower or "sha256sum" in stdout_lower:
                         self.logger.error("DIAGNOSTIC: Checksum verification failed")
                         self.logger.error("  - Component download may be corrupted")
                         self.logger.error("  - Network issue or upstream file change")
-                    elif "curl" in stderr_lower or "wget" in stderr_lower:
-                        self.logger.error("DIAGNOSTIC: Download tool (curl/wget) issue")
+                        diagnostic_found = True
+                    elif "curl" in stderr_lower or "wget" in stderr_lower or "aria2c" in stderr_lower:
+                        self.logger.error("DIAGNOSTIC: Download tool (curl/wget/aria2c) issue")
                         self.logger.error("  - Network connectivity problem or missing download tool")
+                        self.logger.error("  - Check dependency check output above")
+                        diagnostic_found = True
                     elif "cabextract" in stderr_lower:
                         self.logger.error("DIAGNOSTIC: cabextract missing or failed")
                         self.logger.error("  - Required for extracting Windows cabinet files")
-                    elif "unzip" in stderr_lower:
-                        self.logger.error("DIAGNOSTIC: unzip missing or failed")
-                        self.logger.error("  - Required for extracting zip archives")
-                    else:
-                        self.logger.error("DIAGNOSTIC: Unknown winetricks failure")
-                        self.logger.error("  - Check full logs for details")
+                        self.logger.error("  - Bundled cabextract should be available, check PATH")
+                        diagnostic_found = True
+                    elif "unzip" in stderr_lower or "7z" in stderr_lower:
+                        self.logger.error("DIAGNOSTIC: Archive extraction tool (unzip/7z) missing or failed")
+                        self.logger.error("  - Required for extracting zip/7z archives")
+                        self.logger.error("  - Check dependency check output above")
+                        diagnostic_found = True
+                    elif "please install" in stderr_lower:
+                        self.logger.error("DIAGNOSTIC: Winetricks explicitly requesting dependency installation")
+                        self.logger.error("  - Winetricks detected missing required tool")
+                        self.logger.error("  - Check dependency check output above")
+                        diagnostic_found = True
+                    
+                    if not diagnostic_found:
+                        self.logger.error("DIAGNOSTIC: Unknown winetricks failure pattern")
+                        self.logger.error("  - Error details logged above (STDOUT/STDERR)")
+                        self.logger.error("  - Check dependency check output above for missing tools")
                         self.logger.error("  - Will attempt protontricks fallback if all attempts fail")
 
                     winetricks_failed = True
@@ -438,7 +561,20 @@ class WinetricksHandler:
 
         # All winetricks attempts failed - try automatic fallback to protontricks
         if winetricks_failed:
-            self.logger.error(f"Winetricks failed after {max_attempts} attempts.")
+            self.logger.error("=" * 80)
+            self.logger.error(f"WINETRICKS FAILED AFTER {max_attempts} ATTEMPTS")
+            self.logger.error("")
+            if last_error_details:
+                self.logger.error("Last error details:")
+                if 'returncode' in last_error_details:
+                    self.logger.error(f"  Return code: {last_error_details['returncode']}")
+                if 'stderr' in last_error_details and last_error_details['stderr']:
+                    self.logger.error(f"  Last stderr (first 500 chars): {last_error_details['stderr'][:500]}")
+                if 'stdout' in last_error_details and last_error_details['stdout']:
+                    self.logger.error(f"  Last stdout (first 500 chars): {last_error_details['stdout'][:500]}")
+            self.logger.error("")
+            self.logger.error("Attempting automatic fallback to protontricks...")
+            self.logger.error("=" * 80)
 
             # Network diagnostics before fallback (non-fatal)
             self.logger.warning("=" * 80)

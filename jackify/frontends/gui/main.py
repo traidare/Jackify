@@ -22,19 +22,19 @@ if '--env-diagnostic' in sys.argv:
     print("Bundled Environment Diagnostic")
     print("=" * 50)
     
-    # Check if we're running from a frozen bundle
-    is_frozen = getattr(sys, 'frozen', False)
-    meipass = getattr(sys, '_MEIPASS', None)
+    # Check if we're running as AppImage
+    is_appimage = 'APPIMAGE' in os.environ or 'APPDIR' in os.environ
+    appdir = os.environ.get('APPDIR')
     
-    print(f"Frozen: {is_frozen}")
-    print(f"_MEIPASS: {meipass}")
+    print(f"AppImage: {is_appimage}")
+    print(f"APPDIR: {appdir}")
     
     # Capture environment data
     env_data = {
         'timestamp': datetime.now().isoformat(),
         'context': 'appimage_runtime',
-        'frozen': is_frozen,
-        'meipass': meipass,
+        'appimage': is_appimage,
+        'appdir': appdir,
         'python_executable': sys.executable,
         'working_directory': os.getcwd(),
         'sys_path': sys.path,
@@ -737,8 +737,14 @@ class SettingsDialog(QDialog):
             # Get all available Proton versions
             available_protons = WineUtils.scan_all_proton_versions()
 
-            # Add "Auto" option first
-            self.install_proton_dropdown.addItem("Auto (Recommended)", "auto")
+            # Check if any Proton versions were found
+            has_proton = len(available_protons) > 0
+
+            # Add "Auto" or "No Proton" option first based on detection
+            if has_proton:
+                self.install_proton_dropdown.addItem("Auto (Recommended)", "auto")
+            else:
+                self.install_proton_dropdown.addItem("No Proton Versions Detected", "none")
 
             # Filter for fast Proton versions only
             fast_protons = []
@@ -893,9 +899,29 @@ class SettingsDialog(QDialog):
             jackify_data_dir = self.jackify_data_dir_edit.text().strip()
             self.config_handler.set("jackify_data_dir", jackify_data_dir)
 
+            # Initialize with existing config values as fallback (prevents UnboundLocalError if auto-detection fails)
+            resolved_install_path = self.config_handler.get("proton_path", "")
+            resolved_install_version = self.config_handler.get("proton_version", "")
+
             # Save Install Proton selection - resolve "auto" to actual path
             selected_install_proton_path = self.install_proton_dropdown.currentData()
-            if selected_install_proton_path == "auto":
+            if selected_install_proton_path == "none":
+                # No Proton detected - warn user but allow saving other settings
+                MessageService.warning(
+                    self,
+                    "No Compatible Proton Installed",
+                    "Jackify requires Proton 9.0+, Proton Experimental, or GE-Proton 10+ to install modlists.\n\n"
+                    "To install Proton:\n"
+                    "1. Install any Windows game in Steam (Proton downloads automatically), OR\n"
+                    "2. Install GE-Proton using ProtonPlus or ProtonUp-Qt, OR\n"
+                    "3. Download GE-Proton manually from:\n"
+                    "   https://github.com/GloriousEggroll/proton-ge-custom/releases\n\n"
+                    "Your other settings will be saved, but modlist installation may not work without Proton.",
+                    safety_level="medium"
+                )
+                logger.warning("No Proton detected - user warned, allowing save to proceed for other settings")
+                # Don't modify Proton config, but continue to save other settings
+            elif selected_install_proton_path == "auto":
                 # Resolve "auto" to actual best Proton path using unified detection
                 try:
                     from jackify.backend.handlers.wine_utils import WineUtils
@@ -1295,6 +1321,7 @@ class JackifyMainWindow(QMainWindow):
             InstallModlistScreen, ConfigureNewModlistScreen, ConfigureExistingModlistScreen
         )
         from jackify.frontends.gui.screens.install_ttw import InstallTTWScreen
+        from jackify.frontends.gui.screens.wabbajack_installer import WabbajackInstallerScreen
 
         self.main_menu = MainMenu(stacked_widget=self.stacked_widget, dev_mode=dev_mode)
         self.feature_placeholder = FeaturePlaceholder(stacked_widget=self.stacked_widget)
@@ -1326,6 +1353,11 @@ class JackifyMainWindow(QMainWindow):
             main_menu_index=0,
             system_info=self.system_info
         )
+        self.wabbajack_installer_screen = WabbajackInstallerScreen(
+            stacked_widget=self.stacked_widget,
+            additional_tasks_index=3,
+            system_info=self.system_info
+        )
 
         # Let TTW screen request window resize for expand/collapse
         try:
@@ -1346,6 +1378,11 @@ class JackifyMainWindow(QMainWindow):
             self.configure_existing_modlist_screen.resize_request.connect(self._on_child_resize_request)
         except Exception:
             pass
+        # Let Wabbajack Installer screen request window resize for expand/collapse
+        try:
+            self.wabbajack_installer_screen.resize_request.connect(self._on_child_resize_request)
+        except Exception:
+            pass
         
         # Add screens to stacked widget
         self.stacked_widget.addWidget(self.main_menu)           # Index 0: Main Menu
@@ -1355,7 +1392,8 @@ class JackifyMainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.install_modlist_screen)        # Index 4: Install Modlist
         self.stacked_widget.addWidget(self.install_ttw_screen)            # Index 5: Install TTW
         self.stacked_widget.addWidget(self.configure_new_modlist_screen)  # Index 6: Configure New
-        self.stacked_widget.addWidget(self.configure_existing_modlist_screen)  # Index 7: Configure Existing
+        self.stacked_widget.addWidget(self.wabbajack_installer_screen)    # Index 7: Wabbajack Installer
+        self.stacked_widget.addWidget(self.configure_existing_modlist_screen)  # Index 8: Configure Existing
 
         # Add debug tracking for screen changes
         self.stacked_widget.currentChanged.connect(self._debug_screen_change)
@@ -1828,10 +1866,6 @@ class JackifyMainWindow(QMainWindow):
 
 def resource_path(relative_path):
     """Get path to resource file, handling both AppImage and dev modes."""
-    # PyInstaller frozen mode
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    
     # AppImage mode - use APPDIR if available
     appdir = os.environ.get('APPDIR')
     if appdir:

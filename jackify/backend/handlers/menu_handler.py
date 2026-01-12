@@ -644,6 +644,29 @@ class ModlistMenuHandler:
         if status_line:
             print()
         
+        # Configure ENB for Linux compatibility (non-blocking, same as GUI)
+        enb_detected = False
+        try:
+            from ..handlers.enb_handler import ENBHandler
+            from pathlib import Path
+            
+            enb_handler = ENBHandler()
+            install_dir = Path(context.get('path', ''))
+            
+            if install_dir.exists():
+                enb_success, enb_message, enb_detected = enb_handler.configure_enb_for_linux(install_dir)
+                
+                if enb_message:
+                    if enb_success:
+                        self.logger.info(enb_message)
+                        update_status(enb_message)
+                    else:
+                        self.logger.warning(enb_message)
+                        # Non-blocking: continue workflow even if ENB config fails
+        except Exception as e:
+            self.logger.warning(f"ENB configuration skipped due to error: {e}")
+            # Continue workflow - ENB config is optional
+        
         print("")
         print("")
         print("")  # Extra blank line before completion
@@ -655,9 +678,24 @@ class ModlistMenuHandler:
         print(f"• You should now be able to Launch '{context.get('name')}' through Steam")
         print("• Congratulations and enjoy the game!")
         print("")
-        print("NOTE: If you experience ENB issues, consider using GE-Proton 10-14 instead of")
-        print("      Valve's Proton 10 (known ENB compatibility issues in Valve's Proton 10).")
-        print("")
+        
+        # Show ENB-specific warning if ENB was detected (replaces generic note)
+        if enb_detected:
+            print(f"{COLOR_WARNING}⚠️  ENB DETECTED{COLOR_RESET}")
+            print("")
+            print("If you plan on using ENB as part of this modlist, you will need to use")
+            print("one of the following Proton versions, otherwise you will have issues:")
+            print("")
+            print("  (in order of recommendation)")
+            print(f"  {COLOR_SUCCESS}• Proton-CachyOS{COLOR_RESET}")
+            print(f"  {COLOR_INFO}• GE-Proton 10-14 or lower{COLOR_RESET}")
+            print(f"  {COLOR_WARNING}• Proton 9 from Valve{COLOR_RESET}")
+            print("")
+            print(f"{COLOR_WARNING}Note: Valve's Proton 10 has known ENB compatibility issues.{COLOR_RESET}")
+            print("")
+        else:
+            # No ENB detected - no warning needed
+            pass
         from jackify.shared.paths import get_jackify_logs_dir
         print(f"Detailed log available at: {get_jackify_logs_dir()}/Configure_New_Modlist_workflow.log")
         # Only wait for input in CLI mode, not GUI mode

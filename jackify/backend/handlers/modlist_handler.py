@@ -775,6 +775,37 @@ class ModlistHandler:
             self.logger.warning(f"Error enabling dotfiles visibility: {e} (non-critical, continuing)")
         self.logger.info("Step 4.6: Enabling dotfiles visibility... Done")
 
+        # Step 4.7: Create Wine prefix Documents directories for USVFS
+        # This is critical for USVFS to virtualize profile INI files on first launch
+        if status_callback:
+            status_callback(f"{self._get_progress_timestamp()} Creating Wine prefix Documents directories for USVFS")
+        self.logger.info("Step 4.7: Creating Wine prefix Documents directories for USVFS...")
+        try:
+            if self.appid and self.game_var:
+                # Map game_var to game_name for create_required_dirs
+                game_name_map = {
+                    "skyrimspecialedition": "skyrimse",
+                    "fallout4": "fallout4",
+                    "falloutnv": "falloutnv",
+                    "oblivion": "oblivion",
+                    "enderalspecialedition": "enderalse"
+                }
+                game_name = game_name_map.get(self.game_var.lower(), None)
+                
+                if game_name:
+                    appid_str = str(self.appid)
+                    if self.filesystem_handler.create_required_dirs(game_name, appid_str):
+                        self.logger.info("Wine prefix Documents directories created successfully for USVFS")
+                    else:
+                        self.logger.warning("Failed to create Wine prefix Documents directories (non-critical, continuing)")
+                else:
+                    self.logger.debug(f"Game {self.game_var} not in directory creation map, skipping")
+            else:
+                self.logger.warning("AppID or game_var not available, skipping Wine prefix Documents directory creation")
+        except Exception as e:
+            self.logger.warning(f"Error creating Wine prefix Documents directories: {e} (non-critical, continuing)")
+        self.logger.info("Step 4.7: Creating Wine prefix Documents directories... Done")
+
         # Step 5: Ensure permissions of Modlist directory
         if status_callback:
             status_callback(f"{self._get_progress_timestamp()} Setting ownership and permissions for modlist directory")
@@ -1685,50 +1716,35 @@ class ModlistHandler:
             return False
 
     def _find_wine_binary_for_registry(self) -> Optional[str]:
-        """Find the appropriate Wine binary for registry operations using user's configured Proton"""
+        """Find wine binary from Install Proton path"""
         try:
-            # Use the user's configured Proton version from settings
+            # Use Install Proton from config (used by jackify-engine)
             from ..handlers.config_handler import ConfigHandler
             config_handler = ConfigHandler()
-            user_proton_path = config_handler.get_game_proton_path()
+            proton_path = config_handler.get_proton_path()
 
-            if user_proton_path and user_proton_path != 'auto':
-                # User has selected a specific Proton version
-                proton_path = Path(user_proton_path).expanduser()
+            if proton_path:
+                proton_path = Path(proton_path).expanduser()
 
-                # Check for wine binary in both GE-Proton and Valve Proton structures
+                # Check both GE-Proton and Valve Proton structures
                 wine_candidates = [
-                    proton_path / "files" / "bin" / "wine",  # GE-Proton structure
-                    proton_path / "dist" / "bin" / "wine"    # Valve Proton structure
+                    proton_path / "files" / "bin" / "wine",  # GE-Proton
+                    proton_path / "dist" / "bin" / "wine"    # Valve Proton
                 ]
 
-                for wine_path in wine_candidates:
-                    if wine_path.exists() and wine_path.is_file():
-                        self.logger.info(f"Using Wine binary from user's configured Proton: {wine_path}")
-                        return str(wine_path)
+                for wine_bin in wine_candidates:
+                    if wine_bin.exists() and wine_bin.is_file():
+                        return str(wine_bin)
 
-                # Wine binary not found at expected paths - search recursively in Proton directory
-                self.logger.debug(f"Wine binary not found at expected paths in {proton_path}, searching recursively...")
-                wine_binary = self._search_wine_in_proton_directory(proton_path)
-                if wine_binary:
-                    self.logger.info(f"Found Wine binary via recursive search in Proton directory: {wine_binary}")
-                    return wine_binary
-
-                self.logger.warning(f"User's configured Proton path has no wine binary: {user_proton_path}")
-
-            # Fallback: Try to use same Steam library detection as main Proton detection
+            # Fallback: use best detected Proton
             from ..handlers.wine_utils import WineUtils
             best_proton = WineUtils.select_best_proton()
             if best_proton:
                 wine_binary = WineUtils.find_proton_binary(best_proton['name'])
                 if wine_binary:
-                    self.logger.info(f"Using Wine binary from detected Proton: {wine_binary}")
                     return wine_binary
 
-            # NEVER fall back to system wine - it will break Proton prefixes with architecture mismatches
-            self.logger.error("No suitable Proton Wine binary found for registry operations")
             return None
-
         except Exception as e:
             self.logger.error(f"Error finding Wine binary: {e}")
             return None

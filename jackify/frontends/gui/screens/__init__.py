@@ -10,6 +10,7 @@ from .additional_tasks import AdditionalTasksScreen
 from .install_modlist import InstallModlistScreen
 from .configure_new_modlist import ConfigureNewModlistScreen
 from .configure_existing_modlist import ConfigureExistingModlistScreen
+from .wabbajack_installer import WabbajackInstallerScreen
 
 __all__ = [
     'MainMenu',
@@ -17,5 +18,6 @@ __all__ = [
     'AdditionalTasksScreen',
     'InstallModlistScreen',
     'ConfigureNewModlistScreen',
-    'ConfigureExistingModlistScreen'
+    'ConfigureExistingModlistScreen',
+    'WabbajackInstallerScreen'
 ] 

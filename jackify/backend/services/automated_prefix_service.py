@@ -2885,8 +2885,9 @@ echo Prefix creation complete.
             logger.info(f"Replacing existing shortcut: {shortcut_name}")
             
             # First, remove the existing shortcut using STL
-            if getattr(sys, 'frozen', False):
-                stl_path = Path(sys._MEIPASS) / "steamtinkerlaunch"
+            appdir = os.environ.get('APPDIR')
+            if appdir:
+                stl_path = Path(appdir) / "opt" / "jackify" / "steamtinkerlaunch"
             else:
                 project_root = Path(__file__).parent.parent.parent.parent.parent
                 stl_path = project_root / "external_repos/steamtinkerlaunch/steamtinkerlaunch"
@@ -3045,7 +3046,25 @@ echo Prefix creation complete.
             
             in_target_section = False
             path_updated = False
-            wine_path = new_path.replace('/', '\\\\')
+            
+            # Determine Wine drive letter based on SD card detection
+            from jackify.backend.handlers.filesystem_handler import FileSystemHandler
+            from jackify.backend.handlers.path_handler import PathHandler
+            
+            linux_path = Path(new_path)
+            
+            if FileSystemHandler.is_sd_card(linux_path):
+                # SD card paths use D: drive
+                # Strip SD card prefix using the same method as other handlers
+                relative_sd_path_str = PathHandler._strip_sdcard_path_prefix(linux_path)
+                wine_path = relative_sd_path_str.replace('/', '\\')
+                wine_drive = "D:"
+                logger.debug(f"SD card path detected: {new_path} -> D:\\{wine_path}")
+            else:
+                # Regular paths use Z: drive with full path
+                wine_path = new_path.strip('/').replace('/', '\\')
+                wine_drive = "Z:"
+                logger.debug(f"Regular path: {new_path} -> Z:\\{wine_path}")
             
             # Update existing path if found
             for i, line in enumerate(lines):
@@ -3055,14 +3074,14 @@ echo Prefix creation complete.
                 elif stripped_line.startswith('[') and in_target_section:
                     in_target_section = False
                 elif in_target_section and f'"{path_key}"' in line:
-                    lines[i] = f'"{path_key}"="Z:\\\\{wine_path}\\\\"\n'  # Add trailing backslashes
+                    lines[i] = f'"{path_key}"="{wine_drive}\\\\{wine_path}\\\\"\n'  # Add trailing backslashes
                     path_updated = True
                     break
             
             # Add new section if path wasn't updated
             if not path_updated:
                 lines.append(f'\n{section_name}\n')
-                lines.append(f'"{path_key}"="Z:\\\\{wine_path}\\\\"\n')  # Add trailing backslashes
+                lines.append(f'"{path_key}"="{wine_drive}\\\\{wine_path}\\\\"\n')  # Add trailing backslashes
             
             # Write updated content
             with open(system_reg_path, 'w', encoding='utf-8') as f:

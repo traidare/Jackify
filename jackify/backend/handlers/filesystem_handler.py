@@ -604,6 +604,11 @@ class FileSystemHandler:
         """
         Create required directories for a game modlist
         
+        This includes both Linux home directories and Wine prefix directories.
+        Creating the Wine prefix Documents directories is critical for USVFS
+        to work properly on first launch - USVFS needs the target directory
+        to exist before it can virtualize profile INI files.
+        
         Args:
             game_name: Name of the game (e.g., skyrimse, fallout4)
             appid: Steam AppID of the modlist
@@ -614,13 +619,24 @@ class FileSystemHandler:
         try:
             # Define base paths
             home_dir = os.path.expanduser("~")
+            
+            # Game-specific Documents directory names (for both Linux home and Wine prefix)
+            game_docs_dirs = {
+                "skyrimse": "Skyrim Special Edition",
+                "fallout4": "Fallout4",
+                "falloutnv": "FalloutNV",
+                "oblivion": "Oblivion",
+                "enderal": "Enderal Special Edition",
+                "enderalse": "Enderal Special Edition"
+            }
+            
             game_dirs = {
                 # Common directories needed across all games
                 "common": [
                     os.path.join(home_dir, ".local", "share", "Steam", "steamapps", "compatdata", appid, "pfx"),
                     os.path.join(home_dir, ".steam", "steam", "steamapps", "compatdata", appid, "pfx")
                 ],
-                # Game-specific directories
+                # Game-specific directories in Linux home (legacy, may not be needed)
                 "skyrimse": [
                     os.path.join(home_dir, "Documents", "My Games", "Skyrim Special Edition"),
                 ],
@@ -635,17 +651,51 @@ class FileSystemHandler:
                 ]
             }
             
-            # Create common directories
+            # Create common directories (compatdata pfx paths)
             for dir_path in game_dirs["common"]:
                 if dir_path and os.path.exists(os.path.dirname(dir_path)):
                     os.makedirs(dir_path, exist_ok=True)
                     self.logger.debug(f"Created directory: {dir_path}")
             
-            # Create game-specific directories
+            # Create game-specific directories in Linux home (legacy support)
             if game_name in game_dirs:
                 for dir_path in game_dirs[game_name]:
                     os.makedirs(dir_path, exist_ok=True)
                     self.logger.debug(f"Created game-specific directory: {dir_path}")
+            
+            # CRITICAL: Create game-specific Documents directories in Wine prefix
+            # This is required for USVFS to virtualize profile INI files on first launch
+            if game_name in game_docs_dirs:
+                docs_dir_name = game_docs_dirs[game_name]
+                
+                # Find compatdata path for this AppID
+                from ..handlers.path_handler import PathHandler
+                path_handler = PathHandler()
+                compatdata_path = path_handler.find_compat_data(appid)
+                
+                if compatdata_path:
+                    # Create Documents/My Games/{GameName} in Wine prefix
+                    wine_docs_path = os.path.join(
+                        str(compatdata_path),
+                        "pfx",
+                        "drive_c",
+                        "users",
+                        "steamuser",
+                        "Documents",
+                        "My Games",
+                        docs_dir_name
+                    )
+                    
+                    try:
+                        os.makedirs(wine_docs_path, exist_ok=True)
+                        self.logger.info(f"Created Wine prefix Documents directory for USVFS: {wine_docs_path}")
+                        self.logger.debug(f"This allows USVFS to virtualize profile INI files on first launch")
+                    except Exception as e:
+                        self.logger.warning(f"Could not create Wine prefix Documents directory {wine_docs_path}: {e}")
+                        # Don't fail completely - this is a first-launch optimization
+                else:
+                    self.logger.warning(f"Could not find compatdata path for AppID {appid}, skipping Wine prefix Documents directory creation")
+                    self.logger.debug("Wine prefix Documents directories will be created when game runs for first time")
             
             return True
         except Exception as e:

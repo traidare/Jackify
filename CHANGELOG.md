@@ -1,5 +1,29 @@
 # Jackify Changelog
 
+## v0.2.1 - Wabbajack Installer and ENB Support
+**Release Date:** 2025-01-12
+
+### Major Features
+- **Automated Wabbajack Installation**: While I work on Non-Premium support, there is still a call for Wabbajack via Proton. The existing legacy bash script has been proving troublesome for some users, so I've added this as a new feature within Jackify. My aim is still to not need this in future, once Jackify can cover Non-Premium accounts.
+- **ENB Detection and Configuration**: Automatic detection and configuration of `enblocal.ini` with `LinuxVersion=true` for all supported games
+- **ENB Proton Warning**: Dedicated dialog with Proton version recommendations when ENB is detected
+
+### Critical Bug Fixes
+- **OAuth Token Stale State**: Re-check authentication before engine launch to prevent stale token errors after revocation
+- **FNV SD Card Registry**: Fixed launcher not recognizing game on SD cards (uses `D:` drive for SD, `Z:` for internal)
+- **CLI FILE_PROGRESS Spam**: Filter verbose output to preserve single-line progress updates
+- **Steam Double Restart**: Removed legacy code causing double restart during configuration
+- **TTW Installer lz4**: Fixed bundled lz4 detection by setting correct working directory
+
+### Improvements
+- **Winetricks Bundling**: Bundled critical dependencies (wget, sha256sum, unzip, 7z) for improved reliability
+- **UI/UX**: Removed per-file download speeds to match Wabbajack upstream
+- **Code Cleanup**: Removed PyInstaller references, use AppImage detection only
+- **Wabbajack Installer UI**: Removed unused Process Monitor tab, improved Activity window with detailed step information
+- **Steam AppID Overflow Fix**: Changed AppID handling to string type to prevent overflow errors with large Steam AppIDs
+
+---
+
 ## v0.2.0.10 - Registry & Hashing Fixes
 **Release Date:** 2025-01-04
 
