@@ -14,15 +14,7 @@
 - **Issue #133**: Updated VDF library to 4.0 for improved Steam file format compatibility (protontricks 1.13.1+ support)
 
 ### Features
-- **Download Size Display**: Added total download size display in GB during modlist installation
-- **Download Size Formatting**: Improved display to show MB when remaining download is less than 1GB (fixes "0.0GB remaining" for small files like .wabbajack)
-- **ETA Display**: Added estimated time remaining (ETA) during downloads with smoothing to prevent wild fluctuations
-- **Concurrent Download ETA**: Improved ETA calculation for concurrent downloads by summing speeds from all active files
 - **Wine Component Error Handling**: Enhanced error messages for missing downloaders with platform-specific installation instructions (SteamOS/Steam Deck vs other distros)
-
-### Improvements
-- **Download Progress Tracking**: Enhanced parser to track running totals from all files seen during download phase, improving remaining size/ETA accuracy when engine doesn't report overall totals
-- **Note**: Archive downloads still require engine changes to show complete overall totals (see `docs/PlanOfAction.md` for details)
 
 ### Dependencies
 - **VDF Library**: Updated from PyPI vdf 3.4 to actively maintained solsticegamestudios/vdf 4.0 (used by Gentoo)
