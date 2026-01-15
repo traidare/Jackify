@@ -30,7 +30,7 @@ from jackify.backend.utils.nexus_premium_detector import is_non_premium_indicato
 from jackify.backend.handlers.progress_parser import ProgressStateManager
 from jackify.frontends.gui.widgets.progress_indicator import OverallProgressIndicator
 from jackify.frontends.gui.widgets.file_progress_list import FileProgressList
-from jackify.shared.progress_models import InstallationPhase, InstallationProgress, OperationType
+from jackify.shared.progress_models import InstallationPhase, InstallationProgress, OperationType, FileProgress
 # Modlist gallery (imported at module level to avoid import delay when opening dialog)
 from jackify.frontends.gui.screens.modlist_gallery import ModlistGalleryDialog
 
@@ -2718,7 +2718,6 @@ class InstallModlistScreen(QWidget):
             # Render loop handles smooth updates - just set target state
             
             current_step = progress_state.phase_step
-            from jackify.shared.progress_models import FileProgress, OperationType
 
             display_items = []
 

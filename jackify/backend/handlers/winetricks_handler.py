@@ -266,13 +266,40 @@ class WinetricksHandler:
             self.logger.error(f"Cannot run winetricks: Failed to get Proton wine binary: {e}")
             return False
 
+        # CRITICAL: NEVER add bundled downloaders to PATH - they segfault on some systems
+        # Let winetricks auto-detect system downloaders (aria2c > wget > curl > fetch)
+        # Winetricks will automatically fall back if preferred tool isn't available
+        # We verify at least one exists before proceeding
+        
+        # Quick check: does system have at least one downloader?
+        has_downloader = False
+        for tool in ['aria2c', 'curl', 'wget']:
+            try:
+                result = subprocess.run(['which', tool], capture_output=True, timeout=2, env=os.environ.copy())
+                if result.returncode == 0:
+                    has_downloader = True
+                    self.logger.info(f"System has {tool} available - winetricks will auto-select best option")
+                    break
+            except Exception:
+                pass
+        
+        if not has_downloader:
+            self._handle_missing_downloader_error()
+            return False
+        
+        # Don't set WINETRICKS_DOWNLOADER - let winetricks auto-detect and fall back
+        # This ensures it uses the best available tool and handles fallbacks automatically
+        
         # Set up bundled tools directory for winetricks
-        # Get tools directory from any bundled tool (winetricks, cabextract, etc.)
+        # NEVER add bundled downloaders to PATH - they segfault on some systems
+        # Only bundle non-downloader tools: cabextract, unzip, 7z, xz, sha256sum
         tools_dir = None
         bundled_tools = []
         
         # Check for bundled tools and collect their directory
-        tool_names = ['cabextract', 'wget', 'unzip', '7z', 'xz', 'sha256sum']
+        # Downloaders (aria2c, wget, curl) are NEVER bundled - always use system tools
+        tool_names = ['cabextract', 'unzip', '7z', 'xz', 'sha256sum']
+        
         for tool_name in tool_names:
             bundled_tool = self._get_bundled_tool(tool_name, fallback_to_system=False)
             if bundled_tool:
@@ -280,18 +307,30 @@ class WinetricksHandler:
                 if tools_dir is None:
                     tools_dir = os.path.dirname(bundled_tool)
         
-        # Prepend tools directory to PATH if we have any bundled tools
+        # Add bundled tools to PATH (system PATH first, so system downloaders are found first)
+        # NEVER add bundled downloaders - only archive/utility tools
         if tools_dir:
-            env['PATH'] = f"{tools_dir}:{env.get('PATH', '')}"
-            self.logger.info(f"Using bundled tools directory: {tools_dir}")
-            self.logger.info(f"Bundled tools available: {', '.join(bundled_tools)}")
+            # System PATH first, then bundled tools (so system downloaders are always found first)
+            env['PATH'] = f"{env.get('PATH', '')}:{tools_dir}"
+            bundling_msg = f"Using bundled tools directory (after system PATH): {tools_dir}"
+            self.logger.info(bundling_msg)
+            if status_callback:
+                status_callback(bundling_msg)
+            tools_msg = f"Bundled tools available: {', '.join(bundled_tools)}"
+            self.logger.info(tools_msg)
+            if status_callback:
+                status_callback(tools_msg)
         else:
             self.logger.debug("No bundled tools found, relying on system PATH")
 
         # CRITICAL: Check for winetricks dependencies BEFORE attempting installation
         # This helps diagnose failures on systems where dependencies are missing
-        self.logger.info("=== Checking winetricks dependencies ===")
+        deps_check_msg = "=== Checking winetricks dependencies ==="
+        self.logger.info(deps_check_msg)
+        if status_callback:
+            status_callback(deps_check_msg)
         missing_deps = []
+        bundled_tools_list = ['aria2c', 'wget', 'unzip', '7z', 'xz', 'sha256sum', 'cabextract']
         dependency_checks = {
             'wget': 'wget',
             'curl': 'curl',
@@ -308,23 +347,30 @@ class WinetricksHandler:
             if isinstance(commands, str):
                 commands = [commands]
             
-            # First check for bundled version
-            bundled_tool = None
-            for cmd in commands:
-                bundled_tool = self._get_bundled_tool(cmd, fallback_to_system=False)
-                if bundled_tool:
-                    self.logger.info(f"  ✓ {dep_name}: {bundled_tool} (bundled)")
-                    found = True
-                    break
+            # Check for bundled version only for tools we bundle
+            if dep_name in bundled_tools_list:
+                bundled_tool = None
+                for cmd in commands:
+                    bundled_tool = self._get_bundled_tool(cmd, fallback_to_system=False)
+                    if bundled_tool:
+                        dep_msg = f"  ✓ {dep_name}: {bundled_tool} (bundled)"
+                        self.logger.info(dep_msg)
+                        if status_callback:
+                            status_callback(dep_msg)
+                        found = True
+                        break
             
-            # If not bundled, check system PATH
+            # Check system PATH if not found bundled
             if not found:
                 for cmd in commands:
                     try:
                         result = subprocess.run(['which', cmd], capture_output=True, timeout=2)
                         if result.returncode == 0:
                             cmd_path = result.stdout.decode().strip()
-                            self.logger.info(f"  ✓ {dep_name}: {cmd_path} (system)")
+                            dep_msg = f"  ✓ {dep_name}: {cmd_path} (system)"
+                            self.logger.info(dep_msg)
+                            if status_callback:
+                                status_callback(dep_msg)
                             found = True
                             break
                     except Exception:
@@ -332,12 +378,41 @@ class WinetricksHandler:
             
             if not found:
                 missing_deps.append(dep_name)
-                self.logger.warning(f"  ✗ {dep_name}: NOT FOUND (neither bundled nor system)")
+                if dep_name in bundled_tools_list:
+                    self.logger.warning(f"  ✗ {dep_name}: NOT FOUND (neither bundled nor system)")
+                else:
+                    self.logger.warning(f"  ✗ {dep_name}: NOT FOUND (system only - not bundled)")
         
         if missing_deps:
-            self.logger.warning(f"Missing winetricks dependencies: {', '.join(missing_deps)}")
-            self.logger.warning("Winetricks may fail if these are required for component installation")
-            self.logger.warning("Critical dependencies: wget/curl/aria2c (download), unzip/7z (extract)")
+            # Separate critical vs optional dependencies
+            download_deps = [d for d in missing_deps if d in ['wget', 'curl', 'aria2c']]
+            critical_deps = [d for d in missing_deps if d not in ['aria2c']]
+            optional_deps = [d for d in missing_deps if d in ['aria2c']]
+            
+            if critical_deps:
+                self.logger.warning(f"Missing critical winetricks dependencies: {', '.join(critical_deps)}")
+                self.logger.warning("Winetricks may fail if these are required for component installation")
+            
+            if optional_deps:
+                self.logger.info(f"Optional dependencies not found (will use alternatives): {', '.join(optional_deps)}")
+                self.logger.info("aria2c is optional - winetricks will use wget/curl if available")
+            
+            # Special warning if ALL downloaders are missing
+            all_downloaders = {'wget', 'curl', 'aria2c'}
+            missing_downloaders = set(download_deps)
+            if missing_downloaders == all_downloaders:
+                self.logger.error("=" * 80)
+                self.logger.error("CRITICAL: No download tools found (wget, curl, or aria2c)")
+                self.logger.error("Winetricks requires at least ONE download tool to install components")
+                self.logger.error("")
+                self.logger.error("SOLUTION: Install one of the following:")
+                self.logger.error("  - aria2c (preferred): sudo apt install aria2  # or equivalent for your distro")
+                self.logger.error("  - curl: sudo apt install curl  # or equivalent for your distro")
+                self.logger.error("  - wget: sudo apt install wget  # or equivalent for your distro")
+                self.logger.error("=" * 80)
+            else:
+                self.logger.warning("Critical dependencies: wget/curl (download), unzip/7z (extract)")
+                self.logger.info("Optional dependencies: aria2c (preferred but not required)")
         else:
             self.logger.info("All winetricks dependencies found")
         self.logger.info("========================================")
@@ -385,11 +460,17 @@ class WinetricksHandler:
 
         # Choose installation method based on user preference
         if method == 'system_protontricks':
+            self.logger.info("=" * 80)
+            self.logger.info("USING PROTONTRICKS")
+            self.logger.info("=" * 80)
             self.logger.info("Using system protontricks for all components")
             return self._install_components_protontricks_only(components_to_install, wineprefix, game_var, status_callback)
         # else: method == 'winetricks' (default behavior continues below)
 
         # Install all components together with winetricks (faster)
+        self.logger.info("=" * 80)
+        self.logger.info("USING WINETRICKS")
+        self.logger.info("=" * 80)
         max_attempts = 3
         winetricks_failed = False
         last_error_details = None
@@ -472,8 +553,7 @@ class WinetricksHandler:
                         'attempt': attempt
                     }
 
-                    # CRITICAL: Always log full error details (not just in debug mode)
-                    # This helps diagnose failures on systems we can't replicate
+                    # Log full error details to help diagnose failures
                     self.logger.error("=" * 80)
                     self.logger.error(f"WINETRICKS FAILED (Attempt {attempt}/{max_attempts})")
                     self.logger.error(f"Return Code: {result.returncode}")
@@ -521,6 +601,10 @@ class WinetricksHandler:
                         self.logger.error("  - Component download may be corrupted")
                         self.logger.error("  - Network issue or upstream file change")
                         diagnostic_found = True
+                    elif ("please install" in stderr_lower or "please install" in stdout_lower) and ("wget" in stderr_lower or "aria2c" in stderr_lower or "curl" in stderr_lower or "wget" in stdout_lower or "aria2c" in stdout_lower or "curl" in stdout_lower):
+                        # Winetricks explicitly says to install a downloader
+                        self._handle_missing_downloader_error()
+                        diagnostic_found = True
                     elif "curl" in stderr_lower or "wget" in stderr_lower or "aria2c" in stderr_lower:
                         self.logger.error("DIAGNOSTIC: Download tool (curl/wget/aria2c) issue")
                         self.logger.error("  - Network connectivity problem or missing download tool")
@@ -534,11 +618,6 @@ class WinetricksHandler:
                     elif "unzip" in stderr_lower or "7z" in stderr_lower:
                         self.logger.error("DIAGNOSTIC: Archive extraction tool (unzip/7z) missing or failed")
                         self.logger.error("  - Required for extracting zip/7z archives")
-                        self.logger.error("  - Check dependency check output above")
-                        diagnostic_found = True
-                    elif "please install" in stderr_lower:
-                        self.logger.error("DIAGNOSTIC: Winetricks explicitly requesting dependency installation")
-                        self.logger.error("  - Winetricks detected missing required tool")
                         self.logger.error("  - Check dependency check output above")
                         diagnostic_found = True
                     
@@ -611,6 +690,9 @@ class WinetricksHandler:
                     self.logger.warning("AUTOMATIC FALLBACK: Winetricks failed, attempting protontricks fallback...")
                     self.logger.warning(f"Last winetricks error: {last_error_details}")
                     self.logger.warning("=" * 80)
+                    self.logger.info("=" * 80)
+                    self.logger.info("USING PROTONTRICKS")
+                    self.logger.info("=" * 80)
 
                     # Attempt fallback to protontricks
                     fallback_success = self._install_components_protontricks_only(components_to_install, wineprefix, game_var, status_callback)
@@ -630,6 +712,53 @@ class WinetricksHandler:
                 return False
 
         return False
+
+    def _handle_missing_downloader_error(self):
+        """Handle winetricks error indicating missing downloader - provide platform-specific instructions"""
+        from ..services.platform_detection_service import PlatformDetectionService
+        
+        platform = PlatformDetectionService.get_instance()
+        is_steamos = platform.is_steamdeck
+        
+        self.logger.error("=" * 80)
+        self.logger.error("CRITICAL: Winetricks cannot find a downloader (curl, wget, or aria2c)")
+        self.logger.error("")
+        
+        if is_steamos:
+            self.logger.error("STEAMOS/STEAM DECK DETECTED")
+            self.logger.error("")
+            self.logger.error("SteamOS has a read-only filesystem. To install packages:")
+            self.logger.error("")
+            self.logger.error("1. Disable read-only mode (required for package installation):")
+            self.logger.error("   sudo steamos-readonly disable")
+            self.logger.error("")
+            self.logger.error("2. Install curl (recommended - most reliable):")
+            self.logger.error("   sudo pacman -S curl")
+            self.logger.error("")
+            self.logger.error("3. (Optional) Re-enable read-only mode after installation:")
+            self.logger.error("   sudo steamos-readonly enable")
+            self.logger.error("")
+            self.logger.error("Note: curl is usually pre-installed on SteamOS. If missing,")
+            self.logger.error("      the above steps will install it.")
+        else:
+            self.logger.error("SOLUTION: Install one of the following downloaders:")
+            self.logger.error("")
+            self.logger.error("  For Debian/Ubuntu/PopOS:")
+            self.logger.error("    sudo apt install curl  # or: sudo apt install wget")
+            self.logger.error("")
+            self.logger.error("  For Fedora/RHEL/CentOS:")
+            self.logger.error("    sudo dnf install curl  # or: sudo dnf install wget")
+            self.logger.error("")
+            self.logger.error("  For Arch/Manjaro:")
+            self.logger.error("    sudo pacman -S curl  # or: sudo pacman -S wget")
+            self.logger.error("")
+            self.logger.error("  For openSUSE:")
+            self.logger.error("    sudo zypper install curl  # or: sudo zypper install wget")
+            self.logger.error("")
+            self.logger.error("Note: Most Linux distributions include curl by default.")
+            self.logger.error("      If curl is missing, install it using your package manager.")
+        
+        self.logger.error("=" * 80)
 
     def _reorder_components_for_installation(self, components: list) -> list:
         """

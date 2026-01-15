@@ -3057,19 +3057,20 @@ echo Prefix creation complete.
                 # SD card paths use D: drive
                 # Strip SD card prefix using the same method as other handlers
                 relative_sd_path_str = PathHandler._strip_sdcard_path_prefix(linux_path)
-                wine_path = relative_sd_path_str.replace('/', '\\')
+                wine_path = relative_sd_path_str.replace('/', '\\\\')
                 wine_drive = "D:"
                 logger.debug(f"SD card path detected: {new_path} -> D:\\{wine_path}")
             else:
                 # Regular paths use Z: drive with full path
-                wine_path = new_path.strip('/').replace('/', '\\')
+                wine_path = new_path.strip('/').replace('/', '\\\\')
                 wine_drive = "Z:"
                 logger.debug(f"Regular path: {new_path} -> Z:\\{wine_path}")
             
             # Update existing path if found
             for i, line in enumerate(lines):
                 stripped_line = line.strip()
-                if stripped_line == section_name:
+                # Case-insensitive comparison for section name (Wine registry is case-insensitive)
+                if stripped_line.split(']')[0].lower() + ']' == section_name.lower() if ']' in stripped_line else stripped_line.lower() == section_name.lower():
                     in_target_section = True
                 elif stripped_line.startswith('[') and in_target_section:
                     in_target_section = False
@@ -3265,7 +3266,7 @@ echo Prefix creation complete.
             "22380": {  # Fallout New Vegas AppID
                 "name": "Fallout New Vegas",
                 "common_names": ["Fallout New Vegas", "FalloutNV"],
-                "registry_section": "[Software\\\\WOW6432Node\\\\bethesda softworks\\\\falloutnv]",
+                "registry_section": "[Software\\\\Wow6432Node\\\\bethesda softworks\\\\falloutnv]",
                 "path_key": "Installed Path"
             },
             "976620": {  # Enderal Special Edition AppID

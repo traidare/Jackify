@@ -1495,7 +1495,8 @@ class JackifyMainWindow(QMainWindow):
             4: "Install Modlist Screen",
             5: "Install TTW Screen",
             6: "Configure New Modlist",
-            7: "Configure Existing Modlist",
+            7: "Wabbajack Installer",
+            8: "Configure Existing Modlist",
         }
         screen_name = screen_names.get(index, f"Unknown Screen (Index {index})")
         widget = self.stacked_widget.widget(index)
@@ -1919,7 +1920,6 @@ def main():
         debug_mode = True
         # Temporarily save CLI debug flag to config so engine can see it
         config_handler.set('debug_mode', True)
-        print("[DEBUG] CLI --debug flag detected, saved debug_mode=True to config")
     import logging
 
     # Initialize file logging on root logger so all modules inherit it
@@ -1928,13 +1928,22 @@ def main():
     # Only rotate log file when debug mode is enabled
     if debug_mode:
         logging_handler.rotate_log_for_logger('jackify_gui', 'jackify-gui.log')
-    root_logger = logging_handler.setup_logger('', 'jackify-gui.log', is_general=True)  # Empty name = root logger
-
+    root_logger = logging_handler.setup_logger('', 'jackify-gui.log', is_general=True, debug_mode=debug_mode)  # Empty name = root logger
+    
+    # CRITICAL: Set root logger level BEFORE any child loggers are used
+    # This ensures DEBUG messages from child loggers propagate correctly
     if debug_mode:
-        logging.getLogger().setLevel(logging.DEBUG)
-        print("[Jackify] Debug mode enabled (from config or CLI)")
+        root_logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)  # Also set on root via getLogger() for compatibility
+        root_logger.debug("CLI --debug flag detected, saved debug_mode=True to config")
+        root_logger.info("Debug mode enabled (from config or CLI)")
     else:
+        root_logger.setLevel(logging.WARNING)
         logging.getLogger().setLevel(logging.WARNING)
+    
+    # Root logger should not propagate (it's the top level)
+    # Child loggers will propagate to root logger by default (unless they explicitly set propagate=False)
+    root_logger.propagate = False
 
     dev_mode = '--dev' in sys.argv
 
@@ -1990,7 +1999,7 @@ def main():
                     icon = QIcon(path)
                     if not icon.isNull():
                         if debug_mode:
-                            print(f"[DEBUG] Using AppImage icon: {path}")
+                            logging.getLogger().debug(f"Using AppImage icon: {path}")
                         break
     
     # Priority 3: Fallback to any PNG in assets directory
@@ -2001,8 +2010,8 @@ def main():
             icon = QIcon(try_path)
     
     if debug_mode:
-        print(f"[DEBUG] Final icon path: {icon_path}")
-        print(f"[DEBUG] Icon is null: {icon.isNull()}")
+        logging.getLogger().debug(f"Final icon path: {icon_path}")
+        logging.getLogger().debug(f"Icon is null: {icon.isNull()}")
     
     app.setWindowIcon(icon)
     window = JackifyMainWindow(dev_mode=dev_mode)

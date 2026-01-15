@@ -106,6 +106,77 @@ class OverallProgressIndicator(QWidget):
         if not display_text or display_text == "Processing...":
             display_text = progress.phase_name or progress.phase.value.title() or "Processing..."
         
+        # Add total download size, remaining size (MB/GB), and ETA for download phase
+        from jackify.shared.progress_models import InstallationPhase, FileProgress
+        if progress.phase == InstallationPhase.DOWNLOAD:
+            # Try to get overall download totals - either from data_total or aggregate from active_files
+            total_bytes = progress.data_total
+            processed_bytes = progress.data_processed
+            using_aggregated = False
+            
+            # If data_total is 0, try to aggregate from active_files
+            if total_bytes == 0 and progress.active_files:
+                total_bytes = sum(f.total_size for f in progress.active_files if f.total_size > 0)
+                processed_bytes = sum(f.current_size for f in progress.active_files if f.current_size > 0)
+                using_aggregated = True
+            
+            # Add remaining download size (MB or GB) if available
+            if total_bytes > 0:
+                remaining_bytes = total_bytes - processed_bytes
+                if remaining_bytes > 0:
+                    # Format as MB if less than 1GB, otherwise GB
+                    if remaining_bytes < (1024.0 ** 3):
+                        remaining_mb = remaining_bytes / (1024.0 ** 2)
+                        display_text += f" | {remaining_mb:.1f}MB remaining"
+                    else:
+                        remaining_gb = remaining_bytes / (1024.0 ** 3)
+                        display_text += f" | {remaining_gb:.1f}GB remaining"
+                    
+                    # Calculate ETA - prefer aggregated calculation for concurrent downloads
+                    eta_seconds = -1.0
+                    if using_aggregated:
+                        # For concurrent downloads: sum all active download speeds (not average)
+                        # This gives us the combined throughput
+                        active_speeds = [f.speed for f in progress.active_files if f.speed > 0]
+                        if active_speeds:
+                            combined_speed = sum(active_speeds)  # Sum speeds for concurrent downloads
+                            if combined_speed > 0:
+                                eta_seconds = remaining_bytes / combined_speed
+                    else:
+                        # Use the standard ETA calculation from progress model
+                        eta_seconds = progress.get_eta_seconds(use_smoothing=True)
+                    
+                    # Format and display ETA
+                    if eta_seconds > 0:
+                        if eta_seconds < 60:
+                            display_text += f" | ETA: {int(eta_seconds)}s"
+                        elif eta_seconds < 3600:
+                            mins = int(eta_seconds // 60)
+                            secs = int(eta_seconds % 60)
+                            if secs > 0:
+                                display_text += f" | ETA: {mins}m {secs}s"
+                            else:
+                                display_text += f" | ETA: {mins}m"
+                        else:
+                            hours = int(eta_seconds // 3600)
+                            mins = int((eta_seconds % 3600) // 60)
+                            if mins > 0:
+                                display_text += f" | ETA: {hours}h {mins}m"
+                            else:
+                                display_text += f" | ETA: {hours}h"
+            else:
+                # No total size available - try to show ETA if we have speed info from active files
+                if progress.active_files:
+                    active_speeds = [f.speed for f in progress.active_files if f.speed > 0]
+                    if active_speeds:
+                        # Can't calculate accurate ETA without total size, but could show speed
+                        pass
+                # Fallback to standard ETA if available
+                if not using_aggregated:
+                    eta_display = progress.eta_display
+                    if eta_display:
+                        display_text += f" | ETA: {eta_display}"
+        
         self.status_label.setText(display_text)
         
         # Update progress bar if enabled
@@ -150,6 +221,23 @@ class OverallProgressIndicator(QWidget):
                 tooltip_parts.append(f"Step: {progress.phase_progress_text}")
             if progress.data_progress_text:
                 tooltip_parts.append(f"Data: {progress.data_progress_text}")
+            
+            # Add total download size in GB for download phase
+            from jackify.shared.progress_models import InstallationPhase
+            if progress.phase == InstallationPhase.DOWNLOAD and progress.data_total > 0:
+                total_gb = progress.total_download_size_gb
+                remaining_gb = progress.remaining_download_size_gb
+                if total_gb > 0:
+                    tooltip_parts.append(f"Total Download: {total_gb:.2f}GB")
+                if remaining_gb > 0:
+                    tooltip_parts.append(f"Remaining: {remaining_gb:.2f}GB")
+            
+            # Add ETA for download phase
+            if progress.phase == InstallationPhase.DOWNLOAD:
+                eta_display = progress.eta_display
+                if eta_display:
+                    tooltip_parts.append(f"Estimated Time Remaining: {eta_display}")
+            
             if progress.overall_percent > 0:
                 tooltip_parts.append(f"Overall: {progress.overall_percent:.1f}%")
             

@@ -45,19 +45,20 @@ class SuccessDialog(QDialog):
         self.setStyleSheet("QDialog { background: #181818; color: #fff; border-radius: 12px; }" )
         layout = QVBoxLayout(self)
         layout.setSpacing(0)
-        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setContentsMargins(30, 20, 30, 20)  # Reduced top/bottom margins to prevent truncation
 
         # --- Card background for content ---
         card = QFrame(self)
         card.setObjectName("successCard")
         card.setFrameShape(QFrame.StyledPanel)
         card.setFrameShadow(QFrame.Raised)
-        card.setFixedWidth(440)
-        card.setMinimumHeight(380)
+        # Increase card width and reduce margins to maximize text width for 800p screens
+        card.setFixedWidth(460)
+        # Remove fixed minimum height to allow natural sizing based on content
         card.setMaximumHeight(16777215)  # Remove max height constraint to allow expansion
         card_layout = QVBoxLayout(card)
         card_layout.setSpacing(12)
-        card_layout.setContentsMargins(28, 28, 28, 28)
+        card_layout.setContentsMargins(20, 28, 20, 28)  # Reduced left/right margins to give more text width
         card.setStyleSheet(
             "QFrame#successCard { "
             "  background: #23272e; "
@@ -81,29 +82,38 @@ class SuccessDialog(QDialog):
         card_layout.addWidget(title_label)
 
         # Personalized success message (modlist name in Jackify Blue, but less bold)
-        message_text = self._build_success_message()
         modlist_name_html = f'<span style="color:#3fb7d6; font-size:17px; font-weight:500;">{self.modlist_name}</span>'
         if self.workflow_type == "install":
-            message_html = f"<span style='font-size:15px;'>{modlist_name_html} installed successfully!</span>"
+            suffix_text = "installed successfully!"
+        elif self.workflow_type == "configure_new":
+            suffix_text = "configured successfully!"
+        elif self.workflow_type == "configure_existing":
+            suffix_text = "configuration updated successfully!"
         else:
-            message_html = message_text
+            # Fallback for other workflow types
+            message_text = self._build_success_message()
+            suffix_text = message_text.replace(self.modlist_name, "").strip()
+        
+        # Build complete message with proper HTML formatting - ensure both parts are visible
+        message_html = f'{modlist_name_html} <span style="font-size:15px; color:#e0e0e0;">{suffix_text}</span>'
         message_label = QLabel(message_html)
         # Center the success message within the wider card for all screen sizes
         message_label.setAlignment(Qt.AlignCenter)
         message_label.setWordWrap(True)
-        message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        message_label.setMinimumHeight(30)  # Ensure label has minimum height to be visible
+        message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         message_label.setStyleSheet(
             "QLabel { "
             "  font-size: 15px; "
             "  color: #e0e0e0; "
             "  line-height: 1.3; "
             "  margin-bottom: 6px; "
-            "  word-wrap: break-word; "
+            "  padding: 0px; "
             "}"
         )
         message_label.setTextFormat(Qt.RichText)
-        # Ensure the label itself is centered in the card layout and uses full width
-        card_layout.addWidget(message_label, alignment=Qt.AlignCenter)
+        # Ensure the label uses full width of the card before wrapping
+        card_layout.addWidget(message_label)
 
         # Time taken
         time_label = QLabel(f"Completed in {self.time_taken}")
@@ -123,7 +133,7 @@ class SuccessDialog(QDialog):
         next_steps_label = QLabel(next_steps_text)
         next_steps_label.setAlignment(Qt.AlignCenter)
         next_steps_label.setWordWrap(True)
-        next_steps_label.setMinimumHeight(100)
+        # Remove fixed minimum height to allow natural sizing
         next_steps_label.setStyleSheet(
             "QLabel { "
             "  font-size: 13px; "

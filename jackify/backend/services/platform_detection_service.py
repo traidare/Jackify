@@ -41,9 +41,9 @@ class PlatformDetectionService:
             if os.path.exists('/etc/os-release'):
                 with open('/etc/os-release', 'r') as f:
                     content = f.read().lower()
-                    if 'steamdeck' in content:
+                    if 'steamdeck' in content or 'steamos' in content:
                         self._is_steamdeck = True
-                        logger.info("Steam Deck platform detected")
+                        logger.info("Steam Deck/SteamOS platform detected")
                     else:
                         logger.debug("Non-Steam Deck Linux platform detected")
             else:

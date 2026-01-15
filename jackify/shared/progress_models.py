@@ -6,7 +6,7 @@ Used by both parser and GUI components.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from enum import Enum
 import time
 
@@ -97,6 +97,11 @@ class InstallationProgress:
     texture_conversion_total: int = 0  # Total textures to convert
     bsa_building_current: int = 0  # Current BSA being built
     bsa_building_total: int = 0  # Total BSAs to build
+    # ETA smoothing: track speed and data history for stable ETA calculation
+    _speed_history: List[Tuple[float, float]] = field(default_factory=list)  # [(timestamp, speed_bytes_per_sec), ...]
+    _data_history: List[Tuple[float, int]] = field(default_factory=list)  # [(timestamp, data_processed_bytes), ...]
+    _last_eta_update: float = 0.0  # Last time ETA was calculated/displayed
+    _smoothed_eta_seconds: float = -1.0  # Cached smoothed ETA value
     
     def __post_init__(self):
         """Ensure percent is in valid range."""
@@ -121,6 +126,185 @@ class InstallationProgress:
             return f"{FileProgress._format_bytes(self.data_processed)}"
         else:
             return ""
+    
+    @property
+    def total_download_size_gb(self) -> float:
+        """Get total download size in GB (0 if unknown)."""
+        if self.data_total > 0:
+            return self.data_total / (1024.0 ** 3)
+        return 0.0
+    
+    @property
+    def remaining_download_size_gb(self) -> float:
+        """Get remaining download size in GB (0 if unknown or complete)."""
+        if self.data_total > 0 and self.data_processed < self.data_total:
+            return (self.data_total - self.data_processed) / (1024.0 ** 3)
+        return 0.0
+    
+    def _update_speed_history(self, operation: str, speed: float):
+        """Update speed history for ETA smoothing."""
+        if operation.lower() != 'download':
+            return
+        
+        current_time = time.time()
+        
+        # Add current speed to history
+        self._speed_history.append((current_time, speed))
+        
+        # Keep only last 60 seconds of history
+        cutoff_time = current_time - 60.0
+        self._speed_history = [(t, s) for t, s in self._speed_history if t >= cutoff_time]
+    
+    def _update_data_history(self):
+        """Update data history for calculating average speed from data processed over time."""
+        if self.data_processed <= 0:
+            return
+        
+        current_time = time.time()
+        
+        # Only add if data has changed or enough time has passed (avoid spam)
+        if self._data_history:
+            last_time, last_data = self._data_history[-1]
+            # Only add if data changed by at least 1MB or 5 seconds passed
+            if self.data_processed == last_data and (current_time - last_time) < 5.0:
+                return
+        
+        self._data_history.append((current_time, self.data_processed))
+        
+        # Keep only last 60 seconds
+        cutoff_time = current_time - 60.0
+        self._data_history = [(t, d) for t, d in self._data_history if t >= cutoff_time]
+    
+    def _get_average_speed(self, window_seconds: float = 30.0) -> float:
+        """
+        Get average download speed over the last N seconds.
+        Uses both speed history and data history for more accurate calculation.
+        
+        Args:
+            window_seconds: Time window to average over (default 30 seconds)
+            
+        Returns:
+            Average speed in bytes per second, or -1 if insufficient data
+        """
+        current_time = time.time()
+        cutoff_time = current_time - window_seconds
+        
+        # Method 1: Use speed history if available
+        recent_speeds = [s for t, s in self._speed_history if t >= cutoff_time]
+        if len(recent_speeds) >= 3:  # Need at least 3 samples
+            return sum(recent_speeds) / len(recent_speeds)
+        
+        # Method 2: Calculate from data history (more accurate for varying speeds)
+        recent_data = [(t, d) for t, d in self._data_history if t >= cutoff_time]
+        if len(recent_data) >= 2:
+            # Calculate average speed from data processed over time
+            oldest = recent_data[0]
+            newest = recent_data[-1]
+            time_diff = newest[0] - oldest[0]
+            data_diff = newest[1] - oldest[1]
+            if time_diff > 0:
+                return data_diff / time_diff
+        
+        # Fallback: Use current instantaneous speed
+        return self.get_speed('download')
+    
+    def get_eta_seconds(self, use_smoothing: bool = True) -> float:
+        """
+        Calculate estimated time remaining in seconds.
+        Uses smoothed/averaged speed to prevent wild fluctuations.
+        
+        Args:
+            use_smoothing: If True, use averaged speed over last 30 seconds (default True)
+            
+        Returns:
+            ETA in seconds, or -1 if ETA cannot be calculated
+        """
+        # Only calculate ETA during download phase
+        if self.phase != InstallationPhase.DOWNLOAD:
+            return -1.0
+        
+        # Need both remaining data and current speed
+        if self.data_total <= 0 or self.data_processed >= self.data_total:
+            return -1.0
+        
+        # Update data history for speed calculation
+        self._update_data_history()
+        
+        remaining_bytes = self.data_total - self.data_processed
+        
+        # Get speed (smoothed or instantaneous)
+        if use_smoothing:
+            download_speed = self._get_average_speed(window_seconds=30.0)
+        else:
+            download_speed = self.get_speed('download')
+        
+        if download_speed <= 0:
+            return -1.0
+        
+        # Calculate ETA
+        eta_seconds = remaining_bytes / download_speed
+        
+        # Apply exponential smoothing to ETA itself to prevent wild jumps
+        # Only update if we have a previous value and the change isn't too extreme
+        if use_smoothing and self._smoothed_eta_seconds > 0:
+            # If new ETA is wildly different (>50% change), use weighted average
+            # This prevents temporary speed drops from causing huge ETA jumps
+            change_ratio = abs(eta_seconds - self._smoothed_eta_seconds) / max(self._smoothed_eta_seconds, 1.0)
+            if change_ratio > 0.5:
+                # Large change - use 70% old, 30% new (smooth transition)
+                eta_seconds = 0.7 * self._smoothed_eta_seconds + 0.3 * eta_seconds
+            else:
+                # Small change - use 85% old, 15% new (quick but stable)
+                eta_seconds = 0.85 * self._smoothed_eta_seconds + 0.15 * eta_seconds
+        
+        # Update cached value
+        self._smoothed_eta_seconds = eta_seconds
+        
+        return eta_seconds
+    
+    @staticmethod
+    def _format_eta(seconds: float) -> str:
+        """Format ETA seconds into human-readable string like '2h 15m' or '45m 30s'."""
+        if seconds < 0:
+            return ""
+        
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        
+        if hours > 0:
+            if minutes > 0:
+                return f"{hours}h {minutes}m"
+            else:
+                return f"{hours}h"
+        elif minutes > 0:
+            if secs > 0:
+                return f"{minutes}m {secs}s"
+            else:
+                return f"{minutes}m"
+        else:
+            return f"{secs}s"
+    
+    @property
+    def eta_display(self) -> str:
+        """
+        Get formatted ETA display string.
+        Only updates every 5 seconds to prevent UI flicker from rapid changes.
+        """
+        current_time = time.time()
+        
+        # Only recalculate ETA every 5 seconds to prevent wild fluctuations in display
+        if current_time - self._last_eta_update < 5.0 and self._smoothed_eta_seconds > 0:
+            # Use cached value if recently calculated
+            eta_seconds = self._smoothed_eta_seconds
+        else:
+            # Recalculate with smoothing
+            eta_seconds = self.get_eta_seconds(use_smoothing=True)
+            self._last_eta_update = current_time
+        
+        if eta_seconds < 0:
+            return ""
+        return self._format_eta(eta_seconds)
     
     def get_overall_speed_display(self) -> str:
         """Get overall speed display from aggregate speeds reported by engine."""
@@ -312,4 +496,8 @@ class InstallationProgress:
         self.speeds[op_key] = max(0.0, speed)
         self.speed_timestamps[op_key] = time.time()
         self.timestamp = time.time()
+        
+        # Update speed history for ETA smoothing
+        if speed > 0:
+            self._update_speed_history(op_key, speed)
 

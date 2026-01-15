@@ -721,59 +721,75 @@ class FileSystemHandler:
         return True
 
     @staticmethod
-    def set_ownership_and_permissions_sudo(path: Path, status_callback=None) -> bool:
-        """Change ownership and permissions using sudo (robust, with timeout and re-prompt)."""
+    def verify_ownership_and_permissions(path: Path) -> tuple[bool, str]:
+        """
+        Verify and fix ownership/permissions for modlist directory.
+        Returns (success, error_message).
+
+        Logic:
+        - If files NOT owned by user: Can't fix without sudo, return error with instructions
+        - If files owned by user: Try to fix permissions ourselves with chmod
+        """
         if not path.exists():
             logger.error(f"Path does not exist: {path}")
-            return False
-        # Check if all files/dirs are already owned by the user
-        if FileSystemHandler.all_owned_by_user(path):
-            logger.info(f"All files in {path} are already owned by the current user. Skipping sudo chown/chmod.")
-            return True
+            return False, f"Path does not exist: {path}"
+
+        # Check if all files/dirs are owned by the user
+        if not FileSystemHandler.all_owned_by_user(path):
+            # Files not owned by us - need sudo to fix
+            try:
+                user_name = pwd.getpwuid(os.geteuid()).pw_name
+                group_name = grp.getgrgid(os.geteuid()).gr_name
+            except KeyError:
+                logger.error("Could not determine current user or group name.")
+                return False, "Could not determine current user or group name."
+
+            logger.error(f"Ownership issue detected: Some files in {path} are not owned by {user_name}")
+
+            error_msg = (
+                f"\nOwnership Issue Detected\n"
+                f"Some files in the modlist directory are not owned by your user account.\n"
+                f"This can happen if the modlist was copied from another location or installed by a different user.\n\n"
+                f"To fix this, open a terminal and run:\n\n"
+                f"  sudo chown -R {user_name}:{group_name} \"{path}\"\n"
+                f"  sudo chmod -R 755 \"{path}\"\n\n"
+                f"After running these commands, retry the configuration process."
+            )
+            return False, error_msg
+
+        # Files are owned by us - try to fix permissions ourselves
+        logger.info(f"Files in {path} are owned by current user, verifying permissions...")
         try:
-            user_name = pwd.getpwuid(os.geteuid()).pw_name
-            group_name = grp.getgrgid(os.geteuid()).gr_name
-        except KeyError:
-            logger.error("Could not determine current user or group name.")
-            return False
+            result = subprocess.run(
+                ['chmod', '-R', '755', str(path)],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                logger.info(f"Permissions set successfully for {path}")
+                return True, ""
+            else:
+                logger.warning(f"chmod returned non-zero but we'll continue: {result.stderr}")
+                # Non-critical if chmod fails on our own files, might be read-only filesystem or similar
+                return True, ""
+        except Exception as e:
+            logger.warning(f"Error running chmod: {e}, continuing anyway")
+            # Non-critical error, we own the files so proceed
+            return True, ""
 
-        log_msg = f"Applying ownership/permissions for {path} (user: {user_name}, group: {group_name}) via sudo."
-        logger.info(log_msg)
-        if status_callback:
-            status_callback(f"Setting ownership/permissions for {os.path.basename(str(path))}...")
-        else:
-            print(f'\n{COLOR_PROMPT}Adjusting permissions for {path} (may require sudo password)...{COLOR_RESET}')
-
-        def run_sudo_with_retries(cmd, desc, max_retries=3, timeout=300):
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"Running sudo command (attempt {attempt+1}/{max_retries}): {' '.join(cmd)}")
-                    result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
-                    if result.returncode == 0:
-                        return True
-                    else:
-                        logger.error(f"sudo {desc} failed. Error: {result.stderr.strip()}")
-                        print(f"Error: Failed to {desc}. Check logs.")
-                        return False
-                except subprocess.TimeoutExpired:
-                    logger.error(f"sudo {desc} timed out (attempt {attempt+1}/{max_retries}).")
-                    print(f"\nSudo prompt timed out after {timeout} seconds. Please try again.")
-                    # Flush input if possible, then retry
-            print(f"Failed to {desc} after {max_retries} attempts. Aborting.")
-            return False
-
-        # Run chown with retries
-        chown_command = ['sudo', 'chown', '-R', f'{user_name}:{group_name}', str(path)]
-        if not run_sudo_with_retries(chown_command, "change ownership"):
-            return False
-        print()
-        # Run chmod with retries
-        chmod_command = ['sudo', 'chmod', '-R', '755', str(path)]
-        if not run_sudo_with_retries(chmod_command, "set permissions"):
-            return False
-        print()
-        logger.info("Permissions set successfully.")
-        return True
+    @staticmethod
+    def set_ownership_and_permissions_sudo(path: Path, status_callback=None) -> bool:
+        """
+        DEPRECATED: Use verify_ownership_and_permissions() instead.
+        This method is kept for backwards compatibility but no longer executes sudo.
+        """
+        logger.warning("set_ownership_and_permissions_sudo() is deprecated - use verify_ownership_and_permissions()")
+        success, error_msg = FileSystemHandler.verify_ownership_and_permissions(path)
+        if not success:
+            logger.error(error_msg)
+            print(error_msg)
+        return success
 
     def download_file(self, url: str, destination_path: Path, overwrite: bool = False, quiet: bool = False) -> bool:
         """Downloads a file from a URL to a destination path."""

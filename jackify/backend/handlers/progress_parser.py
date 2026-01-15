@@ -845,6 +845,10 @@ class ProgressStateManager:
         self._wabbajack_entry_name = None
         self._synthetic_flag = "_synthetic_wabbajack"
         self._previous_phase = None  # Track phase changes to reset stale data
+        # Track total download size from all files seen during download phase
+        self._download_files_seen = {}  # filename -> (total_size, max_current_size)
+        self._download_total_bytes = 0  # Running total of all file sizes seen
+        self._download_processed_bytes = 0  # Running total of bytes processed
     
     def process_line(self, line: str) -> bool:
         """
@@ -868,6 +872,12 @@ class ProgressStateManager:
         if parsed.phase and parsed.phase != self.state.phase:
             # Phase is changing - selectively reset stale data from previous phase
             previous_phase = self.state.phase
+            
+            # Reset download tracking when leaving download phase
+            if previous_phase == InstallationPhase.DOWNLOAD:
+                self._download_files_seen = {}
+                self._download_total_bytes = 0
+                self._download_processed_bytes = 0
             
             # Only reset data sizes when transitioning FROM VALIDATE phase
             # Validation phase data sizes are from .wabbajack file and shouldn't persist
@@ -970,6 +980,39 @@ class ProgressStateManager:
                 if parsed.file_progress.operation == OperationType.DOWNLOAD:
                     self._remove_all_wabbajack_entries()
                     self._has_real_wabbajack = True  # Prevent re-adding
+            
+            # Track download totals from all files seen during download phase
+            # This allows us to calculate overall remaining/ETA even when engine doesn't report data_total
+            from jackify.shared.progress_models import OperationType
+            if self.state.phase == InstallationPhase.DOWNLOAD and parsed.file_progress.operation == OperationType.DOWNLOAD:
+                filename = parsed.file_progress.filename
+                total_size = parsed.file_progress.total_size or 0
+                current_size = parsed.file_progress.current_size or 0
+                
+                # Track this file's max size and current progress
+                if filename not in self._download_files_seen:
+                    # New file - add its total size to our running total
+                    if total_size > 0:
+                        self._download_total_bytes += total_size
+                        self._download_files_seen[filename] = (total_size, current_size)
+                        self._download_processed_bytes += current_size
+                else:
+                    # Existing file - update current size and track max
+                    old_total, old_current = self._download_files_seen[filename]
+                    # If total_size increased (file size discovered), update our total
+                    if total_size > old_total:
+                        self._download_total_bytes += (total_size - old_total)
+                    # Update processed bytes (only count increases)
+                    if current_size > old_current:
+                        self._download_processed_bytes += (current_size - old_current)
+                    self._download_files_seen[filename] = (max(old_total, total_size), current_size)
+                
+                # If engine didn't provide data_total, use our aggregated total
+                if self.state.data_total == 0 and self._download_total_bytes > 0:
+                    self.state.data_total = self._download_total_bytes
+                    self.state.data_processed = self._download_processed_bytes
+                    updated = True
+            
             self._augment_file_metrics(parsed.file_progress)
             # Don't add files that are already at 100% unless they're being updated
             # This prevents re-adding completed files
@@ -1023,6 +1066,22 @@ class ProgressStateManager:
                 parsed.completed_filename = None
 
         if parsed.completed_filename:
+            # Track completed files in download totals
+            if self.state.phase == InstallationPhase.DOWNLOAD:
+                filename = parsed.completed_filename
+                # If we were tracking this file, mark it as complete (100% of total)
+                if filename in self._download_files_seen:
+                    old_total, old_current = self._download_files_seen[filename]
+                    # Ensure processed bytes equals total for completed file
+                    if old_current < old_total:
+                        self._download_processed_bytes += (old_total - old_current)
+                        self._download_files_seen[filename] = (old_total, old_total)
+                    # Update state if needed
+                    if self.state.data_total == 0 and self._download_total_bytes > 0:
+                        self.state.data_total = self._download_total_bytes
+                        self.state.data_processed = self._download_processed_bytes
+                        updated = True
+            
             # Try to find existing file in the list
             found_existing = False
             for file_prog in self.state.active_files:

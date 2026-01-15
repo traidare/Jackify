@@ -806,17 +806,18 @@ class ModlistHandler:
             self.logger.warning(f"Error creating Wine prefix Documents directories: {e} (non-critical, continuing)")
         self.logger.info("Step 4.7: Creating Wine prefix Documents directories... Done")
 
-        # Step 5: Ensure permissions of Modlist directory
+        # Step 5: Verify ownership of Modlist directory
         if status_callback:
-            status_callback(f"{self._get_progress_timestamp()} Setting ownership and permissions for modlist directory")
-        self.logger.info("Step 5: Setting ownership and permissions for modlist directory...")
+            status_callback(f"{self._get_progress_timestamp()} Verifying modlist directory ownership")
+        self.logger.info("Step 5: Verifying ownership of modlist directory...")
         # Convert modlist_dir string to Path object for the method
         modlist_path_obj = Path(self.modlist_dir)
-        if not self.filesystem_handler.set_ownership_and_permissions_sudo(modlist_path_obj):
-            self.logger.error("Failed to set ownership/permissions for modlist directory. Configuration aborted.")
-            print("Error: Failed to set permissions for the modlist directory.")
+        success, error_msg = self.filesystem_handler.verify_ownership_and_permissions(modlist_path_obj)
+        if not success:
+            self.logger.error("Ownership verification failed for modlist directory. Configuration aborted.")
+            print(f"\n{COLOR_ERROR}{error_msg}{COLOR_RESET}")
             return False # Abort on failure
-        self.logger.info("Step 5: Setting ownership and permissions... Done")
+        self.logger.info("Step 5: Ownership verification... Done")
 
         # Step 6: Backup ModOrganizer.ini
         if status_callback:

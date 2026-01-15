@@ -5,4 +5,4 @@ This package provides both CLI and GUI interfaces for managing
 Wabbajack modlists natively on Linux systems.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.1.1"

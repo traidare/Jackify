@@ -628,7 +628,7 @@ class ModlistService:
         except Exception as e:
             logger.error(f"Failed to configure modlist {context.name}: {e}")
             if completion_callback:
-                completion_callback(False, f"Configuration failed: {e}", context.name)
+                completion_callback(False, f"Configuration failed: {e}", context.name, False)
             
             # Clean up GUI log handler on exception
             if gui_log_handler:
@@ -695,11 +695,11 @@ class ModlistService:
             if success:
                 logger.info("Modlist configuration completed successfully")
                 if completion_callback:
-                    completion_callback(True, "Configuration completed successfully", context.name)
+                    completion_callback(True, "Configuration completed successfully", context.name, False)
             else:
                 logger.warning("Modlist configuration had issues")
                 if completion_callback:
-                    completion_callback(False, "Configuration failed", context.name)
+                    completion_callback(False, "Configuration failed", context.name, False)
                 
             return success
             

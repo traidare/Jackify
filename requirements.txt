@@ -14,8 +14,8 @@ pycryptodome>=3.19.0
 # Configuration file handling
 PyYAML>=6.0
 
-# Steam VDF file parsing (latest available version)
-vdf>=3.4
+# Steam VDF file parsing (actively maintained fork, used by Gentoo)
+vdf @ git+https://github.com/solsticegamestudios/vdf.git
 
 # Package version handling
 packaging>=21.0

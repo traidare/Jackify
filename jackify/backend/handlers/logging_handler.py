@@ -14,7 +14,7 @@ import shutil
 class LoggingHandler:
     """
     Central logging handler for Jackify.
-    - Uses ~/Jackify/logs/ as the log directory.
+    - Uses configured Jackify data directory for logs (default: ~/Jackify/logs/).
     - Supports per-function log files (e.g., jackify-install-wabbajack.log).
     - Handles log rotation and log directory creation.
     Usage:
@@ -186,5 +186,5 @@ class LoggingHandler:
         return stats 
 
     def get_general_logger(self):
-        """Get the general CLI logger (~/Jackify/logs/jackify-cli.log)."""
+        """Get the general CLI logger ({jackify_data_dir}/logs/jackify-cli.log)."""
         return self.setup_logger('jackify_cli', is_general=True) 

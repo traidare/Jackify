@@ -453,13 +453,56 @@ class ProtontricksHandler:
             return True
         
         logger.info("Setting Protontricks permissions...")
+        # Bundled-runtime fix: Use cleaned environment
+        env = self._get_clean_subprocess_env()
+        
+        permissions_set = []
+        permissions_failed = []
+        
         try:
-            # Bundled-runtime fix: Use cleaned environment
-            env = self._get_clean_subprocess_env()
+            # 1. Set permission for modlist directory (required for wine component installation)
+            logger.debug(f"Setting permission for modlist directory: {modlist_dir}")
+            try:
+                subprocess.run(["flatpak", "override", "--user", "com.github.Matoking.protontricks", 
+                               f"--filesystem={modlist_dir}"], check=True, env=env, capture_output=True)
+                permissions_set.append(f"modlist directory: {modlist_dir}")
+            except subprocess.CalledProcessError as e:
+                permissions_failed.append(f"modlist directory: {modlist_dir} ({e})")
+                logger.warning(f"Failed to set permission for modlist directory: {e}")
             
-            subprocess.run(["flatpak", "override", "--user", "com.github.Matoking.protontricks", 
-                           f"--filesystem={modlist_dir}"], check=True, env=env)
+            # 2. Set permission for main Steam directory (required for accessing compatdata, config, etc.)
+            steam_dir = self._get_steam_dir_from_libraryfolders()
+            if steam_dir and steam_dir.exists():
+                logger.info(f"Setting permission for Steam directory: {steam_dir}")
+                logger.debug("This allows protontricks to access Steam compatdata, config, and steamapps directories")
+                try:
+                    subprocess.run(["flatpak", "override", "--user", "com.github.Matoking.protontricks", 
+                                   f"--filesystem={steam_dir}"], check=True, env=env, capture_output=True)
+                    permissions_set.append(f"Steam directory: {steam_dir}")
+                except subprocess.CalledProcessError as e:
+                    permissions_failed.append(f"Steam directory: {steam_dir} ({e})")
+                    logger.warning(f"Failed to set permission for Steam directory: {e}")
+            else:
+                logger.warning("Could not determine Steam directory - protontricks may not have access to Steam directories")
             
+            # 3. Set permissions for all additional Steam library folders (compatdata can be in any library)
+            from ..handlers.path_handler import PathHandler
+            all_library_paths = PathHandler.get_all_steam_library_paths()
+            for lib_path in all_library_paths:
+                # Skip if this is the main Steam directory (already set above)
+                if steam_dir and lib_path.resolve() == steam_dir.resolve():
+                    continue
+                if lib_path.exists():
+                    logger.debug(f"Setting permission for Steam library folder: {lib_path}")
+                    try:
+                        subprocess.run(["flatpak", "override", "--user", "com.github.Matoking.protontricks", 
+                                       f"--filesystem={lib_path}"], check=True, env=env, capture_output=True)
+                        permissions_set.append(f"Steam library: {lib_path}")
+                    except subprocess.CalledProcessError as e:
+                        permissions_failed.append(f"Steam library: {lib_path} ({e})")
+                        logger.warning(f"Failed to set permission for Steam library folder {lib_path}: {e}")
+            
+            # 4. Set SD card permissions (Steam Deck only)
             if steamdeck:
                 logger.warn("Checking for SDCard and setting permissions appropriately...")
                 # Find sdcard path
@@ -468,15 +511,40 @@ class ProtontricksHandler:
                     if "/run/media" in line:
                         sdcard_path = line.split()[-1]
                         logger.debug(f"SDCard path: {sdcard_path}")
-                        subprocess.run(["flatpak", "override", "--user", f"--filesystem={sdcard_path}", 
-                                      "com.github.Matoking.protontricks"], check=True, env=env)
+                        try:
+                            subprocess.run(["flatpak", "override", "--user", f"--filesystem={sdcard_path}", 
+                                          "com.github.Matoking.protontricks"], check=True, env=env, capture_output=True)
+                            permissions_set.append(f"SD card: {sdcard_path}")
+                        except subprocess.CalledProcessError as e:
+                            permissions_failed.append(f"SD card: {sdcard_path} ({e})")
+                            logger.warning(f"Failed to set permission for SD card {sdcard_path}: {e}")
                 # Add standard Steam Deck SD card path as fallback
-                subprocess.run(["flatpak", "override", "--user", "--filesystem=/run/media/mmcblk0p1", 
-                              "com.github.Matoking.protontricks"], check=True, env=env)
-            logger.debug("Permissions set successfully")
-            return True
+                try:
+                    subprocess.run(["flatpak", "override", "--user", "--filesystem=/run/media/mmcblk0p1", 
+                                  "com.github.Matoking.protontricks"], check=True, env=env, capture_output=True)
+                    permissions_set.append("SD card: /run/media/mmcblk0p1")
+                except subprocess.CalledProcessError as e:
+                    # This is expected to fail if the path doesn't exist, so only log at debug level
+                    logger.debug(f"Could not set permission for fallback SD card path (may not exist): {e}")
+            
+            # Report results
+            if permissions_set:
+                logger.info(f"Successfully set {len(permissions_set)} permission(s) for protontricks")
+                logger.debug(f"Permissions set: {', '.join(permissions_set)}")
+            if permissions_failed:
+                logger.warning(f"Failed to set {len(permissions_failed)} permission(s)")
+                logger.debug(f"Failed permissions: {', '.join(permissions_failed)}")
+            
+            # Return True if at least modlist directory permission was set (critical)
+            if any("modlist directory" in p for p in permissions_set):
+                logger.info("Protontricks permissions configured (at least modlist directory access granted)")
+                return True
+            else:
+                logger.error("Failed to set critical modlist directory permission")
+                return False
+                
         except Exception as e:
-            logger.error(f"Failed to set Protontricks permissions: {e}")
+            logger.error(f"Unexpected error while setting Protontricks permissions: {e}")
             return False
     
     def create_protontricks_alias(self):
@@ -903,6 +971,9 @@ class ProtontricksHandler:
         Install the specified Wine components into the given prefix using protontricks.
         If specific_components is None, use the default set (fontsmooth=rgb, xact, xact_x64, vcrun2022).
         """
+        self.logger.info("=" * 80)
+        self.logger.info("USING PROTONTRICKS")
+        self.logger.info("=" * 80)
         env = self._get_clean_subprocess_env()
         env["WINEDEBUG"] = "-all"
 

@@ -175,7 +175,7 @@ class InstallTTWScreen(QWidget):
         instruction_text = QLabel(
             "Tale of Two Wastelands installation requires a .mpi file you can get from: "
             '<a href="https://mod.pub/ttw/133/files">https://mod.pub/ttw/133/files</a> '
-            "(requires a user account for mod.db)"
+            "(requires a user account for ModPub)"
         )
         instruction_text.setWordWrap(True)
         instruction_text.setStyleSheet("color: #ccc; font-size: 12px; margin: 0px; padding: 0px; line-height: 1.2;")

@@ -272,47 +272,45 @@ class WineUtils:
     @staticmethod
     def chown_chmod_modlist_dir(modlist_dir):
         """
-        Change ownership and permissions of modlist directory
-        Returns True on success, False on failure
+        DEPRECATED: Use FileSystemHandler.verify_ownership_and_permissions() instead.
+        Verify and fix ownership/permissions for modlist directory.
+        Returns True if successful, False if sudo required.
         """
-        if WineUtils.all_owned_by_user(modlist_dir):
-            logger.info(f"All files in {modlist_dir} are already owned by the current user. Skipping sudo chown/chmod.")
-            return True
-        logger.warn("Changing Ownership and Permissions of modlist directory (may require sudo password)")
-        
-        try:
-            user = subprocess.run("whoami", shell=True, capture_output=True, text=True).stdout.strip()
-            group = subprocess.run("id -gn", shell=True, capture_output=True, text=True).stdout.strip()
-            
-            logger.debug(f"User is {user} and Group is {group}")
-            
-            # Change ownership
-            result1 = subprocess.run(
-                f"sudo chown -R {user}:{group} \"{modlist_dir}\"",
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            
-            # Change permissions
-            result2 = subprocess.run(
-                f"sudo chmod -R 755 \"{modlist_dir}\"",
-                shell=True,
-                capture_output=True,
-                text=True
-            )
-            
-            if result1.returncode != 0 or result2.returncode != 0:
-                logger.error("Failed to change ownership/permissions")
-                logger.error(f"chown output: {result1.stderr}")
-                logger.error(f"chmod output: {result2.stderr}")
+        if not WineUtils.all_owned_by_user(modlist_dir):
+            # Files not owned by us - need sudo to fix
+            logger.error(f"Ownership issue detected: Some files in {modlist_dir} are not owned by the current user")
+
+            try:
+                user = subprocess.run("whoami", shell=True, capture_output=True, text=True).stdout.strip()
+                group = subprocess.run("id -gn", shell=True, capture_output=True, text=True).stdout.strip()
+
+                logger.error("To fix ownership issues, open a terminal and run:")
+                logger.error(f"  sudo chown -R {user}:{group} \"{modlist_dir}\"")
+                logger.error(f"  sudo chmod -R 755 \"{modlist_dir}\"")
+                logger.error("After running these commands, retry the operation.")
                 return False
-                
+
+            except Exception as e:
+                logger.error(f"Error checking ownership: {e}")
+                return False
+
+        # Files are owned by us - try to fix permissions ourselves
+        logger.info(f"Files in {modlist_dir} are owned by current user, verifying permissions...")
+        try:
+            result = subprocess.run(
+                ['chmod', '-R', '755', modlist_dir],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                logger.info(f"Permissions set successfully for {modlist_dir}")
+            else:
+                logger.warning(f"chmod returned non-zero but continuing: {result.stderr}")
             return True
-            
         except Exception as e:
-            logger.error(f"Error changing ownership and permissions: {e}")
-            return False
+            logger.warning(f"Error running chmod: {e}, continuing anyway")
+            return True
     
     @staticmethod
     def create_dxvk_file(modlist_dir, modlist_sdcard, steam_library, basegame_sdcard, game_var_full):

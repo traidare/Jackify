@@ -14,7 +14,7 @@ import shutil
 class LoggingHandler:
     """
     Central logging handler for Jackify.
-    - Uses configurable Jackify data directory for logs (default: ~/Jackify/logs/).
+    - Uses configured Jackify data directory for logs (default: ~/Jackify/logs/).
     - Supports per-function log files (e.g., jackify-install-wabbajack.log).
     - Handles log rotation and log directory creation.
     Usage:
@@ -61,8 +61,15 @@ class LoggingHandler:
         file_path = self.log_dir / (log_file if log_file else "jackify-cli.log")
         self.rotate_log_file_per_run(file_path, backup_count=backup_count)
 
-    def setup_logger(self, name: str, log_file: Optional[str] = None, is_general: bool = False) -> logging.Logger:
-        """Set up a logger with file and console handlers. Call rotate_log_for_logger before this if you want per-run rotation."""
+    def setup_logger(self, name: str, log_file: Optional[str] = None, is_general: bool = False, debug_mode: Optional[bool] = None) -> logging.Logger:
+        """Set up a logger with file and console handlers. Call rotate_log_for_logger before this if you want per-run rotation.
+        
+        Args:
+            name: Logger name (empty string for root logger)
+            log_file: Optional log file name
+            is_general: If True, use default log file name
+            debug_mode: Optional debug mode override. If None, reads from config.
+        """
         logger = logging.getLogger(name)
         logger.setLevel(logging.DEBUG)
         logger.propagate = False
@@ -75,20 +82,21 @@ class LoggingHandler:
             '%(levelname)s: %(message)s'
         )
         
-        # Add console handler - check debug mode from config
+        # Add console handler - use provided debug_mode or check config
         console_handler = logging.StreamHandler()
         
-        # Check if debug mode is enabled
-        try:
-            from jackify.backend.handlers.config_handler import ConfigHandler
-            config_handler = ConfigHandler()
-            debug_mode = config_handler.get('debug_mode', False)
-            if debug_mode:
-                console_handler.setLevel(logging.DEBUG)
-            else:
-                console_handler.setLevel(logging.ERROR)
-        except Exception:
-            # Fallback to ERROR level if config can't be loaded
+        if debug_mode is None:
+            # Check if debug mode is enabled from config
+            try:
+                from jackify.backend.handlers.config_handler import ConfigHandler
+                config_handler = ConfigHandler()
+                debug_mode = config_handler.get('debug_mode', False)
+            except Exception:
+                debug_mode = False
+        
+        if debug_mode:
+            console_handler.setLevel(logging.DEBUG)
+        else:
             console_handler.setLevel(logging.ERROR)
         console_handler.setFormatter(console_formatter)
         if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
@@ -100,6 +108,7 @@ class LoggingHandler:
             file_handler = logging.handlers.RotatingFileHandler(
                 file_path, mode='a', encoding='utf-8', maxBytes=1024*1024, backupCount=5
             )
+            # File handler always accepts DEBUG - root logger level controls what gets through
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(file_formatter)
             if not any(isinstance(h, logging.handlers.RotatingFileHandler) and getattr(h, 'baseFilename', None) == str(file_path) for h in logger.handlers):
@@ -203,5 +212,5 @@ class LoggingHandler:
         return stats 
 
     def get_general_logger(self):
-        """Get the general CLI logger (~/Jackify/logs/jackify-cli.log)."""
+        """Get the general CLI logger ({jackify_data_dir}/logs/jackify-cli.log)."""
         return self.setup_logger('jackify_cli', is_general=True) 
