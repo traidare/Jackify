@@ -1462,8 +1462,13 @@ class ConfigureNewModlistScreen(QWidget):
         """Handle configuration completion (same as Tuxborn)"""
         # Re-enable all controls when workflow completes
         self._enable_controls_after_operation()
-        
+
         if success:
+            # Check for VNV post-install automation after configuration
+            install_dir = self.install_dir_edit.text().strip()
+            if install_dir:
+                self._check_and_run_vnv_automation(modlist_name, install_dir)
+
             # Calculate time taken
             time_taken = self._calculate_time_taken()
 
@@ -1540,6 +1545,90 @@ class ConfigureNewModlistScreen(QWidget):
                 return f"{elapsed_minutes} minutes {elapsed_seconds_remainder} seconds"
         else:
             return f"{elapsed_seconds_remainder} seconds"
+
+    def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str):
+        """Check if VNV automation should run and execute if applicable
+
+        Args:
+            modlist_name: Name of the installed modlist
+            install_dir: Installation directory path
+        """
+        try:
+            from pathlib import Path
+            from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable, should_offer_vnv_automation
+            from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
+            from jackify.backend.handlers.path_handler import PathHandler
+
+            # Get paths first (needed for VNV detection)
+            install_path = Path(install_dir)
+            
+            # Quick check before importing more (pass install location for ModOrganizer.ini check)
+            if not should_offer_vnv_automation(modlist_name, install_path):
+                return
+            game_paths = PathHandler().find_vanilla_game_paths()
+            game_root = game_paths.get('Fallout New Vegas')
+
+            if not game_root:
+                debug_print("DEBUG: VNV automation skipped - FNV game root not found")
+                return
+
+            # Confirmation callback - show dialog to user
+            def confirmation_callback(description: str) -> bool:
+                from ..services.message_service import MessageService
+                reply = MessageService.question(
+                    self,
+                    "VNV Post-Install Automation",
+                    description,
+                    critical=False,
+                    safety_level="medium"
+                )
+                return reply == QMessageBox.Yes
+
+            # Manual file callback for non-Premium users
+            def manual_file_callback(title: str, instructions: str) -> Optional[Path]:
+                from PySide6.QtWidgets import QFileDialog
+                from ..services.message_service import MessageService
+
+                # Show instructions
+                MessageService.information(self, title, instructions)
+
+                # Open file picker
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    title,
+                    str(Path.home() / "Downloads"),
+                    "All Files (*.*)"
+                )
+
+                if file_path:
+                    return Path(file_path)
+                return None
+
+            # Run automation
+            automation_ran, error = run_vnv_automation_if_applicable(
+                modlist_name=modlist_name,
+                modlist_install_location=install_path,
+                game_root=game_root,
+                ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
+                progress_callback=None,  # GUI doesn't need progress updates for post-install
+                manual_file_callback=manual_file_callback,
+                confirmation_callback=confirmation_callback
+            )
+
+            if error:
+                from ..services.message_service import MessageService
+                MessageService.warning(
+                    self,
+                    "VNV Automation Failed",
+                    f"VNV post-install automation encountered an error:\n\n{error}\n\n"
+                    "You can complete these steps manually by following the guide at:\n"
+                    "https://vivanewvegas.moddinglinked.com/wabbajack.html"
+                )
+
+        except Exception as e:
+            debug_print(f"ERROR: Failed to run VNV automation: {e}")
+            import traceback
+            debug_print(f"Traceback: {traceback.format_exc()}")
 
     def show_next_steps_dialog(self, message):
         dlg = QDialog(self)

@@ -1785,22 +1785,36 @@ echo Prefix creation complete.
             logger.error(f"Error setting Proton on shortcut: {e}")
             return False
 
-    def run_working_workflow(self, shortcut_name: str, modlist_install_dir: str, 
+    @staticmethod
+    def get_ttw_installer_path() -> Optional[Path]:
+        """Get path to TTW_Linux_Installer if available"""
+        try:
+            from jackify.shared.paths import get_jackify_data_dir
+            ttw_path = get_jackify_data_dir() / "TTW_Linux_Installer" / "ttw_linux_gui"
+            if ttw_path.exists():
+                return ttw_path
+        except Exception:
+            pass
+        return None
+
+    def run_working_workflow(self, shortcut_name: str, modlist_install_dir: str,
                             final_exe_path: str, progress_callback=None, steamdeck: Optional[bool] = None) -> Tuple[bool, Optional[Path], Optional[int], Optional[str]]:
         """
         Run the proven working automated prefix creation workflow.
-        
+
         This implements our tested and working approach:
         1. Create shortcut with native Steam service (pointing to ModOrganizer.exe initially)
         2. Restart Steam using Jackify's robust method
         3. Create Proton prefix invisibly using Proton wrapper with DISPLAY=
         4. Verify everything persists
-        
+
         Args:
             shortcut_name: Name for the Steam shortcut
             modlist_install_dir: Directory where the modlist is installed
             final_exe_path: Path to ModOrganizer.exe
-            
+            progress_callback: Optional callback for progress updates
+            steamdeck: Optional Steam Deck detection override
+
         Returns:
             Tuple of (success, prefix_path, appid, last_timestamp)
         """
@@ -1922,13 +1936,23 @@ echo Prefix creation complete.
                     progress_callback(f"{self._get_progress_timestamp()} Injecting {special_game_type.upper()} game registry entries...")
 
                 if prefix_path:
-                    self._inject_game_registry_entries(str(prefix_path))
+                    self._inject_game_registry_entries(str(prefix_path), special_game_type)
                 else:
                     logger.warning("Could not find prefix path for registry injection")
             else:
                 logger.info("Step 5: Skipping registry injection for standard modlist")
                 if progress_callback:
                     progress_callback(f"{self._get_progress_timestamp()} No special game registry injection needed")
+
+            # Step 5.5: Pre-create game-specific directories for all modlists
+            logger.info(f"Step 5.5: Creating game-specific user directories")
+            if progress_callback:
+                progress_callback(f"{self._get_progress_timestamp()} Creating game user directories...")
+
+            if prefix_path:
+                self._create_game_user_directories(str(prefix_path), special_game_type)
+            else:
+                logger.warning("Could not find prefix path for directory creation")
             
             last_timestamp = self._get_progress_timestamp()
             logger.info(f" Working workflow completed successfully! AppID: {appid}, Prefix: {prefix_path}")
@@ -1942,7 +1966,7 @@ echo Prefix creation complete.
             if progress_callback:
                 progress_callback("")  # Extra blank line to span across Configuration Summary
                 progress_callback("")  # And one more to create space before Prefix Configuration
-            
+
             return True, prefix_path, appid, last_timestamp
             
         except Exception as e:
@@ -3250,7 +3274,7 @@ echo Prefix creation complete.
             logger.debug(f"Error during recursive wine search in {proton_path}: {e}")
             return None
 
-    def _inject_game_registry_entries(self, modlist_compatdata_path: str):
+    def _inject_game_registry_entries(self, modlist_compatdata_path: str, special_game_type: str):
         """Detect and inject FNV/Enderal game paths and apply universal dotnet4.x compatibility fixes"""
         system_reg_path = os.path.join(modlist_compatdata_path, "pfx", "system.reg")
         if not os.path.exists(system_reg_path):
@@ -3290,21 +3314,55 @@ echo Prefix creation complete.
                 )
                 if success:
                     logger.info(f"Updated registry entry for {config['name']}")
-
-                    # Special handling for Enderal: Create required user directory
-                    if app_id == "976620":  # Enderal Special Edition
-                        try:
-                            enderal_docs_path = os.path.join(modlist_compatdata_path, "pfx", "drive_c", "users", "steamuser", "Documents", "My Games", "Enderal Special Edition")
-                            os.makedirs(enderal_docs_path, exist_ok=True)
-                            logger.info(f"Created Enderal user directory: {enderal_docs_path}")
-                        except Exception as e:
-                            logger.warning(f"Failed to create Enderal user directory: {e}")
                 else:
                     logger.warning(f"Failed to update registry entry for {config['name']}")
             else:
                 logger.debug(f"{config['name']} not found in Steam libraries")
                 
         logger.info("Game registry injection completed")
+
+    def _create_game_user_directories(self, modlist_compatdata_path: str, special_game_type: str):
+        """
+        Pre-create game-specific user directories to prevent first-launch issues.
+
+        Creates both My Documents/My Games and AppData/Local directories for the game.
+        This prevents issues where games fail to create these on first launch under Proton.
+        """
+        # Map game types to their directory names
+        game_dir_names = {
+            "skyrim": "Skyrim Special Edition",
+            "fnv": "FalloutNV",
+            "fo4": "Fallout4",
+            "oblivion": "Oblivion",
+            "oblivion_remastered": "Oblivion Remastered",
+            "enderal": "Enderal Special Edition",
+            "starfield": "Starfield"
+        }
+
+        # Get the directory name for this game type
+        game_dir_name = game_dir_names.get(special_game_type)
+        if not game_dir_name:
+            logger.debug(f"No user directory mapping for game type: {special_game_type}")
+            return
+
+        base_path = os.path.join(modlist_compatdata_path, "pfx", "drive_c", "users", "steamuser")
+
+        directories_to_create = [
+            os.path.join(base_path, "Documents", "My Games", game_dir_name),
+            os.path.join(base_path, "AppData", "Local", game_dir_name)
+        ]
+
+        created_count = 0
+        for directory in directories_to_create:
+            try:
+                os.makedirs(directory, exist_ok=True)
+                logger.info(f"Created user directory: {directory}")
+                created_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to create directory {directory}: {e}")
+
+        if created_count > 0:
+            logger.info(f"Created {created_count} user directories for {game_dir_name}")
 
     def _get_lorerim_preferred_proton(self):
         """Get Lorerim's preferred Proton 9 version with specific priority order"""

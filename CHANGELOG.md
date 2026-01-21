@@ -1,5 +1,21 @@
 # Jackify Changelog
 
+## v0.2.2 - VNV Automation and First-Launch Improvements
+**Release Date:** 2026-01-21
+
+### Major Features
+- **Viva New Vegas Post-Install Automation (experimental)**: Full automated workflow for the Viva New Vegas modlist. Handles root files copying, 4GB patcher, and BSA decompression as per the VNV install guide. This is an initial pass at automating this, so considered experimental.
+- **Game Directory Pre-Creation**: Automatically creates My Documents/My Games and AppData/Local directories for some. Prevents some first-launch failures where games can't initialize under Proton. Supports Skyrim SE, FNV, FO4, Oblivion, Oblivion Remastered, Enderal, and Starfield so far.
+
+### Bug Fixes
+- **Configure Existing Modlist**: Fixed AttributeError when VNV automation check runs after configuration completes
+- **Enderal Directory Creation**: Fixed bug where Enderal My Documents directory was created for all modlists instead of only Enderal
+
+### Improvements
+- **Winetricks Bundling**: Implemented Wine wrapper scripts that replicate protontricks' environment setup for improved reliability
+
+---
+
 ## v0.2.1.1 - Bug Fixes and Improvements
 **Release Date:** 2026-01-15
 

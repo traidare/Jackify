@@ -1,0 +1,19 @@
+# Tools downloaded during AppImage build
+# These are fetched from upstream sources during build_appimage_simple.sh
+# They are NOT stored in git to keep the repository clean
+# See THIRD_PARTY_NOTICES.md for licensing information
+
+# Downloaded during build:
+winetricks
+cabextract
+7z
+wget
+unzip
+sha256sum
+
+# lz4 is copied from system during build
+lz4
+
+# Keep this .gitignore and README
+!.gitignore
+!README.md

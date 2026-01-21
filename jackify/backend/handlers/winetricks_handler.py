@@ -353,7 +353,7 @@ class WinetricksHandler:
                 for cmd in commands:
                     bundled_tool = self._get_bundled_tool(cmd, fallback_to_system=False)
                     if bundled_tool:
-                        dep_msg = f"  ✓ {dep_name}: {bundled_tool} (bundled)"
+                        dep_msg = f"  {dep_name}: {bundled_tool} (bundled)"
                         self.logger.info(dep_msg)
                         if status_callback:
                             status_callback(dep_msg)
@@ -367,7 +367,7 @@ class WinetricksHandler:
                         result = subprocess.run(['which', cmd], capture_output=True, timeout=2)
                         if result.returncode == 0:
                             cmd_path = result.stdout.decode().strip()
-                            dep_msg = f"  ✓ {dep_name}: {cmd_path} (system)"
+                            dep_msg = f"  {dep_name}: {cmd_path} (system)"
                             self.logger.info(dep_msg)
                             if status_callback:
                                 status_callback(dep_msg)
@@ -379,9 +379,9 @@ class WinetricksHandler:
             if not found:
                 missing_deps.append(dep_name)
                 if dep_name in bundled_tools_list:
-                    self.logger.warning(f"  ✗ {dep_name}: NOT FOUND (neither bundled nor system)")
+                    self.logger.warning(f"  {dep_name}: NOT FOUND (neither bundled nor system)")
                 else:
-                    self.logger.warning(f"  ✗ {dep_name}: NOT FOUND (system only - not bundled)")
+                    self.logger.warning(f"  {dep_name}: NOT FOUND (system only - not bundled)")
         
         if missing_deps:
             # Separate critical vs optional dependencies

@@ -666,7 +666,36 @@ class ModlistMenuHandler:
         except Exception as e:
             self.logger.warning(f"ENB configuration skipped due to error: {e}")
             # Continue workflow - ENB config is optional
-        
+
+        # Run modlist-specific post-install automation (e.g., VNV) before showing completion
+        # Only in CLI mode - GUI handles this in install_modlist.py
+        if not gui_mode:
+            from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable
+            from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
+            from pathlib import Path
+
+            modlist_name = context.get('name', '')
+            modlist_path = Path(context.get('path', ''))
+
+            try:
+                print("")
+                print("Running VNV post-install automation...")
+                automation_ran, error = run_vnv_automation_if_applicable(
+                    modlist_name=modlist_name,
+                    modlist_install_location=modlist_path,
+                    game_root=None,  # Will be auto-detected
+                    ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
+                    progress_callback=lambda msg: print(msg),
+                    manual_file_callback=None,  # CLI doesn't support manual file callback yet
+                    confirmation_callback=None  # Will use default confirmation in CLI
+                )
+                if error:
+                    print(f"{COLOR_WARNING}VNV automation encountered an error: {error}{COLOR_RESET}")
+                    print("You can complete these steps manually by following: https://vivanewvegas.moddinglinked.com/wabbajack.html")
+            except Exception as e:
+                self.logger.debug(f"VNV automation check skipped: {e}")
+                # Not an error - just means VNV automation wasn't applicable
+
         print("")
         print("")
         print("")  # Extra blank line before completion

@@ -1784,6 +1784,27 @@ class InstallModlistScreen(QWidget):
             modlist_name = getattr(self, '_ttw_modlist_name', 'Unknown')
             game_name = "Fallout New Vegas"
 
+            # Check for VNV post-install automation after TTW installation
+            vnv_automation_running = False
+            if hasattr(self, '_ttw_install_dir') and hasattr(self, '_ttw_modlist_name'):
+                vnv_automation_running = self._check_and_run_vnv_automation(self._ttw_modlist_name, self._ttw_install_dir)
+
+            if vnv_automation_running:
+                # Store success dialog params for later (after VNV automation completes)
+                self._pending_success_dialog_params = {
+                    'modlist_name': modlist_name,
+                    'time_taken': time_str,
+                    'game_name': game_name,
+                    'enb_detected': False,  # TTW installs don't have ENB
+                    'ttw_version': ttw_version if 'ttw_version' in locals() else None
+                }
+                # Keep post-install feedback active during VNV automation
+                # Don't show success dialog yet - will be shown in _on_vnv_complete
+                return
+
+            # No VNV automation - end post-install feedback now
+            self._end_post_install_feedback(True)
+
             # Clear Activity window before showing success dialog
             self.file_progress_list.clear()
 
@@ -1797,7 +1818,7 @@ class InstallModlistScreen(QWidget):
             )
 
             # Add TTW installation info to dialog if possible
-            if hasattr(success_dialog, 'add_info_line'):
+            if 'ttw_version' in locals() and hasattr(success_dialog, 'add_info_line'):
                 success_dialog.add_info_line(f"TTW {ttw_version} integrated successfully")
 
             success_dialog.show()
@@ -1810,6 +1831,216 @@ class InstallModlistScreen(QWidget):
                 f"TTW integration completed but failed to show success dialog: {str(e)}"
             )
 
+    def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str) -> bool:
+        """Check if VNV automation should run and execute if applicable in background thread
+
+        Args:
+            modlist_name: Name of the installed modlist
+            install_dir: Installation directory path
+
+        Returns:
+            True if VNV automation is starting (success dialog should be deferred)
+            False if no VNV automation needed (show success dialog immediately)
+        """
+        try:
+            from pathlib import Path
+            from jackify.backend.services.vnv_integration_helper import should_offer_vnv_automation
+            from jackify.backend.handlers.path_handler import PathHandler
+            from jackify.backend.services.vnv_post_install_service import VNVPostInstallService
+            from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
+
+            # Get paths first (needed for VNV detection)
+            install_path = Path(install_dir)
+
+            # Quick check before importing more (pass install location for ModOrganizer.ini check)
+            if not should_offer_vnv_automation(modlist_name, install_path):
+                return False
+
+            game_paths = PathHandler().find_vanilla_game_paths()
+            game_root = game_paths.get('Fallout New Vegas')
+
+            if not game_root:
+                debug_print("DEBUG: VNV automation skipped - FNV game root not found")
+                return False
+
+            # Initialize service to check completion status
+            vnv_service = VNVPostInstallService(
+                modlist_install_location=install_path,
+                game_root=game_root,
+                ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path()
+            )
+
+            # Check what's already done
+            completed = vnv_service.check_already_completed()
+            # Only skip if ALL three steps are completed
+            if completed['root_mods'] and completed['4gb_patch'] and completed['bsa_decompressed']:
+                logger.info("VNV automation steps already completed")
+                return False
+
+            # Get automation description for confirmation
+            description = vnv_service.get_automation_description()
+
+            # Show confirmation dialog ON MAIN THREAD (not in worker thread!)
+            from ..services.message_service import MessageService
+            reply = MessageService.question(
+                self,
+                "VNV Post-Install Automation",
+                description,
+                critical=False,
+                safety_level="medium"
+            )
+
+            if reply != QMessageBox.Yes:
+                logger.info("User declined VNV automation")
+                return False
+
+            # Manual file callback for non-Premium users
+            def manual_file_callback(title: str, instructions: str) -> Optional[Path]:
+                from PySide6.QtWidgets import QFileDialog
+                from ..services.message_service import MessageService
+
+                # Show instructions
+                MessageService.information(self, title, instructions)
+
+                # Open file picker
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    title,
+                    str(Path.home() / "Downloads"),
+                    "All Files (*.*)"
+                )
+
+                if file_path:
+                    return Path(file_path)
+                return None
+
+            # Enable post-install progress tracking for VNV automation
+            self._begin_post_install_feedback()
+
+            # User confirmed - start automation in background thread
+            self._run_vnv_automation_threaded(
+                modlist_name,
+                install_path,
+                game_root,
+                manual_file_callback
+            )
+
+            return True  # VNV automation is running, defer success dialog
+
+        except Exception as e:
+            debug_print(f"ERROR: Failed to start VNV automation: {e}")
+            import traceback
+            debug_print(f"Traceback: {traceback.format_exc()}")
+            return False  # Error - show success dialog anyway
+
+    def _run_vnv_automation_threaded(self, modlist_name, install_path, game_root,
+                                      manual_file_callback):
+        """Run VNV automation in a background thread with progress updates
+
+        Note: User confirmation should already be obtained before calling this method.
+        """
+        from PySide6.QtCore import QThread, Signal
+        from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable
+        from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
+
+        class VNVAutomationWorker(QThread):
+            progress_update = Signal(str)
+            completed = Signal(bool, str)  # (success, error_message)
+
+            def __init__(self, modlist_name, install_path, game_root, ttw_installer_path,
+                        manual_file_callback):
+                super().__init__()
+                self.modlist_name = modlist_name
+                self.install_path = install_path
+                self.game_root = game_root
+                self.ttw_installer_path = ttw_installer_path
+                self.manual_file_callback = manual_file_callback
+
+            def run(self):
+                try:
+                    # User already confirmed, pass lambda that always returns True
+                    automation_ran, error = run_vnv_automation_if_applicable(
+                        modlist_name=self.modlist_name,
+                        modlist_install_location=self.install_path,
+                        game_root=self.game_root,
+                        ttw_installer_path=self.ttw_installer_path,
+                        progress_callback=self.progress_update.emit,
+                        manual_file_callback=self.manual_file_callback,
+                        confirmation_callback=lambda desc: True  # Already confirmed on main thread
+                    )
+                    self.completed.emit(error is None, error or "")
+                except Exception as e:
+                    import traceback
+                    self.completed.emit(False, f"Exception: {str(e)}\n{traceback.format_exc()}")
+
+        # Create and start worker
+        self.vnv_worker = VNVAutomationWorker(
+            modlist_name,
+            install_path,
+            game_root,
+            AutomatedPrefixService.get_ttw_installer_path(),
+            manual_file_callback
+        )
+
+        # Connect signals
+        self.vnv_worker.progress_update.connect(self._on_vnv_progress)
+        self.vnv_worker.completed.connect(self._on_vnv_complete)
+        self.vnv_worker.finished.connect(self.vnv_worker.deleteLater)
+
+        # Start worker
+        self.vnv_worker.start()
+
+    def _on_vnv_progress(self, message: str):
+        """Handle VNV automation progress updates"""
+        self._safe_append_text(message)
+        # Also update progress indicator, Activity window, and Details window
+        self._handle_post_install_progress(message)
+
+    def _on_vnv_complete(self, success: bool, error: str):
+        """Handle VNV automation completion and show deferred success dialog"""
+        # End post-install feedback now that VNV automation is complete
+        self._end_post_install_feedback(True)
+
+        if not success and error:
+            from ..services.message_service import MessageService
+            MessageService.warning(
+                self,
+                "VNV Automation Failed",
+                f"VNV post-install automation encountered an error:\n\n{error}\n\n"
+                "You can complete these steps manually by following the guide at:\n"
+                "https://vivanewvegas.moddinglinked.com/wabbajack.html"
+            )
+        elif success:
+            self._safe_append_text("VNV post-install automation completed successfully")
+
+        # Show the deferred success dialog now that VNV automation is complete
+        if hasattr(self, '_pending_success_dialog_params'):
+            params = self._pending_success_dialog_params
+            del self._pending_success_dialog_params  # Clean up
+
+            # Clear Activity window before showing success dialog
+            self.file_progress_list.clear()
+
+            # Show success dialog
+            from ..dialogs import SuccessDialog
+            success_dialog = SuccessDialog(
+                modlist_name=params['modlist_name'],
+                workflow_type="install",
+                time_taken=params['time_taken'],
+                game_name=params['game_name'],
+                parent=self
+            )
+            success_dialog.show()
+
+            # Show ENB Proton dialog if ENB was detected
+            if params.get('enb_detected'):
+                try:
+                    from ..dialogs.enb_proton_dialog import ENBProtonDialog
+                    enb_dialog = ENBProtonDialog(modlist_name=params['modlist_name'], parent=self)
+                    enb_dialog.exec()  # Modal dialog - blocks until user clicks OK
+                except Exception as e:
+                    # Non-blocking: if dialog fails, just log and continue
+                    logger.warning(f"Failed to show ENB dialog: {e}")
 
 
     def validate_and_start_install(self):
@@ -3256,13 +3487,47 @@ class InstallModlistScreen(QWidget):
                 ],
             },
             {
+                'id': 'vnv_root_mods',
+                'label': "VNV: Copying root mods",
+                'keywords': [
+                    "step 1/3: copying root mods",
+                    "copying root mods to game directory",
+                    "root mods:",
+                ],
+            },
+            {
+                'id': 'vnv_4gb_patch',
+                'label': "VNV: Applying 4GB patch",
+                'keywords': [
+                    "step 2/3: downloading and running 4gb patcher",
+                    "downloading fnv4gb",
+                    "downloading:",
+                    "fetching file list",
+                    "running 4gb patcher",
+                    "4gb patcher:",
+                ],
+            },
+            {
+                'id': 'vnv_bsa_decompress',
+                'label': "VNV: Decompressing BSA files",
+                'keywords': [
+                    "step 3/3: downloading and running bsa decompressor",
+                    "downloading:",
+                    "fetching file list",
+                    "running bsa decompressor",
+                    "decompressing bsa files:",
+                    "bsa decompression:",
+                ],
+            },
+            {
                 'id': 'config_finalize',
                 'label': "Finalising Jackify configuration",
                 'keywords': [
                     "configuration completed successfully",
                     "configuration complete",
                     "manual steps validation failed",
-                    "configuration failed"
+                    "configuration failed",
+                    "vnv post-install completed successfully"
                 ],
             },
         ]
@@ -3865,8 +4130,9 @@ class InstallModlistScreen(QWidget):
             self.file_progress_list.stop_cpu_tracking()
             # Re-enable controls now that installation/configuration is complete
             self._enable_controls_after_operation()
-            self._end_post_install_feedback(success)
-            
+            # Don't end post-install feedback yet - may continue with VNV automation
+            # Will be called in _on_vnv_complete or after VNV check
+
             if success:
                 # Check if we need to show Somnium guidance
                 if self._show_somnium_guidance:
@@ -3917,6 +4183,24 @@ class InstallModlistScreen(QWidget):
                         self._initiate_ttw_workflow(modlist_name, install_dir)
                         return  # Don't show success dialog yet, will show after TTW completes
 
+                # Check for VNV post-install automation after TTW check
+                vnv_automation_running = self._check_and_run_vnv_automation(modlist_name, install_dir)
+
+                if vnv_automation_running:
+                    # Store success dialog params for later (after VNV automation completes)
+                    self._pending_success_dialog_params = {
+                        'modlist_name': modlist_name,
+                        'time_taken': time_str,
+                        'game_name': game_name,
+                        'enb_detected': enb_detected
+                    }
+                    # Keep post-install feedback active during VNV automation
+                    # Don't show success dialog yet - will be shown in _on_vnv_complete
+                    return
+
+                # No VNV automation - end post-install feedback now
+                self._end_post_install_feedback(True)
+
                 # Clear Activity window before showing success dialog
                 self.file_progress_list.clear()
 
@@ -3929,7 +4213,7 @@ class InstallModlistScreen(QWidget):
                     parent=self
                 )
                 success_dialog.show()
-                
+
                 # Show ENB Proton dialog if ENB was detected (use stored detection result, no re-detection)
                 if enb_detected:
                     try:
@@ -3941,11 +4225,13 @@ class InstallModlistScreen(QWidget):
                         logger.warning(f"Failed to show ENB dialog: {e}")
             elif hasattr(self, '_manual_steps_retry_count') and self._manual_steps_retry_count >= 3:
                 # Max retries reached - show failure message
-                MessageService.critical(self, "Manual Steps Failed", 
+                self._end_post_install_feedback(False)
+                MessageService.critical(self, "Manual Steps Failed",
                                    "Manual steps validation failed after multiple attempts.")
             else:
                 # Configuration failed for other reasons
-                MessageService.critical(self, "Configuration Failed", 
+                self._end_post_install_feedback(False)
+                MessageService.critical(self, "Configuration Failed",
                                    "Post-install configuration failed. Please check the console output.")
         except Exception as e:
             # Ensure controls are re-enabled even on unexpected errors

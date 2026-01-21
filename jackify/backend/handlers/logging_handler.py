@@ -81,7 +81,7 @@ class LoggingHandler:
         if log_file or is_general:
             file_path = self.log_dir / (log_file if log_file else "jackify-cli.log")
             file_handler = logging.handlers.RotatingFileHandler(
-                file_path, mode='a', encoding='utf-8', maxBytes=1024*1024, backupCount=5
+                file_path, mode='a', encoding='utf-8', maxBytes=100*1024*1024, backupCount=5
             )
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(file_formatter)
@@ -90,7 +90,7 @@ class LoggingHandler:
             
         return logger
         
-    def rotate_logs(self, max_bytes: int = 1024 * 1024, backup_count: int = 5) -> None:
+    def rotate_logs(self, max_bytes: int = 100 * 1024 * 1024, backup_count: int = 5) -> None:
         """Rotate log files based on size."""
         for log_file in self.get_log_files():
             try:

@@ -1628,11 +1628,24 @@ class JackifyMainWindow(QMainWindow):
     def cleanup_processes(self):
         """Clean up any running processes before closing"""
         try:
+            # Clean up background threads first
+            if hasattr(self, '_update_thread') and self._update_thread is not None:
+                if self._update_thread.isRunning():
+                    self._update_thread.quit()
+                    self._update_thread.wait(2000)
+                self._update_thread = None
+
+            if hasattr(self, '_gallery_cache_preload_thread') and self._gallery_cache_preload_thread is not None:
+                if self._gallery_cache_preload_thread.isRunning():
+                    self._gallery_cache_preload_thread.quit()
+                    self._gallery_cache_preload_thread.wait(2000)
+                self._gallery_cache_preload_thread = None
+
             # Clean up GUI services
             for service in self.gui_services.values():
                 if hasattr(service, 'cleanup'):
                     service.cleanup()
-            
+
             # Clean up screen processes
             screens = [
                 self.modlist_tasks_screen, self.install_modlist_screen,
