@@ -392,78 +392,88 @@ class ModlistMenuHandler:
                 except Exception as e:
                     self.logger.warning(f"Failed to rename 'Steam Icons' to 'SteamIcons': {e}")
             self.logger.debug(f"[DEBUG] After normalization, SteamIcons exists: {os.path.isdir(steamicons_path)}")
-            # --- Create shortcut with working NativeSteamService ---
+            # --- Use automated prefix workflow (replaces old manual workflow) ---
             try:
-                from ..services.native_steam_service import NativeSteamService
-                steam_service = NativeSteamService()
-                
-                success, app_id = steam_service.create_shortcut_with_proton(
-                    app_name=modlist_name,
-                    exe_path=mo2_path,
-                    start_dir=os.path.dirname(mo2_path),
-                    launch_options="%command%",
-                    tags=["Jackify"],
-                    proton_version="proton_experimental"
-                )
-                if not success or not app_id:
-                    self.logger.error("Failed to create Steam shortcut.")
-                    print(f"\n{COLOR_ERROR}Failed to create Steam shortcut. Check the logs for details.{COLOR_RESET}")
-                    return True
                 mo2_dir = os.path.dirname(mo2_path)
-                if os.environ.get('JACKIFY_GUI_MODE'):
-                    print('[PROMPT:RESTART_STEAM]')
-                    input()  # Wait for GUI to send confirmation
-                    print('[PROMPT:MANUAL_STEPS]')
-                    input()  # Wait for GUI to send confirmation
-                    # Continue as before
-                else:
-                    print("\n───────────────────────────────────────────────────────────────────")
-                    print(f"{COLOR_INFO}Important:{COLOR_RESET} Steam needs to restart to detect the new shortcut.")
-                    print("This process involves several manual steps after the restart.")
-                    restart_choice = input("\nRestart Steam automatically now? (Y/n): ").strip().lower()
-                    if restart_choice == 'n':
-                        self.logger.info("User opted out of automatic Steam restart.")
-                        print("\nPlease restart Steam manually to see your new shortcut:")
-                        print("1. Exit Steam completely (Steam -> Exit or right-click tray icon -> Exit)")
-                        print("2. Wait a few seconds")
-                        print("3. Start Steam again")
-                        print("\nAfter restarting, you MUST perform the manual Proton setup steps:")
-                        self._display_manual_proton_steps(modlist_name)
-                        print(f"\n{COLOR_ERROR}You will need to re-run this configuration option after completing these steps.{COLOR_RESET}")
-                        print("───────────────────────────────────────────────────────────────────")
-                        return True
-                    self.logger.info("Attempting secure Steam restart...")
-                    print()
-                    status_line = ""
-                    def update_status(msg):
-                        nonlocal status_line
-                        if status_line:
-                            print("\r" + " " * len(status_line), end="\r")
-                        status_line = f"\r{COLOR_INFO}{msg}{COLOR_RESET}"
-                        print(status_line, end="", flush=True)
-                    # Actually restart Steam and wait for completion
-                    if self.shortcut_handler.secure_steam_restart(status_callback=update_status):
-                        print()
-                        self.logger.info("Secure Steam restart successful.")
-                        self._display_manual_proton_steps(modlist_name)
-                        print()
-                        input(f"{COLOR_PROMPT}Once you have completed ALL the steps above, press Enter to continue...{COLOR_RESET}")
-                        self.logger.info("User confirmed completion of manual steps.")
-                        # Re-detect the shortcut and get the new, positive AppID
-                        new_app_id = self.shortcut_handler.get_appid_for_shortcut(modlist_name, mo2_path)
-                        self.logger.info(f"Pre-launch AppID: {app_id}, Post-launch AppID: {new_app_id}")
-                        if not new_app_id or not new_app_id.isdigit() or int(new_app_id) < 0:
-                            print(f"{COLOR_ERROR}Could not find a valid AppID for '{modlist_name}' after launch. Please ensure you launched the shortcut from Steam at least once, then try again.{COLOR_RESET}")
+                install_dir = mo2_dir
+                
+                # Use automated prefix service for modern workflow
+                print(f"\n{COLOR_INFO}Using automated Steam setup workflow...{COLOR_RESET}")
+                
+                from ..services.automated_prefix_service import AutomatedPrefixService
+                prefix_service = AutomatedPrefixService()
+                
+                # Define progress callback for CLI with jackify-engine style timestamps
+                import time
+                start_time = time.time()
+                
+                def progress_callback(message):
+                    elapsed = time.time() - start_time
+                    hours = int(elapsed // 3600)
+                    minutes = int((elapsed % 3600) // 60)
+                    seconds = int(elapsed % 60)
+                    timestamp = f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
+                    print(f"{COLOR_INFO}{timestamp} {message}{COLOR_RESET}")
+                
+                # Run the automated workflow
+                result = prefix_service.run_working_workflow(
+                    modlist_name, install_dir, mo2_path, progress_callback, steamdeck=self.steamdeck
+                )
+                
+                # Handle the result
+                if isinstance(result, tuple) and len(result) == 4:
+                    if result[0] == "CONFLICT":
+                        # Handle conflict - ask user what to do
+                        conflicts = result[1]
+                        print(f"\n{COLOR_WARNING}Found existing Steam shortcut(s) with the same name and path:{COLOR_RESET}")
+                        for i, conflict in enumerate(conflicts, 1):
+                            print(f"  {i}. Name: {conflict['name']}")
+                            print(f"     Executable: {conflict['exe']}")
+                            print(f"     Start Directory: {conflict['startdir']}")
+                        print(f"\n{COLOR_PROMPT}Options:{COLOR_RESET}")
+                        print("  1. Use existing shortcut (recommended)")
+                        print("  2. Create new shortcut anyway")
+                        choice = input(f"{COLOR_PROMPT}Enter choice (1-2): {COLOR_RESET}").strip()
+                        if choice == "1":
+                            # Use existing shortcut
+                            existing_appid = conflicts[0].get('appid')
+                            if existing_appid:
+                                context = {
+                                    "name": modlist_name,
+                                    "appid": str(existing_appid),
+                                    "path": mo2_dir,
+                                    "manual_steps_completed": True,
+                                    "resolution": None
+                                }
+                                return self.run_modlist_configuration_phase(context)
+                        elif choice == "2":
+                            # Create new shortcut - would need to handle this, but for now just fail
+                            print(f"{COLOR_ERROR}Creating new shortcut with same name not supported in this flow.{COLOR_RESET}")
                             return True
-                        context = {
-                            "name": modlist_name,
-                            "appid": new_app_id,
-                            "path": mo2_dir,
-                            "manual_steps_completed": True,
-                            "resolution": None
-                        }
-                        self.logger.debug(f"[DEBUG] New Modlist Context (post-launch): {context}")
-                        return self.run_modlist_configuration_phase(context)
+                        else:
+                            print(f"{COLOR_ERROR}Invalid choice.{COLOR_RESET}")
+                            return True
+                    else:
+                        # Success - get the results
+                        success, prefix_path, appid_int, last_timestamp = result
+                        if success and appid_int:
+                            context = {
+                                "name": modlist_name,
+                                "appid": str(appid_int),
+                                "path": mo2_dir,
+                                "manual_steps_completed": True,
+                                "resolution": None
+                            }
+                            self.logger.debug(f"[DEBUG] New Modlist Context (automated workflow): {context}")
+                            return self.run_modlist_configuration_phase(context)
+                        else:
+                            print(f"{COLOR_ERROR}Automated workflow completed but no AppID was returned.{COLOR_RESET}")
+                            return True
+                else:
+                    # Unexpected result format
+                    print(f"{COLOR_ERROR}Automated workflow returned unexpected format.{COLOR_RESET}")
+                    self.logger.error(f"Unexpected result format from automated workflow: {result}")
+                    return True
             except Exception as e:
                 self.logger.error(f"Error creating Steam shortcut: {e}", exc_info=True)
                 print(f"\n{COLOR_ERROR}Failed to create Steam shortcut: {e}{COLOR_RESET}")

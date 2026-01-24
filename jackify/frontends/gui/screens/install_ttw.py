@@ -489,10 +489,25 @@ class InstallTTWScreen(QWidget):
             ttw_installer_handler._check_installation()
 
             if ttw_installer_handler.ttw_installer_installed:
-                # Check version against latest
-                update_available, installed_v, latest_v = ttw_installer_handler.is_ttw_installer_update_available()
+                # Check version against pinned/latest
+                update_available, installed_v, target_v = ttw_installer_handler.is_ttw_installer_update_available()
                 if update_available:
-                    version_text = f"Out of date (v{installed_v} → v{latest_v})" if installed_v and latest_v else "Out of date"
+                    # Determine if this is a downgrade or upgrade
+                    from jackify.backend.handlers.ttw_installer_handler import TTW_INSTALLER_PINNED_VERSION
+                    if TTW_INSTALLER_PINNED_VERSION and installed_v and target_v:
+                        # If we have a pinned version and installed is newer, it's a downgrade
+                        try:
+                            # Simple version comparison - if installed version string is longer/more complex, likely newer
+                            # For now, just check if they're different and show appropriate message
+                            if installed_v != target_v:
+                                version_text = f"Update to v{target_v} (currently v{installed_v})"
+                            else:
+                                version_text = f"Update available (v{installed_v} → v{target_v})"
+                        except Exception:
+                            version_text = f"Update to v{target_v}" if target_v else "Update available"
+                    else:
+                        # Normal update (newer version available)
+                        version_text = f"Update available (v{installed_v} → v{target_v})" if installed_v and target_v else "Update available"
                     self.ttw_installer_status.setText(version_text)
                     self.ttw_installer_status.setStyleSheet("color: #f44336;")
                     self.ttw_installer_btn.setText("Update now")

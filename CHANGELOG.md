@@ -1,5 +1,14 @@
 # Jackify Changelog
 
+## v0.2.2.1 - TTW Installer Pinning and Configure New Modlist CLI Fix
+**Release Date:** 2026-01-24
+
+### Bug Fixes
+- **Configure New Modlist CLI**: Fixed manual Proton setup prompts appearing in CLI. Now uses automated prefix workflow like the install command.
+- **TTW_Linux_Installer Version Pinning**: Pinned to v0.0.7. Will re-introduce latest version following more testing.
+
+---
+
 ## v0.2.2 - VNV Automation and First-Launch Improvements
 **Release Date:** 2026-01-21
 
