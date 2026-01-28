@@ -11,8 +11,8 @@
 ### Engine Updates
 - **jackify-engine 0.4.7**: Fixed incorrect quoting/escaping of MO2 `customExecutables` by writing clean, unquoted Proton `Z:\...` paths in `ModOrganizer.ini`. This eliminates engine-side quote corruption that previously triggered SD card path mangling issues.
 
-### Developer Experience
-- **Debug External Command Logging**: When debug mode is enabled, Jackify now logs the full `protontricks` command line before execution, making it easier for advanced users to reproduce and troubleshoot Wine/Proton issues by running the same command manually.
+### Improvements
+- **Improved Wine Component install debug log output**: Will now print the full command being used for winetricks and protontricks when debug mode is enabled, making it easier to reproduce issues manually.
 
 ---
 
