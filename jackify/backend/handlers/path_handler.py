@@ -892,6 +892,7 @@ class PathHandler:
             
             # Extract existing gamePath to use as source of truth for vanilla game location
             existing_game_path = None
+            gamepath_drive_letter = None
             gamepath_line_index = -1
             for i, line in enumerate(lines):
                 if re.match(r'^\s*gamepath\s*=.*@ByteArray\(([^)]+)\)', line, re.IGNORECASE):
@@ -899,11 +900,16 @@ class PathHandler:
                     if match:
                         raw_path = match.group(1)
                         gamepath_line_index = i
+                        # Extract drive letter from gamePath (Z: or D:)
+                        if raw_path.startswith('Z:'):
+                            gamepath_drive_letter = 'Z:'
+                        elif raw_path.startswith('D:'):
+                            gamepath_drive_letter = 'D:'
                         # Convert Windows path back to Linux path
                         if raw_path.startswith(('Z:', 'D:')):
                             linux_path = raw_path[2:].replace('\\\\', '/').replace('\\', '/')
                             existing_game_path = linux_path
-                            logger.debug(f"Extracted existing gamePath: {existing_game_path}")
+                            logger.debug(f"Extracted existing gamePath: {existing_game_path}, drive letter: {gamepath_drive_letter}")
                             break
 
             # Special handling for gamePath in three-true scenario (engine_installed + steamdeck + sdcard)
@@ -957,19 +963,33 @@ class PathHandler:
                     logger.error(f"Malformed binary line: {line}")
                     continue
                 key_part, value_part = parts
-                exe_name = os.path.basename(value_part).lower()
+                
+                # Clean up malformed paths (quotes in wrong places, etc.)
+                cleaned_value = PathHandler._clean_malformed_binary_path(value_part)
+                exe_name = os.path.basename(cleaned_value).lower()
                 
                 # SELECTIVE FILTERING: Only process target executables (script extenders, etc.)
                 if exe_name not in TARGET_EXECUTABLES_LOWER:
                     logger.debug(f"Skipping non-target executable: {exe_name}")
                     continue
                     
-                drive_prefix = "D:" if modlist_sdcard else "Z:"
                 rel_path = None
                 # --- BEGIN: FULL PARITY LOGIC ---
-                if 'steamapps' in value_part:
-                    idx = value_part.index('steamapps')
-                    subpath = value_part[idx:].lstrip('/')
+                if 'steamapps' in cleaned_value:
+                    # Vanilla game path detected - always rebuild to ensure correct format
+                    if not gamepath_drive_letter:
+                        logger.warning(f"Vanilla game path detected but gamePath drive letter not found. Skipping binary path update for: {exe_name}")
+                        logger.warning("This may indicate jackify-engine already configured paths correctly, or gamePath is malformed.")
+                        continue
+                    
+                    # Check if path is malformed (has quotes or wrong structure)
+                    is_malformed = '"' in cleaned_value or cleaned_value != value_part.strip().strip('"')
+                    
+                    # Extract subpath from cleaned value (includes exe name)
+                    idx = cleaned_value.index('steamapps')
+                    subpath = cleaned_value[idx:].lstrip('/')
+                    
+                    # Find correct Steam library
                     correct_steam_lib = None
                     for lib in steam_libraries:
                         # Check if the actual game folder exists in this library
@@ -979,39 +999,62 @@ class PathHandler:
                     if not correct_steam_lib and steam_libraries:
                         correct_steam_lib = steam_libraries[0]
                     if correct_steam_lib:
+                        # Always rebuild path using gamePath drive letter to ensure correct format
+                        drive_prefix = gamepath_drive_letter
+                        if is_malformed:
+                            logger.info(f"Fixing malformed binary path for {exe_name}: {value_part.strip()}")
+                        logger.debug(f"Vanilla game path detected: Using drive letter from gamePath: {drive_prefix}")
                         new_binary_path = f"{drive_prefix}/{correct_steam_lib}/{subpath}".replace('\\', '/').replace('//', '/')
                     else:
                         logger.error("Could not determine correct Steam library for vanilla game path.")
                         continue
                 else:
+                    # For modlist-relative paths (Stock Game, mods, etc.), use modlist location
+                    drive_prefix = "D:" if modlist_sdcard else "Z:"
                     found_stock = None
                     for folder in STOCK_GAME_FOLDERS:
                         folder_pattern = f"/{folder}"
-                        if folder_pattern in value_part:
-                            idx = value_part.index(folder_pattern)
-                            rel_path = value_part[idx:].lstrip('/')
+                        if folder_pattern in cleaned_value:
+                            idx = cleaned_value.index(folder_pattern)
+                            rel_path = cleaned_value[idx:].lstrip('/')
                             found_stock = folder
                             break
                     if not rel_path:
                         mods_pattern = "/mods/"
-                        if mods_pattern in value_part:
-                            idx = value_part.index(mods_pattern)
-                            rel_path = value_part[idx:].lstrip('/')
+                        if mods_pattern in cleaned_value:
+                            idx = cleaned_value.index(mods_pattern)
+                            rel_path = cleaned_value[idx:].lstrip('/')
                         else:
                             rel_path = exe_name
                     processed_modlist_path = PathHandler._strip_sdcard_path_prefix(modlist_dir_path) if modlist_sdcard else str(modlist_dir_path)
                     new_binary_path = f"{drive_prefix}/{processed_modlist_path}/{rel_path}".replace('\\', '/').replace('//', '/')
                 formatted_binary_path = PathHandler._format_binary_for_mo2(new_binary_path)
+                # Ensure no quotes in formatted path (binary paths should never have quotes)
+                if '"' in formatted_binary_path:
+                    logger.warning(f"Formatted binary path still contains quotes, removing: {formatted_binary_path}")
+                    formatted_binary_path = formatted_binary_path.replace('"', '')
                 new_binary_line = f"{index}{backslash_style}binary = {formatted_binary_path}"
-                logger.debug(f"Updating binary path: {line.strip()} -> {new_binary_line}")
-                lines[i] = new_binary_line + "\n"
+                logger.info(f"Updating binary path: {line.strip()} -> {new_binary_line}")
+                # Preserve original line ending - lines from readlines() should have newline, but ensure it
+                original_line = lines[i]
+                if original_line.endswith('\n'):
+                    lines[i] = new_binary_line + '\n'
+                else:
+                    lines[i] = new_binary_line + '\n'
                 binary_paths_updated += 1
                 binary_paths_by_index[index] = formatted_binary_path
             for j, wd_line, index, backslash_style in working_dir_lines:
                 if index in binary_paths_by_index:
                     binary_path = binary_paths_by_index[index]
                     wd_path = os.path.dirname(binary_path)
-                    drive_prefix = "D:" if modlist_sdcard else "Z:"
+                    # Derive drive letter from binary path, not modlist location
+                    if binary_path.startswith("D:"):
+                        drive_prefix = "D:"
+                    elif binary_path.startswith("Z:"):
+                        drive_prefix = "Z:"
+                    else:
+                        # Fallback: use modlist location if binary path doesn't have drive letter
+                        drive_prefix = "D:" if modlist_sdcard else "Z:"
                     if wd_path.startswith("D:") or wd_path.startswith("Z:"):
                         wd_path = wd_path[2:]
                     wd_path = drive_prefix + wd_path
@@ -1019,7 +1062,12 @@ class PathHandler:
                     key_part = f"{index}{backslash_style}workingDirectory"
                     new_wd_line = f"{key_part} = {formatted_wd_path}"
                     logger.debug(f"Updating working directory: {wd_line.strip()} -> {new_wd_line}")
-                    lines[j] = new_wd_line + "\n"
+                    # Preserve original line ending - ensure newline is present
+                    original_wd_line = lines[j]
+                    if original_wd_line.endswith('\n'):
+                        lines[j] = new_wd_line + '\n'
+                    else:
+                        lines[j] = new_wd_line + '\n'
                     working_dirs_updated += 1
             with open(modlist_ini_path, 'w', encoding='utf-8') as f:
                 f.writelines(lines)
@@ -1140,6 +1188,33 @@ class PathHandler:
         # Ensure only one double backslash after drive letter
         path = re.sub(r'^([A-Z]:)\\+', r'\1\\', path)
         return path
+
+    @staticmethod
+    def _clean_malformed_binary_path(value_part: str) -> str:
+        """
+        Clean up malformed binary paths from engine (e.g., quotes in wrong places).
+        Example: "Z:/path/to/game"/exe.exe -> Z:/path/to/game/exe.exe
+        """
+        cleaned = value_part.strip()
+        # Remove quotes if they wrap only part of the path (malformed)
+        if cleaned.startswith('"') and '"' in cleaned[1:]:
+            # Find the closing quote
+            quote_end = cleaned.find('"', 1)
+            if quote_end > 0:
+                # Check if there's content after the quote (malformed)
+                after_quote = cleaned[quote_end + 1:].strip()
+                if after_quote.startswith('/') or after_quote:
+                    # Malformed: quotes wrap only part of path
+                    # Remove quotes and join
+                    path_part = cleaned[1:quote_end]
+                    remaining = after_quote.lstrip('/')
+                    cleaned = f"{path_part}/{remaining}" if remaining else path_part
+                    logger.info(f"Cleaned malformed binary path: {value_part} -> {cleaned}")
+        # Remove any remaining quotes (handles fully quoted paths too)
+        cleaned = cleaned.strip('"')
+        # Normalize slashes
+        cleaned = cleaned.replace('\\', '/')
+        return cleaned
 
     @staticmethod
     def _format_binary_for_mo2(path: str) -> str:

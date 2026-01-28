@@ -484,7 +484,16 @@ class WinetricksHandler:
                 # Build winetricks command - using --unattended for silent installation
                 cmd = [self.winetricks_path, '--unattended'] + components_to_install
 
-                self.logger.debug(f"Running: {' '.join(cmd)}")
+                # Log full command for advanced users to reproduce manually (debug mode only)
+                cmd_str = ' '.join(cmd)
+                self.logger.debug("=" * 80)
+                self.logger.debug("WINETRICKS COMMAND (for manual reproduction):")
+                self.logger.debug(f"  {cmd_str}")
+                self.logger.debug("")
+                self.logger.debug("Environment variables required:")
+                self.logger.debug(f"  WINEPREFIX={env.get('WINEPREFIX', 'NOT SET')}")
+                self.logger.debug(f"  WINE={env.get('WINE', 'NOT SET')}")
+                self.logger.debug("=" * 80)
 
                 # Enhanced diagnostics for bundled winetricks
                 self.logger.debug("=== Winetricks Environment Diagnostics ===")
@@ -567,8 +576,31 @@ class WinetricksHandler:
                     self.logger.error("")
                     self.logger.error("STDERR:")
                     if result.stderr.strip():
+                        # Filter out verbose winetricks "Executing..." messages - these are informational, not errors
+                        error_lines = []
+                        verbose_lines = []
                         for line in result.stderr.strip().split('\n'):
-                            self.logger.error(f"  {line}")
+                            line_lower = line.lower().strip()
+                            # Skip verbose informational messages
+                            if (line_lower.startswith('executing ') or 
+                                (line_lower.startswith('grep: warning:') and 'stray' in line_lower) or
+                                ('warning; possible' in line_lower and 'extra bytes' in line_lower)):
+                                # These are verbose info messages, log at debug level instead
+                                verbose_lines.append(line)
+                            else:
+                                # Actual error/warning messages (including "returned status", "aborting", dbus errors, etc.)
+                                error_lines.append(line)
+                        
+                        if error_lines:
+                            self.logger.error("  Actual errors/warnings:")
+                            for line in error_lines:
+                                self.logger.error(f"  {line}")
+                            if verbose_lines:
+                                self.logger.debug(f"  ({len(verbose_lines)} verbose 'Executing...' lines suppressed - see debug log for details)")
+                        else:
+                            self.logger.error("  (only verbose output, no actual errors)")
+                            if verbose_lines:
+                                self.logger.debug(f"  ({len(verbose_lines)} verbose lines suppressed)")
                     else:
                         self.logger.error("  (empty)")
                     self.logger.error("=" * 80)

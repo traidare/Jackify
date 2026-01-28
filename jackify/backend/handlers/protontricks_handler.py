@@ -367,6 +367,13 @@ class ProtontricksHandler:
             **kwargs # Allow overriding defaults (like stderr=DEVNULL)
         }
         
+        # Log full command for advanced users to reproduce manually (debug mode only)
+        cmd_str = ' '.join(map(str, cmd))
+        logger.debug("=" * 80)
+        logger.debug("PROTONTRICKS COMMAND (for manual reproduction):")
+        logger.debug(f"  {cmd_str}")
+        logger.debug("=" * 80)
+
         # Handle environment: if env was passed in kwargs, merge it with our clean env
         # Otherwise create a clean env from scratch
         if 'env' in kwargs and kwargs['env']:

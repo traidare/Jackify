@@ -485,24 +485,23 @@ class NativeSteamService:
         if proton_version is None:
             try:
                 from jackify.backend.handlers.config_handler import ConfigHandler
+                from jackify.backend.handlers.wine_utils import WineUtils
                 config_handler = ConfigHandler()
                 game_proton_path = config_handler.get_game_proton_path()
-                
+
                 if game_proton_path and game_proton_path != 'auto':
-                    # User has selected Game Proton - use it
-                    proton_version = os.path.basename(game_proton_path)
-                    # Convert to Steam format
-                    if not proton_version.startswith('GE-Proton'):
-                        proton_version = proton_version.lower().replace(' - ', '_').replace(' ', '_').replace('-', '_')
-                        if not proton_version.startswith('proton'):
-                            proton_version = f"proton_{proton_version}"
-                    logger.info(f"Using Game Proton from settings: {proton_version}")
-                else:
-                    # Fallback to auto-detect if Game Proton not set
-                    from jackify.backend.handlers.wine_utils import WineUtils
+                    resolved = WineUtils.resolve_steam_compat_name(game_proton_path)
+                    if resolved:
+                        proton_version = resolved
+                        logger.info(f"Using Game Proton from settings: {proton_version}")
+                    else:
+                        logger.warning(f"Could not resolve compat name for '{game_proton_path}', falling back to auto")
+                        game_proton_path = None
+
+                if not game_proton_path or game_proton_path == 'auto':
                     best_proton = WineUtils.select_best_proton()
                     if best_proton:
-                        proton_version = best_proton['name']
+                        proton_version = best_proton.get('steam_compat_name') or WineUtils.resolve_steam_compat_name(best_proton['path'])
                         logger.info(f"Auto-detected Game Proton: {proton_version}")
                     else:
                         proton_version = "proton_experimental"

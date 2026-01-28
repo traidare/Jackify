@@ -550,29 +550,29 @@ class SettingsDialog(QDialog):
         self.component_method_group = QButtonGroup()
         component_method_layout = QVBoxLayout()
         
-        # Get current setting
-        current_method = self.config_handler.get('component_installation_method', 'system_protontricks')
+        # Get current setting (default to winetricks)
+        current_method = self.config_handler.get('component_installation_method', 'winetricks')
         # Migrate old bundled_protontricks users to system_protontricks
         if current_method == 'bundled_protontricks':
             current_method = 'system_protontricks'
 
-        # Protontricks (default)
-        self.protontricks_radio = QRadioButton("Protontricks (Default)")
-        self.protontricks_radio.setChecked(current_method == 'system_protontricks')
-        self.protontricks_radio.setToolTip(
-            "Use system-installed protontricks (flatpak or native). Required for component installation."
-        )
-        self.component_method_group.addButton(self.protontricks_radio, 0)
-        component_method_layout.addWidget(self.protontricks_radio)
-
-        # Winetricks (alternative)
-        self.winetricks_radio = QRadioButton("Winetricks (Alternative)")
+        # Winetricks (default)
+        self.winetricks_radio = QRadioButton("Winetricks (Default)")
         self.winetricks_radio.setChecked(current_method == 'winetricks')
         self.winetricks_radio.setToolTip(
-            "Use bundled winetricks instead. May work when protontricks unavailable."
+            "Use bundled winetricks for component installation. Faster and more reliable."
         )
-        self.component_method_group.addButton(self.winetricks_radio, 1)
+        self.component_method_group.addButton(self.winetricks_radio, 0)
         component_method_layout.addWidget(self.winetricks_radio)
+
+        # Protontricks (alternative)
+        self.protontricks_radio = QRadioButton("Protontricks (Alternative)")
+        self.protontricks_radio.setChecked(current_method == 'system_protontricks')
+        self.protontricks_radio.setToolTip(
+            "Use system-installed protontricks (flatpak or native). Fallback option if winetricks fails."
+        )
+        self.component_method_group.addButton(self.protontricks_radio, 1)
+        component_method_layout.addWidget(self.protontricks_radio)
         
         component_layout.addLayout(component_method_layout)
 
@@ -746,7 +746,8 @@ class SettingsDialog(QDialog):
             else:
                 self.install_proton_dropdown.addItem("No Proton Versions Detected", "none")
 
-            # Filter for fast Proton versions only
+            # Filter to only known-compatible Protons for component installation
+            # Third-party builds (CachyOS, etc.) may have compatibility issues with Windows installers
             fast_protons = []
             slow_protons = []
 
@@ -754,30 +755,39 @@ class SettingsDialog(QDialog):
                 proton_name = proton.get('name', 'Unknown Proton')
                 proton_type = proton.get('type', 'Unknown')
 
-                is_fast_proton = False
+                # Only include known-compatible Proton types for Install Proton
+                # Exclude third-party builds that may have component installation issues
+                if proton_type not in ('GE-Proton', 'Valve-Proton'):
+                    # Skip third-party Protons (CachyOS, etc.) - they may not work reliably for component installation
+                    logger.debug(f"Skipping {proton_name} ({proton_type}) from Install Proton dropdown - third-party builds may have compatibility issues")
+                    continue
 
-                # Fast Protons: Experimental, GE-Proton 10+
-                if proton_name == "Proton - Experimental":
-                    is_fast_proton = True
-                elif proton_type == 'GE-Proton':
-                    # For GE-Proton, check major_version field
-                    major_version = proton.get('major_version', 0)
-                    if major_version >= 10:
-                        is_fast_proton = True
+                # Determine if this Proton is explicitly slow for texture processing
+                slow_warning = False
 
-                if is_fast_proton:
-                    if proton_type == 'GE-Proton':
-                        display_name = f"{proton_name} (GE)"
-                    else:
-                        display_name = proton_name
-                    fast_protons.append((display_name, str(proton['path'])))
-                else:
-                    # Slow Protons: Valve 9, 10 beta, older GE-Proton, etc.
-                    if proton_type == 'GE-Proton':
-                        display_name = f"{proton_name} (GE) (Slow texture processing)"
-                    else:
-                        display_name = f"{proton_name} (Slow texture processing)"
+                if proton_type == 'GE-Proton':
+                    # Older GE (< 10) are known to be slower for heavy texture processing.
+                    major_version = proton.get('major_version')
+                    # Check if we have a valid major_version and it's < 10
+                    if major_version is not None and isinstance(major_version, int) and major_version < 10:
+                        slow_warning = True
+                    # Also check name pattern as fallback (e.g., "GE-Proton9-27")
+                    elif 'GE-Proton9' in proton_name or 'GE-Proton8' in proton_name:
+                        slow_warning = True
+                    display_name = f"{proton_name} (GE)"
+                elif proton_type == 'Valve-Proton':
+                    # Valve Proton 9.x is slower for BC7/BC6H workloads; newer Valve Proton is fine.
+                    display_name = proton_name
+                    if proton_name.startswith("Proton 9") or "9.0" in proton_name:
+                        slow_warning = True
+
+                # Add slow label if needed
+                if slow_warning:
+                    display_name = f"{display_name} (Slow texture processing)"
                     slow_protons.append((display_name, str(proton['path'])))
+                else:
+                    # Everything else (fast) goes above the separator
+                    fast_protons.append((display_name, str(proton['path'])))
 
             # Add fast Protons first
             for display_name, path in fast_protons:
@@ -964,7 +974,7 @@ class SettingsDialog(QDialog):
             # Save component installation method preference
             if self.winetricks_radio.isChecked():
                 method = 'winetricks'
-            else:  # protontricks_radio (default)
+            else:  # protontricks_radio (alternative)
                 method = 'system_protontricks'
 
             old_method = self.config_handler.get('component_installation_method', 'winetricks')

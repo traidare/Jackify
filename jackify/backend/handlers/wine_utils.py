@@ -19,6 +19,15 @@ from .subprocess_utils import get_clean_subprocess_env
 # Initialize logger
 logger = logging.getLogger(__name__)
 
+# Known Valve Proton App ID -> config.vdf internal name mapping
+VALVE_PROTON_APPID_MAP = {
+    '2805730': 'proton_9',
+    '3658110': 'proton_10',
+    '1493710': 'proton_experimental',
+    '2180100': 'proton_hotfix',
+    '1887720': 'proton_8',
+}
+
 
 class WineUtils:
     """
@@ -850,6 +859,155 @@ class WineUtils:
         return [path for path in compat_paths if path.exists()]
 
     @staticmethod
+    def _parse_compat_tool_name(proton_dir: Path) -> Optional[str]:
+        """Parse the Steam internal name from a compatibilitytool.vdf file.
+        The key under compat_tools is what Steam uses in config.vdf CompatToolMapping."""
+        vdf_path = proton_dir / "compatibilitytool.vdf"
+        if not vdf_path.exists():
+            return None
+        try:
+            with open(vdf_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            match = re.search(r'"compat_tools"\s*\{[^{]*"([^"]+)"\s*(?://[^\n]*)?\s*\{', content, re.DOTALL)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            logger.warning(f"Failed to parse {vdf_path}: {e}")
+        return None
+
+    @staticmethod
+    def _find_valve_proton_appid(proton_dir_name: str) -> Optional[str]:
+        """Find the Steam App ID for a Valve Proton by matching appmanifest installdir."""
+        steam_libs = WineUtils.get_steam_library_paths()
+        for lib_path in steam_libs:
+            steamapps_dir = lib_path.parent
+            for manifest in steamapps_dir.glob("appmanifest_*.acf"):
+                try:
+                    with open(manifest, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    installdir_match = re.search(r'"installdir"\s+"([^"]+)"', content)
+                    appid_match = re.search(r'"appid"\s+"(\d+)"', content)
+                    if installdir_match and appid_match:
+                        if installdir_match.group(1) == proton_dir_name:
+                            return appid_match.group(1)
+                except Exception:
+                    continue
+        return None
+
+    @staticmethod
+    def resolve_steam_compat_name(proton_path) -> Optional[str]:
+        """Resolve the correct Steam config.vdf internal name for a Proton installation.
+
+        For third-party Protons (GE, CachyOS, etc.): parses compatibilitytool.vdf
+        For Valve Protons: maps via App ID from appmanifest files.
+
+        Args:
+            proton_path: Path to the Proton directory (str or Path)
+
+        Returns:
+            Internal name for config.vdf CompatToolMapping, or None if unresolvable
+        """
+        proton_path = Path(proton_path)
+
+        if not proton_path.is_dir():
+            logger.warning(f"Proton path not found: {proton_path}")
+            return None
+
+        # Third-party Proton: check for compatibilitytool.vdf
+        compat_name = WineUtils._parse_compat_tool_name(proton_path)
+        if compat_name:
+            logger.debug(f"Resolved compat name from vdf: {proton_path.name} -> {compat_name}")
+            return compat_name
+
+        # Valve Proton: look up App ID from appmanifest, then map
+        dir_name = proton_path.name
+        appid = WineUtils._find_valve_proton_appid(dir_name)
+        if appid and appid in VALVE_PROTON_APPID_MAP:
+            name = VALVE_PROTON_APPID_MAP[appid]
+            logger.debug(f"Resolved Valve Proton: {dir_name} (AppID {appid}) -> {name}")
+            return name
+
+        # Fallback for GE-Proton dirs without a vdf (shouldn't happen, but safe)
+        if dir_name.startswith('GE-Proton'):
+            return dir_name
+
+        logger.warning(f"Could not resolve Steam compat name for: {proton_path}")
+        return None
+
+    @staticmethod
+    def scan_thirdparty_proton_versions() -> List[Dict[str, any]]:
+        """Scan for non-GE third-party Proton versions in compatibilitytools.d directories.
+        Discovers CachyOS, TKG, and other community builds by parsing compatibilitytool.vdf.
+
+        Returns:
+            List of dicts with version info, sorted by name
+        """
+        logger.info("Scanning for third-party Proton versions...")
+
+        found_versions = []
+        seen_names = set()
+        compat_paths = WineUtils.get_compatibility_tool_paths()
+
+        if not compat_paths:
+            return []
+
+        for compat_path in compat_paths:
+            try:
+                for proton_dir in compat_path.iterdir():
+                    if not proton_dir.is_dir():
+                        continue
+
+                    dir_name = proton_dir.name
+
+                    # Skip GE-Proton (handled by scan_ge_proton_versions)
+                    if dir_name.startswith("GE-Proton"):
+                        continue
+
+                    # Must have a wine binary to be a usable Proton
+                    wine_bin = proton_dir / "files" / "bin" / "wine"
+                    if not wine_bin.exists():
+                        continue
+
+                    # Must have a compatibilitytool.vdf (proves it's a Proton compat tool)
+                    compat_name = WineUtils._parse_compat_tool_name(proton_dir)
+                    if not compat_name:
+                        continue
+
+                    # Skip non-Proton tools (e.g., LegacyRuntime)
+                    vdf_path = proton_dir / "compatibilitytool.vdf"
+                    try:
+                        with open(vdf_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            vdf_content = f.read()
+                        if '"from_oslist"  "linux"' in vdf_content:
+                            continue
+                    except Exception:
+                        pass
+
+                    # Skip Proton Hotfix
+                    if 'hotfix' in compat_name.lower():
+                        continue
+
+                    if compat_name in seen_names:
+                        continue
+                    seen_names.add(compat_name)
+
+                    found_versions.append({
+                        'name': dir_name,
+                        'path': proton_dir,
+                        'wine_bin': wine_bin,
+                        'priority': 175,
+                        'type': 'ThirdParty-Proton',
+                        'steam_compat_name': compat_name,
+                    })
+                    logger.debug(f"Found third-party Proton: {dir_name} (compat name: {compat_name})")
+
+            except Exception as e:
+                logger.warning(f"Error scanning {compat_path}: {e}")
+
+        logger.info(f"Found {len(found_versions)} third-party Proton version(s)")
+        return found_versions
+
+    @staticmethod
     def scan_ge_proton_versions() -> List[Dict[str, any]]:
         """
         Scan for available GE-Proton versions in compatibilitytools.d directories.
@@ -895,6 +1053,7 @@ class WineUtils:
                         # Priority format: 200 (base) + major*10 + minor (e.g., 200 + 100 + 16 = 316)
                         priority = 200 + (major_ver * 10) + minor_ver
 
+                        compat_name = WineUtils._parse_compat_tool_name(proton_dir) or dir_name
                         found_versions.append({
                             'name': dir_name,
                             'path': proton_dir,
@@ -902,7 +1061,8 @@ class WineUtils:
                             'priority': priority,
                             'major_version': major_ver,
                             'minor_version': minor_ver,
-                            'type': 'GE-Proton'
+                            'type': 'GE-Proton',
+                            'steam_compat_name': compat_name,
                         })
                         logger.debug(f"Found {dir_name} at {proton_dir} (priority: {priority})")
                     else:
@@ -951,12 +1111,14 @@ class WineUtils:
                 wine_bin = proton_path / "files" / "bin" / "wine"
                 
                 if wine_bin.exists() and wine_bin.is_file():
+                    compat_name = WineUtils.resolve_steam_compat_name(proton_path)
                     found_versions.append({
                         'name': version_name,
                         'path': proton_path,
                         'wine_bin': wine_bin,
                         'priority': priority,
-                        'type': 'Valve-Proton'
+                        'type': 'Valve-Proton',
+                        'steam_compat_name': compat_name,
                     })
                     logger.debug(f"Found {version_name} at {proton_path}")
         
@@ -998,6 +1160,10 @@ class WineUtils:
         ge_versions = WineUtils.scan_ge_proton_versions()
         all_versions.extend(ge_versions)
 
+        # Scan third-party Proton versions (CachyOS, TKG, etc.)
+        thirdparty_versions = WineUtils.scan_thirdparty_proton_versions()
+        all_versions.extend(thirdparty_versions)
+
         # Scan Valve Proton versions
         valve_versions = WineUtils.scan_valve_proton_versions()
         all_versions.extend(valve_versions)
@@ -1025,6 +1191,7 @@ class WineUtils:
     def select_best_proton() -> Optional[Dict[str, any]]:
         """
         Select the best available Proton version (GE-Proton or Valve Proton) using unified precedence.
+        Excludes third-party builds (CachyOS, etc.) which may have compatibility issues.
 
         Returns:
             Dict with version info for the best Proton, or None if none found
@@ -1035,8 +1202,16 @@ class WineUtils:
             logger.warning("No compatible Proton versions found")
             return None
 
+        # Filter out third-party Protons - they may have compatibility issues with component installation
+        # Only include GE-Proton and Valve-Proton types
+        compatible_versions = [v for v in available_versions if v.get('type') in ('GE-Proton', 'Valve-Proton')]
+        
+        if not compatible_versions:
+            logger.warning("No compatible Proton versions found (only third-party builds available)")
+            return None
+
         # Return the highest priority version (first in sorted list)
-        best_version = available_versions[0]
+        best_version = compatible_versions[0]
         logger.info(f"Selected best Proton version: {best_version['name']} ({best_version['type']})")
         return best_version
 
@@ -1079,11 +1254,11 @@ class WineUtils:
         if best_proton:
             # Compatible Proton found
             proton_type = best_proton.get('type', 'Unknown')
-            status_msg = f"✓ Using {best_proton['name']} ({proton_type}) for this workflow"
+            status_msg = f"[OK] Using {best_proton['name']} ({proton_type}) for this workflow"
             logger.info(f"Proton requirements satisfied: {best_proton['name']} ({proton_type})")
             return True, status_msg, best_proton
         else:
             # No compatible Proton found
-            status_msg = "✗ No compatible Proton version found (GE-Proton 10+, Proton 9+, 10, or Experimental required)"
+            status_msg = "[FAIL] No compatible Proton version found (GE-Proton 10+, Proton 9+, 10, or Experimental required)"
             logger.warning("Proton requirements not met - no compatible version found")
             return False, status_msg, None 
