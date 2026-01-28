@@ -1,7 +1,7 @@
 # Jackify Changelog
 
 ## v0.2.2.2 - ModOrganizer.ini Path Fixes for SD Card Installations
-**Release Date:** TBD (Testing in progress)
+**Release Date:** 2026-01-28
 
 ### Bug Fixes
 - **ModOrganizer.ini Path Mangling**: Fixed incorrect drive letter assignment when modlist is on SD card but vanilla game is on internal storage. Now uses gamePath drive letter as source of truth for vanilla game paths.
@@ -11,7 +11,7 @@
 ### Engine Updates
 - **jackify-engine 0.4.7**: Fixed incorrect quoting/escaping of MO2 `customExecutables` by writing clean, unquoted Proton `Z:\...` paths in `ModOrganizer.ini`. This eliminates engine-side quote corruption that previously triggered SD card path mangling issues.
 
-### Loggging Improvement
+### Developer Experience
 - **Debug External Command Logging**: When debug mode is enabled, Jackify now logs the full `protontricks` command line before execution, making it easier for advanced users to reproduce and troubleshoot Wine/Proton issues by running the same command manually.
 
 ---
