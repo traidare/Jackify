@@ -93,18 +93,12 @@ class SafeMessageBox(NonFocusMessageBox):
         """High safety: requires typing confirmation code"""
         # Generate random confirmation code
         self.confirmation_code = ''.join(random.choices(string.ascii_uppercase, k=6))
-        
-        # Create custom buttons
-        self.proceed_btn = self.addButton(danger_action, QMessageBox.AcceptRole)
-        self.cancel_btn = self.addButton(safe_action, QMessageBox.RejectRole)
-        
-        # Make cancel the default (Enter key)
+
+        self.proceed_btn = self.addButton(danger_action, QMessageBox.ActionRole)
+        self.cancel_btn = self.addButton(safe_action, QMessageBox.ActionRole)
         self.setDefaultButton(self.cancel_btn)
-        
-        # Initially disable proceed button
         self.proceed_btn.setEnabled(False)
-        
-        # Add confirmation code input
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
@@ -124,26 +118,16 @@ class SafeMessageBox(NonFocusMessageBox):
     
     def _setup_medium_safety(self, danger_action: str, safe_action: str):
         """Medium safety: requires wait period"""
-        # Create custom buttons
-        self.proceed_btn = self.addButton(danger_action, QMessageBox.AcceptRole)
-        self.cancel_btn = self.addButton(safe_action, QMessageBox.RejectRole)
-        
-        # Make cancel the default (Enter key)
+        self.proceed_btn = self.addButton(danger_action, QMessageBox.ActionRole)
+        self.cancel_btn = self.addButton(safe_action, QMessageBox.ActionRole)
         self.setDefaultButton(self.cancel_btn)
-        
-        # Initially disable proceed button
         self.proceed_btn.setEnabled(False)
-        
-        # Start countdown
         self._start_countdown(3)
     
     def _setup_low_safety(self, danger_action: str, safe_action: str):
         """Low safety: no additional features needed"""
-        # Create standard buttons
-        self.proceed_btn = self.addButton(danger_action, QMessageBox.AcceptRole)
-        self.cancel_btn = self.addButton(safe_action, QMessageBox.RejectRole)
-        
-        # Make proceed the default for low safety
+        self.proceed_btn = self.addButton(danger_action, QMessageBox.ActionRole)
+        self.cancel_btn = self.addButton(safe_action, QMessageBox.ActionRole)
         self.setDefaultButton(self.proceed_btn)
     
     def _start_countdown(self, seconds: int):
@@ -274,7 +258,7 @@ class MessageService:
                  default_button: QMessageBox.StandardButton = QMessageBox.No,
                  critical: bool = False,
                  safety_level: str = "low") -> int:
-        """Show question dialog without stealing focus"""
+        """Show question dialog without stealing focus. Uses explicit button order for consistency."""
         if safety_level in ["medium", "high"]:
             msg_box = SafeMessageBox(parent, safety_level)
             msg_box.setup_safety_features(title, message, "Yes", "No", is_question=True)
@@ -283,7 +267,21 @@ class MessageService:
             msg_box.setIcon(QMessageBox.Question)
             msg_box.setWindowTitle(title)
             msg_box.setText(message)
-            msg_box.setStandardButtons(buttons)
-            msg_box.setDefaultButton(default_button)
-        
-        return msg_box.exec() 
+            yes_btn = msg_box.addButton("Yes", QMessageBox.ActionRole)
+            no_btn = msg_box.addButton("No", QMessageBox.ActionRole)
+            if default_button == QMessageBox.No:
+                msg_box.setDefaultButton(no_btn)
+            else:
+                msg_box.setDefaultButton(yes_btn)
+
+        result = msg_box.exec()
+
+        # For SafeMessageBox with is_question=True, return value is already set by done()
+        if safety_level in ["medium", "high"]:
+            return result
+
+        # For non-SafeMessageBox, map clicked button to QMessageBox.Yes/No for compatibility
+        clicked = msg_box.clickedButton()
+        if clicked and clicked.text() == "Yes":
+            return QMessageBox.Yes
+        return QMessageBox.No 

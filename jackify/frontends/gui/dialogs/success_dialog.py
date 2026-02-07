@@ -244,7 +244,7 @@ class SuccessDialog(QDialog):
         else:
             base_message = f"You can now launch {self.modlist_name} from Steam and enjoy your modded {game_display} experience!"
 
-        # Note: ENB-specific Proton warning is now shown in a separate dialog when ENB is detected
+        # ENB Proton warning shown in separate dialog
         return base_message 
 
     def _update_countdown(self):

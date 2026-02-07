@@ -7,10 +7,13 @@ import json
 import subprocess
 import time
 import threading
+import logging
 from pathlib import Path
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 import urllib.request
+
+logger = logging.getLogger(__name__)
 
 from jackify.backend.models.modlist_metadata import (
     ModlistMetadataResponse,
@@ -120,7 +123,7 @@ class ModlistGalleryService:
 
             # Execute command
             # CRITICAL: Use centralized clean environment to prevent AppImage recursive spawning
-            # This must happen AFTER engine path resolution
+            # Must happen AFTER engine path resolution
             from jackify.backend.handlers.subprocess_utils import get_clean_subprocess_env
             clean_env = get_clean_subprocess_env()
 
@@ -290,7 +293,7 @@ class ModlistGalleryService:
                 cmd[0] = str(engine_path)
                 
                 # CRITICAL: Use centralized clean environment to prevent AppImage recursive spawning
-                # This must happen AFTER engine path resolution
+                # Must happen AFTER engine path resolution
                 from jackify.backend.handlers.subprocess_utils import get_clean_subprocess_env
                 clean_env = get_clean_subprocess_env()
 
@@ -394,7 +397,7 @@ class ModlistGalleryService:
                 data = json.loads(response.read().decode('utf-8'))
                 return data
         except Exception as e:
-            print(f"Warning: Could not load tag mappings: {e}")
+            logger.warning(f"Could not load tag mappings: {e}")
             return {}
     
     def load_allowed_tags(self) -> set:
@@ -410,7 +413,7 @@ class ModlistGalleryService:
                 data = json.loads(response.read().decode('utf-8'))
                 return set(data)  # Return as set preserving original case
         except Exception as e:
-            print(f"Warning: Could not load allowed tags: {e}")
+            logger.warning(f"Could not load allowed tags: {e}")
             return set()
 
     def _ensure_tag_metadata(self):

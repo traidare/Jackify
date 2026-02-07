@@ -451,7 +451,7 @@ class NativeSteamService:
             if app_id_exists:
                 logger.info(f"AppID {app_id} already exists in CompatToolMapping, will be overwritten")
                 # Remove the existing entry by finding and removing the entire block
-                # This is complex, so for now just add at the end
+                # Complex ordering -- just append for now
             
             # Create the new entry in STL's exact format (tabs between key and value)
             new_entry = f'\t\t\t\t\t"{app_id}"\n\t\t\t\t\t{{\n\t\t\t\t\t\t"name"\t\t"{proton_version}"\n\t\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t\t"priority"\t\t"250"\n\t\t\t\t\t}}\n'
@@ -574,8 +574,7 @@ class NativeSteamService:
         """
         Create symlink to libraryfolders.vdf in Wine prefix for game detection.
         
-        This allows Wabbajack running in the prefix to detect Steam games.
-        Based on Wabbajack-Proton-AuCu implementation.
+        Allows Wabbajack running in the prefix to detect Steam games.
         
         Args:
             app_id: Steam AppID (unsigned)

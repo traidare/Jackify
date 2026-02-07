@@ -165,7 +165,6 @@ class UIHandler:
     def show_help(self, topic: str) -> None:
         """Display help information for a topic."""
         try:
-            # This would typically load help content from a file or database
             print(f"\nHelp: {topic}")
             print("=" * (len(topic) + 6))
             print("Help content would be displayed here.")

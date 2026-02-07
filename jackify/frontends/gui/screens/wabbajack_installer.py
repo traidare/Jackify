@@ -6,23 +6,26 @@ Follows standard Jackify screen layout.
 """
 
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QLineEdit, QGridLayout, QTextEdit, QTabWidget, QSizePolicy, QCheckBox
+    QFileDialog, QLineEdit, QGridLayout, QTextEdit, QTabWidget, QSizePolicy, QCheckBox,
+    QMessageBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QSize
 from PySide6.QtGui import QTextCursor
 
 from jackify.backend.models.configuration import SystemInfo
-from jackify.backend.handlers.wabbajack_installer_handler import WabbajackInstallerHandler
 from ..services.message_service import MessageService
 from ..shared_theme import JACKIFY_COLOR_BLUE, DEBUG_BORDERS
 from ..utils import set_responsive_minimum
 from ..widgets.file_progress_list import FileProgressList
 from ..widgets.progress_indicator import OverallProgressIndicator
+from .screen_back_mixin import ScreenBackMixin
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,6 @@ class WabbajackInstallerWorker(QThread):
         self.install_folder = install_folder
         self.shortcut_name = shortcut_name
         self.enable_gog = enable_gog
-        self.handler = WabbajackInstallerHandler()
         self.launch_options = ""  # Store launch options for success message
         self.start_time = None  # Track installation start time
 
@@ -50,206 +52,38 @@ class WabbajackInstallerWorker(QThread):
         logger.info(message)
 
     def run(self):
-        """Run the installation workflow"""
+        """Run the installation workflow using backend service"""
         import time
         self.start_time = time.time()
-        try:
-            total_steps = 12
-
-            # Step 1: Check requirements
-            self.progress_update.emit("Checking requirements...", 5)
-            self.activity_update.emit("Checking requirements", 1, total_steps)
-            self._log("Checking system requirements...")
-
-            proton_path = self.handler.find_proton_experimental()
-            if not proton_path:
-                self.installation_complete.emit(
-                    False,
-                    "Proton Experimental not found.\nPlease install it from Steam."
-                )
-                return
-            self._log(f"Found Proton Experimental: {proton_path}")
-
-            userdata = self.handler.find_steam_userdata_path()
-            if not userdata:
-                self.installation_complete.emit(
-                    False,
-                    "Steam userdata not found.\nPlease ensure Steam is installed and you're logged in."
-                )
-                return
-            self._log(f"Found Steam userdata: {userdata}")
-
-            # Step 2: Download Wabbajack
-            self.progress_update.emit("Downloading Wabbajack.exe...", 15)
-            self.activity_update.emit("Downloading Wabbajack.exe", 2, total_steps)
-            self._log("Downloading Wabbajack.exe from GitHub...")
-            wabbajack_exe = self.handler.download_wabbajack(self.install_folder)
-            self._log(f"Downloaded to: {wabbajack_exe}")
-
-            # Step 3: Create dotnet cache
-            self.progress_update.emit("Creating .NET cache directory...", 20)
-            self.activity_update.emit("Creating .NET cache", 3, total_steps)
-            self._log("Creating .NET bundle extract cache...")
-            self.handler.create_dotnet_cache(self.install_folder)
-
-            # Step 4: Stop Steam before modifying shortcuts.vdf
-            self.progress_update.emit("Stopping Steam...", 25)
-            self.activity_update.emit("Stopping Steam", 4, total_steps)
-            self._log("Stopping Steam (required to safely modify shortcuts.vdf)...")
-            import subprocess
-            import time
-            
-            # Kill Steam using pkill (simple approach like AuCu)
-            try:
-                subprocess.run(['steam', '-shutdown'], timeout=5, capture_output=True)
-                time.sleep(2)
-                subprocess.run(['pkill', '-9', 'steam'], timeout=5, capture_output=True)
-                time.sleep(2)
-                self._log("Steam stopped successfully")
-            except Exception as e:
-                self._log(f"Warning: Steam shutdown had issues: {e}. Proceeding anyway...")
-
-            # Step 5: Add to Steam shortcuts (NO Proton - like AuCu, but with STEAM_COMPAT_MOUNTS for libraries)
-            self.progress_update.emit("Adding to Steam shortcuts...", 30)
-            self.activity_update.emit("Adding to Steam", 5, total_steps)
-            self._log("Adding Wabbajack to Steam shortcuts...")
-            from jackify.backend.services.native_steam_service import NativeSteamService
-            steam_service = NativeSteamService()
-            
-            # Generate launch options with STEAM_COMPAT_MOUNTS for additional Steam libraries (like modlist installs)
-            # Default to empty string (like AuCu) - only add options if we have additional libraries
-            # Note: Users may need to manually add other paths (e.g., download directories on different drives) to launch options
-            launch_options = ""
-            try:
-                from jackify.backend.handlers.path_handler import PathHandler
-                path_handler = PathHandler()
-                
-                all_libs = path_handler.get_all_steam_library_paths()
-                main_steam_lib_path_obj = path_handler.find_steam_library()
-                if main_steam_lib_path_obj and main_steam_lib_path_obj.name == "common":
-                    main_steam_lib_path = main_steam_lib_path_obj.parent.parent
-                    
-                    filtered_libs = [lib for lib in all_libs if str(lib) != str(main_steam_lib_path)]
-                    if filtered_libs:
-                        mount_paths = ":".join(str(lib) for lib in filtered_libs)
-                        launch_options = f'STEAM_COMPAT_MOUNTS="{mount_paths}" %command%'
-                        self._log(f"Added STEAM_COMPAT_MOUNTS for additional Steam libraries: {mount_paths}")
-                    else:
-                        self._log("No additional Steam libraries found - using empty launch options (like AuCu)")
-            except Exception as e:
-                self._log(f"Could not generate STEAM_COMPAT_MOUNTS (non-critical): {e}")
-                # Keep empty string like AuCu
-            
-            # Store launch options for success message
-            self.launch_options = launch_options
-            
-            # Create shortcut WITHOUT Proton (AuCu does this separately later)
-            success, app_id = steam_service.create_shortcut(
-                app_name=self.shortcut_name,
-                exe_path=str(wabbajack_exe),
-                start_dir=str(wabbajack_exe.parent),
-                launch_options=launch_options,  # Empty or with STEAM_COMPAT_MOUNTS
-                tags=["Jackify"]
-            )
-            if not success or app_id is None:
-                raise RuntimeError("Failed to create Steam shortcut")
-            self._log(f"Created Steam shortcut with AppID: {app_id}")
-
-            # Step 6: Initialize Wine prefix
-            self.progress_update.emit("Initializing Wine prefix...", 45)
-            self.activity_update.emit("Initializing Wine prefix", 6, total_steps)
-            self._log("Initializing Wine prefix with Proton...")
-            prefix_path = self.handler.init_wine_prefix(app_id)
-            self._log(f"Wine prefix created: {prefix_path}")
-
-            # Step 7: Install WebView2
-            self.progress_update.emit("Installing WebView2 runtime...", 60)
-            self.activity_update.emit("Installing WebView2", 7, total_steps)
-            self._log("Downloading and installing WebView2...")
-            try:
-                self.handler.install_webview2(app_id, self.install_folder)
-                self._log("WebView2 installed successfully")
-            except Exception as e:
-                self._log(f"WARNING: WebView2 installation may have failed: {e}")
-                self._log("This may prevent Nexus login in Wabbajack. You can manually install WebView2 later.")
-                # Continue installation - WebView2 is not critical for basic functionality
-
-            # Step 8: Apply Win7 registry
-            self.progress_update.emit("Applying Windows 7 registry settings...", 75)
-            self.activity_update.emit("Applying registry settings", 8, total_steps)
-            self._log("Applying Windows 7 compatibility settings...")
-            self.handler.apply_win7_registry(app_id)
-            self._log("Registry settings applied")
-
-            # Step 9: GOG game detection (optional)
-            gog_count = 0
-            if self.enable_gog:
-                self.progress_update.emit("Detecting GOG games from Heroic...", 80)
-                self.activity_update.emit("Detecting GOG games", 9, total_steps)
-                self._log("Searching for GOG games in Heroic...")
-                try:
-                    gog_count = self.handler.inject_gog_registry(app_id)
-                    if gog_count > 0:
-                        self._log(f"Detected and injected {gog_count} GOG games")
-                    else:
-                        self._log("No GOG games found in Heroic")
-                except Exception as e:
-                    self._log(f"GOG injection failed (non-critical): {e}")
-
-            # Step 10: Create Steam library symlinks
-            self.progress_update.emit("Creating Steam library symlinks...", 85)
-            self.activity_update.emit("Creating library symlinks", 10, total_steps)
-            self._log("Creating Steam library symlinks for game detection...")
-            steam_service.create_steam_library_symlinks(app_id)
-            self._log("Steam library symlinks created")
-
-            # Step 11: Set Proton Experimental (separate step like AuCu)
-            self.progress_update.emit("Setting Proton compatibility...", 90)
-            self.activity_update.emit("Setting Proton compatibility", 11, total_steps)
-            self._log("Setting Proton Experimental as compatibility tool...")
-            try:
-                steam_service.set_proton_version(app_id, "proton_experimental")
-                self._log("Proton Experimental set successfully")
-            except Exception as e:
-                self._log(f"Warning: Failed to set Proton version (non-critical): {e}")
-                self._log("You can set it manually in Steam: Properties → Compatibility → Proton Experimental")
-
-            # Step 12: Start Steam at the end
-            self.progress_update.emit("Starting Steam...", 95)
-            self.activity_update.emit("Starting Steam", 12, total_steps)
-            self._log("Starting Steam...")
-            from jackify.backend.services.steam_restart_service import start_steam
-            start_steam()
-            time.sleep(3)  # Give Steam time to start
-            self._log("Steam started successfully")
-
-            # Done!
-            self.progress_update.emit("Installation complete!", 100)
-            self.activity_update.emit("Installation complete", 12, total_steps)
-            self._log("\n=== Installation Complete ===")
-            self._log(f"Wabbajack installed to: {self.install_folder}")
-            self._log(f"Steam AppID: {app_id}")
-            if gog_count > 0:
-                self._log(f"GOG games detected: {gog_count}")
-            self._log("You can now launch Wabbajack from Steam")
-
-            # Calculate time taken
-            import time
-            time_taken = int(time.time() - self.start_time)
-            mins, secs = divmod(time_taken, 60)
-            time_str = f"{mins} minutes, {secs} seconds" if mins else f"{secs} seconds"
-
-            # Store data for success dialog (app_id as string to avoid overflow)
-            self.installation_complete.emit(True, "", self.launch_options, str(app_id), time_str)
-
-        except Exception as e:
-            error_msg = f"Installation failed: {str(e)}"
-            self._log(f"\nERROR: {error_msg}")
-            logger.error(f"Wabbajack installation failed: {e}", exc_info=True)
-            self.installation_complete.emit(False, error_msg, "", "", "")
+        
+        from jackify.backend.services.wabbajack_installer_service import WabbajackInstallerService
+        
+        service = WabbajackInstallerService()
+        
+        def progress_callback(message: str, percentage: int):
+            self.progress_update.emit(message, percentage)
+            step_num = int((percentage / 100) * 12) if percentage < 100 else 12
+            self.activity_update.emit(message, step_num, 12)
+        
+        def log_callback(message: str):
+            self._log(message)
+        
+        success, app_id, launch_options, gog_count, time_str, error_msg = service.install_wabbajack(
+            install_folder=self.install_folder,
+            shortcut_name=self.shortcut_name,
+            enable_gog=self.enable_gog,
+            progress_callback=progress_callback,
+            log_callback=log_callback
+        )
+        
+        if success:
+            self.launch_options = launch_options or ""
+            self.installation_complete.emit(True, "", self.launch_options, str(app_id), time_str or "")
+        else:
+            self.installation_complete.emit(False, error_msg or "Installation failed", "", "", "")
 
 
-class WabbajackInstallerScreen(QWidget):
+class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
     """Wabbajack installer GUI screen following standard Jackify layout"""
 
     resize_request = Signal(str)
@@ -257,6 +91,7 @@ class WabbajackInstallerScreen(QWidget):
     def __init__(self, stacked_widget=None, additional_tasks_index=3, system_info: Optional[SystemInfo] = None):
         super().__init__()
         self.stacked_widget = stacked_widget
+        self.main_menu_index = additional_tasks_index
         self.additional_tasks_index = additional_tasks_index
         self.system_info = system_info or SystemInfo(is_steamdeck=False)
         self.debug = DEBUG_BORDERS
@@ -272,6 +107,11 @@ class WabbajackInstallerScreen(QWidget):
         # Scroll tracking for professional auto-scroll behavior
         self._user_manually_scrolled = False
         self._was_at_bottom = True
+
+        # Set up log file path
+        from jackify.shared.paths import get_jackify_logs_dir
+        self.log_path = get_jackify_logs_dir() / 'Wabbajack_Installer_workflow.log'
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
 
         # Initialize progress reporting
         self.progress_indicator = OverallProgressIndicator(show_progress_bar=True)
@@ -542,7 +382,7 @@ class WabbajackInstallerScreen(QWidget):
         # Get shortcut name
         self.shortcut_name = self.shortcut_name_edit.text().strip() or "Wabbajack"
 
-        # Confirm with user
+        # Confirm with user (standard dialog - no safety countdown needed for this operation)
         confirm = MessageService.question(
             self,
             "Confirm Installation",
@@ -553,12 +393,24 @@ class WabbajackInstallerScreen(QWidget):
             "Continue?"
         )
 
-        if not confirm:
+        if confirm != QMessageBox.Yes:
             return
 
         # Clear displays
         self.console.clear()
         self.file_progress_list.clear()
+
+        # Rotate log file at start of each workflow run (keep 5 backups)
+        from jackify.backend.handlers.logging_handler import LoggingHandler
+        log_handler = LoggingHandler()
+        log_handler.rotate_log_file_per_run(self.log_path, backup_count=5)
+
+        # Log session start
+        self._write_to_log_file("=" * 60)
+        self._write_to_log_file(f"Wabbajack Installation Started")
+        self._write_to_log_file(f"Install folder: {self.install_folder}")
+        self._write_to_log_file(f"Shortcut name: {self.shortcut_name}")
+        self._write_to_log_file("=" * 60)
 
         # Update UI state
         self.start_btn.setEnabled(False)
@@ -585,8 +437,19 @@ class WabbajackInstallerScreen(QWidget):
             summary_info={"current_step": current, "max_steps": total}
         )
 
+    def _write_to_log_file(self, message: str):
+        """Write message to workflow log file with timestamp"""
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(self.log_path, 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception:
+            pass
+
     def _on_log_output(self, message: str):
         """Handle log output with professional auto-scroll"""
+        self._write_to_log_file(message)
+
         scrollbar = self.console.verticalScrollBar()
         was_at_bottom = (scrollbar.value() >= scrollbar.maximum() - 1)
 
@@ -678,7 +541,7 @@ class WabbajackInstallerScreen(QWidget):
                         
                         # Insert before the Ko-Fi link (which should be near the end)
                         # Find the index of the Ko-Fi label or add at the end
-                        insert_index = card_layout.count() - 2  # Before buttons, after next steps
+                        insert_index = card_layout.count() - 2
                         card_layout.insertWidget(insert_index, note_frame)
             
             success_dialog.show()
@@ -698,8 +561,8 @@ class WabbajackInstallerScreen(QWidget):
 
     def _go_back(self):
         """Return to Additional Tasks menu"""
-        if self.stacked_widget:
-            self.stacked_widget.setCurrentIndex(self.additional_tasks_index)
+        self.collapse_show_details_before_leave()
+        self.go_back()
 
     def showEvent(self, event):
         """Called when widget becomes visible"""

@@ -63,11 +63,8 @@ class VDFHandler:
         if file_name == "shortcuts.vdf":
             return False
         
-        # Check exact filename match
         if file_name in PROTECTED_VDF_FILES:
             return True
-            
-        # Check pattern match (for appmanifest_*.acf)
         for pattern in PROTECTED_VDF_FILES:
             if '*' in pattern and pattern.replace('*', '') in file_name:
                 return True
@@ -125,7 +122,7 @@ class VDFHandler:
                     return vdf.load(f_text)
                     
         except FileNotFoundError:
-            # This might be redundant due to os.path.exists checks, but keep for safety
+            # Possibly redundant with os.path.exists checks -- kept for safety
             logger.error(f"VDF file not found during load operation: {file_path}")
             return None
         except PermissionError:

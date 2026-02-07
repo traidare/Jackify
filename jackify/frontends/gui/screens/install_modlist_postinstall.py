@@ -1,0 +1,470 @@
+"""Post-install UI feedback management for InstallModlistScreen (Mixin)."""
+import re
+import time
+from typing import Optional
+
+from PySide6.QtCore import QTimer
+
+from jackify.shared.progress_models import InstallationProgress, InstallationPhase, FileProgress, OperationType
+
+
+class PostInstallFeedbackMixin:
+    """Mixin providing post-install progress tracking and UI feedback for InstallModlistScreen."""
+
+    def _build_post_install_sequence(self):
+        """
+        Define the ordered steps for post-install (Jackify-managed) operations.
+
+        These steps represent Jackify's automated Steam integration and configuration workflow
+        that runs AFTER the jackify-engine completes modlist installation. Progress is shown as
+        "X/Y" in the progress banner and Activity window.
+
+        The post-install steps are:
+        1. Preparing Steam integration - Initial setup before creating Steam shortcut
+        2. Creating Steam shortcut - Add modlist to Steam library with proper Proton settings
+        3. Restarting Steam - Restart Steam to make shortcut visible and create AppID
+        4. Creating Proton prefix - Launch temporary batch file to initialize Proton prefix
+        5. Verifying Steam setup - Confirm prefix exists and Proton version is correct
+        6. Steam integration complete - Steam setup finished successfully
+        7. Installing Wine components - Install vcrun, dotnet, and other Wine dependencies
+        8. Applying registry files - Import .reg files for game configuration
+        9. Installing .NET fixes - Apply .NET framework workarounds if needed
+        10. Enabling dotfiles - Make hidden config files visible in file manager
+        11. Setting permissions - Ensure modlist files have correct permissions
+        12. Backing up configuration - Create backup of ModOrganizer.ini
+        13. Finalising Jackify configuration - All post-install steps complete
+        """
+        return [
+            {
+                'id': 'prepare',
+                'label': "Preparing Steam integration",
+                'keywords': [
+                    "starting automated steam setup",
+                    "starting configuration phase",
+                    "starting configuration"
+                ],
+            },
+            {
+                'id': 'steam_shortcut',
+                'label': "Creating Steam shortcut",
+                'keywords': [
+                    "creating steam shortcut",
+                    "steam shortcut created successfully"
+                ],
+            },
+            {
+                'id': 'steam_restart',
+                'label': "Restarting Steam",
+                'keywords': [
+                    "restarting steam",
+                    "steam restarted successfully"
+                ],
+            },
+            {
+                'id': 'proton_prefix',
+                'label': "Creating Proton prefix",
+                'keywords': [
+                    "creating proton prefix",
+                    "proton prefix created successfully",
+                    "temporary batch file launched",
+                    "verifying prefix creation"
+                ],
+            },
+            {
+                'id': 'steam_verify',
+                'label': "Verifying Steam setup",
+                'keywords': [
+                    "verifying setup",
+                    "verifying prefix",
+                    "setup verification completed",
+                    "detecting actual appid",
+                    "steam configuration complete"
+                ],
+            },
+            {
+                'id': 'steam_complete',
+                'label': "Steam integration complete",
+                'keywords': [
+                    "steam integration complete",
+                    "steam integration",
+                    "steam configuration complete!"
+                ],
+            },
+            {
+                'id': 'wine_components',
+                'label': "Installing Wine components",
+                'keywords': [
+                    "installing wine components",
+                    "wine components",
+                    "vcrun",
+                    "dotnet",
+                    "running winetricks",
+                ],
+            },
+            {
+                'id': 'registry_files',
+                'label': "Applying registry files",
+                'keywords': [
+                    "applying registry",
+                    "importing registry",
+                    ".reg file",
+                    "registry files",
+                ],
+            },
+            {
+                'id': 'dotnet_fixes',
+                'label': "Installing .NET fixes",
+                'keywords': [
+                    "dotnet fix",
+                    ".net fix",
+                    "installing .net",
+                ],
+            },
+            {
+                'id': 'enable_dotfiles',
+                'label': "Enabling dotfiles",
+                'keywords': [
+                    "enabling dotfiles",
+                    "dotfiles",
+                    "hidden files",
+                ],
+            },
+            {
+                'id': 'set_permissions',
+                'label': "Setting permissions",
+                'keywords': [
+                    "setting permissions",
+                    "chmod",
+                    "permissions",
+                ],
+            },
+            {
+                'id': 'backup_config',
+                'label': "Backing up configuration",
+                'keywords': [
+                    "backing up",
+                    "modorganizer.ini",
+                    "backup",
+                ],
+            },
+            {
+                'id': 'vnv_root_mods',
+                'label': "VNV: Copying root mods",
+                'keywords': [
+                    "step 1/3: copying root mods",
+                    "copying root mods to game directory",
+                    "root mods:",
+                ],
+            },
+            {
+                'id': 'vnv_4gb_patch',
+                'label': "VNV: Applying 4GB patch",
+                'keywords': [
+                    "step 2/3: downloading and running 4gb patcher",
+                    "downloading fnv4gb",
+                    "downloading:",
+                    "fetching file list",
+                    "running 4gb patcher",
+                    "4gb patcher:",
+                ],
+            },
+            {
+                'id': 'vnv_bsa_decompress',
+                'label': "VNV: Decompressing BSA files",
+                'keywords': [
+                    "step 3/3: downloading and running bsa decompressor",
+                    "downloading:",
+                    "fetching file list",
+                    "running bsa decompressor",
+                    "decompressing bsa files:",
+                    "bsa decompression:",
+                ],
+            },
+            {
+                'id': 'config_finalize',
+                'label': "Finalising Jackify configuration",
+                'keywords': [
+                    "configuration completed successfully",
+                    "configuration complete",
+                    "manual steps validation failed",
+                    "configuration failed",
+                    "vnv post-install completed successfully"
+                ],
+            },
+        ]
+
+    def _begin_post_install_feedback(self):
+        """Reset trackers and surface post-install progress in collapsed mode."""
+        self._post_install_active = True
+        self._post_install_current_step = 0
+        self._post_install_last_label = "Preparing Steam integration"
+        total = max(1, self._post_install_total_steps)
+        self._update_post_install_ui(self._post_install_last_label, 0, total)
+
+    def _handle_post_install_progress(self, message: str):
+        """Translate backend progress messages into collapsed-mode feedback."""
+        if not self._post_install_active or not message:
+            return
+
+        text = message.strip()
+        if not text:
+            return
+        normalized = text.lower()
+        total = max(1, self._post_install_total_steps)
+        matched = False
+        matched_step = None
+
+        # Check for wine components completion first
+        if "wine components verified" in normalized or "wine components installed" in normalized:
+            self._stop_component_install_pulse()
+
+        for idx, step in enumerate(self._post_install_sequence, start=1):
+            if any(keyword in normalized for keyword in step['keywords']):
+                matched = True
+                matched_step = idx
+                # Always update to the highest step we've seen (don't go backwards)
+                if idx >= self._post_install_current_step:
+                    # Stop pulser when moving away from wine_components step
+                    if self._post_install_current_step > 0:
+                        prev_step = self._post_install_sequence[self._post_install_current_step - 1]
+                        if prev_step['id'] == 'wine_components' and step['id'] != 'wine_components':
+                            self._stop_component_install_pulse()
+
+                    self._post_install_current_step = idx
+                    self._post_install_last_label = step['label']
+
+                    # Wine components: pulser manages Activity window directly.
+                    # Must remove summary widget so pulser items display immediately
+                    # (otherwise the 0.5s hold blocks update_files from adding items).
+                    if step['id'] == 'wine_components':
+                        self.file_progress_list.clear_summary()
+                        self.progress_indicator.set_status(
+                            "Installing Wine components...",
+                            int((self._post_install_current_step / total) * 100)
+                        )
+                        if not hasattr(self, '_component_install_timer') or not self._component_install_timer:
+                            self._start_component_install_pulse()
+                        # Always check for component list updates (may come in later messages)
+                        comp_list = self._parse_wine_components_message(text)
+                        if comp_list:
+                            self._start_component_install_pulse_with_components(comp_list)
+                        break
+
+                # Keep Activity window in sync with progress banner
+                # If we're already in wine_components step, check for component list updates
+                # Skip _update_post_install_ui() for wine_components - pulser manages Activity window directly
+                if step['id'] == 'wine_components':
+                    comp_list = self._parse_wine_components_message(text)
+                    if comp_list:
+                        self._start_component_install_pulse_with_components(comp_list)
+                    # Don't call _update_post_install_ui() - it would clear the component items
+                    break
+                
+                # CRITICAL: If pulser is active (wine components still installing), don't update progress banner
+                # Keep it on "Installing Wine components..." until pulser stops
+                if getattr(self, '_component_install_timer', None) and self._component_install_timer.isActive():
+                    # Find wine_components step and keep banner on that
+                    wine_step = None
+                    wine_step_idx = None
+                    for wine_idx, wine_s in enumerate(self._post_install_sequence, start=1):
+                        if wine_s['id'] == 'wine_components':
+                            wine_step = wine_s
+                            wine_step_idx = wine_idx
+                            break
+                    if wine_step:
+                        # Update step counter internally but keep banner on wine components
+                        # Filter out winetricks/protontricks internal messages from detail
+                        filtered_detail = text
+                        if text and any(keyword in text.lower() for keyword in ['perl:', 'wine:', 'winetricks:', 'protontricks:']):
+                            filtered_detail = None
+                        self._update_post_install_ui(
+                            wine_step['label'],
+                            wine_step_idx,
+                            total,
+                            detail=filtered_detail
+                        )
+                        break
+                
+                self._update_post_install_ui(step['label'], self._post_install_current_step, total, detail=text)
+                break
+
+        # If no match but we have a current step, update with that step (not a new one)
+        # Skip when pulser is active -- it manages Activity window directly
+        if not matched and self._post_install_current_step > 0:
+            # CRITICAL: If pulser is active, we're still installing wine components
+            # Keep progress banner on "Installing Wine components..." regardless of step counter
+            if getattr(self, '_component_install_timer', None) and self._component_install_timer.isActive():
+                # Find wine_components step in sequence
+                wine_step = None
+                wine_step_idx = None
+                for idx, step in enumerate(self._post_install_sequence, start=1):
+                    if step['id'] == 'wine_components':
+                        wine_step = step
+                        wine_step_idx = idx
+                        break
+                
+                if wine_step:
+                    # Always check for component list updates, even if message doesn't match keywords
+                    comp_list = self._parse_wine_components_message(text)
+                    if comp_list:
+                        self._start_component_install_pulse_with_components(comp_list)
+                    # Update progress banner to show wine components installation (pulser manages Activity window directly)
+                    # Filter out winetricks/protontricks internal messages from detail
+                    filtered_detail = text
+                    if text and any(keyword in text.lower() for keyword in ['perl:', 'wine:', 'winetricks:', 'protontricks:']):
+                        filtered_detail = None
+                    total = len(self._post_install_sequence)
+                    self._update_post_install_ui(
+                        wine_step['label'],
+                        wine_step_idx,
+                        total,
+                        detail=filtered_detail
+                    )
+                    return
+            
+            # Check if we're in wine_components step (by step counter)
+            current_step = self._post_install_sequence[self._post_install_current_step - 1] if self._post_install_current_step > 0 else None
+            if current_step and current_step['id'] == 'wine_components':
+                # Always check for component list updates, even if message doesn't match keywords
+                comp_list = self._parse_wine_components_message(text)
+                if comp_list:
+                    self._start_component_install_pulse_with_components(comp_list)
+                # Update progress banner to keep it current (pulser manages Activity window directly)
+                # Filter out winetricks/protontricks internal messages from detail
+                filtered_detail = text
+                if text and any(keyword in text.lower() for keyword in ['perl:', 'wine:', 'winetricks:', 'protontricks:']):
+                    filtered_detail = None
+                total = len(self._post_install_sequence)
+                self._update_post_install_ui(
+                    current_step['label'],
+                    self._post_install_current_step,
+                    total,
+                    detail=filtered_detail
+                )
+                return
+            
+            if not getattr(self, '_component_install_timer', None):
+                label = self._post_install_last_label or "Post-installation"
+                # Filter out winetricks/protontricks internal messages from detail
+                filtered_detail = text
+                if text and any(keyword in text.lower() for keyword in ['perl:', 'wine:', 'winetricks:', 'protontricks:']):
+                    filtered_detail = None
+                self._update_post_install_ui(label, self._post_install_current_step, total, detail=filtered_detail)
+
+    def _strip_timestamp_prefix(self, text: str) -> str:
+        """Remove timestamp prefix like '[00:03:15]' from text."""
+        # Match timestamps like [00:03:15], [01:23:45], etc.
+        timestamp_pattern = r'^\[\d{2}:\d{2}:\d{2}\]\s*'
+        return re.sub(timestamp_pattern, '', text)
+
+    def _update_post_install_ui(self, label: str, step: int, total: int, detail: Optional[str] = None):
+        """Update progress indicator + activity summary for post-install steps."""
+        # Use the label as the primary display, but include step info in Activity window
+        display_label = label
+        if detail:
+            # Remove timestamp prefix from detail messages
+            clean_detail = self._strip_timestamp_prefix(detail.strip())
+            if clean_detail:
+                # Filter out winetricks/protontricks internal messages (perl, wine paths, etc.)
+                # These are implementation details, not user-facing status
+                if any(keyword in clean_detail.lower() for keyword in ['perl:', 'wine:', '/usr/bin/', 'winetricks:', 'protontricks:']):
+                    # Use original label, ignore internal tool messages
+                    pass
+                elif clean_detail.lower().startswith(label.lower()):
+                    display_label = clean_detail
+                else:
+                    display_label = clean_detail
+        total = max(1, total)
+        step_clamped = max(0, min(step, total))
+        overall_percent = (step_clamped / total) * 100.0
+
+        # CRITICAL: Ensure both displays use the SAME step counter
+        # Progress banner uses phase_step/phase_max_steps from progress_state
+        progress_state = InstallationProgress(
+            phase=InstallationPhase.FINALIZE,
+            phase_name=display_label,  # This will show in progress banner
+            phase_step=step_clamped,    # This creates [step/total] in display_text
+            phase_max_steps=total,
+            overall_percent=overall_percent
+        )
+        self.progress_indicator.update_progress(progress_state)
+
+        # Activity window uses summary_info with the SAME step counter
+        summary_info = {
+            'current_step': step_clamped,  # Must match phase_step above
+            'max_steps': total,            # Must match phase_max_steps above
+        }
+        # Use the same label for consistency
+        self.file_progress_list.update_files([], current_phase=display_label, summary_info=summary_info)
+
+    def _end_post_install_feedback(self, success: bool):
+        """Mark the end of post-install feedback."""
+        if not self._post_install_active:
+            return
+        self._stop_component_install_pulse()
+        total = max(1, self._post_install_total_steps)
+        final_step = total if success else max(0, self._post_install_current_step)
+        label = "Post-installation complete" if success else "Post-installation stopped"
+        self._update_post_install_ui(label, final_step, total)
+        self._post_install_active = False
+        self._post_install_last_label = label
+
+    def _parse_wine_components_message(self, text: str):
+        """Extract list of wine component names from backend status message, or None."""
+        if "installing wine components:" not in text.lower() and "installing wine components via protontricks:" not in text.lower():
+            return None
+        match = re.search(r"installing wine components(?:\s+via protontricks)?:\s*(.+)", text, re.IGNORECASE)
+        if not match:
+            return None
+        raw = match.group(1).strip()
+        if not raw:
+            return None
+        return [c.strip() for c in raw.split(",") if c.strip()]
+
+    def _start_component_install_pulse(self):
+        """Start pulsing Activity item for Wine component installation."""
+        self.file_progress_list.update_or_add_item("__wine_components__", "Installing Wine components...", 0.0)
+        if not getattr(self, '_component_install_timer', None):
+            self._component_install_timer = QTimer(self)
+            self._component_install_timer.timeout.connect(self._component_install_heartbeat)
+        self._component_install_timer.start(100)
+        self._component_install_start_time = time.time()
+
+    def _start_component_install_pulse_with_components(self, components: list):
+        """Replace single item with one Activity entry per component, each with pulsing progress."""
+        self._component_install_list = components
+        progresses = [
+            FileProgress(
+                filename=f"Wine component: {comp}",
+                operation=OperationType.UNKNOWN,
+                percent=0.0,
+            )
+            for comp in components
+        ]
+        self.file_progress_list.update_files(progresses, current_phase=None)
+
+    def _component_install_heartbeat(self):
+        """Heartbeat to keep component install item(s) pulsing."""
+        if not hasattr(self, '_component_install_start_time') or not self._component_install_start_time:
+            return
+        if hasattr(self, '_component_install_list') and self._component_install_list:
+            progresses = [
+                FileProgress(
+                    filename=f"Wine component: {comp}",
+                    operation=OperationType.UNKNOWN,
+                    percent=0.0,
+                )
+                for comp in self._component_install_list
+            ]
+            self.file_progress_list.update_files(progresses, current_phase=None)
+        else:
+            self.file_progress_list.update_or_add_item("__wine_components__", "Installing Wine components...", 0.0)
+
+    def _stop_component_install_pulse(self):
+        """Stop the component install pulsing timer."""
+        if hasattr(self, '_component_install_timer') and self._component_install_timer:
+            self._component_install_timer.stop()
+            self._component_install_timer = None
+        if hasattr(self, '_component_install_list'):
+            del self._component_install_list
+

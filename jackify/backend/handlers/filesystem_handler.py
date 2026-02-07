@@ -11,19 +11,20 @@ from typing import Optional, List, Dict, Tuple
 from datetime import datetime
 import re
 import time
-import subprocess # Needed for running sudo commands
-import pwd # To get user name
-import grp # To get group name
-import requests # Import requests
-import vdf # Import VDF library at the top level
+import subprocess
+import pwd
+import grp
 from jackify.shared.colors import COLOR_PROMPT, COLOR_RESET
 
-# Initialize logger for the module
+from .filesystem_handler_download import FilesystemDownloadMixin
+from .filesystem_handler_ownership import FilesystemOwnershipMixin
+from .filesystem_handler_steam import FilesystemSteamMixin
+
 logger = logging.getLogger(__name__)
 
-class FileSystemHandler:
+
+class FileSystemHandler(FilesystemDownloadMixin, FilesystemOwnershipMixin, FilesystemSteamMixin):
     def __init__(self):
-        # Keep instance logger if needed, but static methods use module logger
         self.logger = logging.getLogger(__name__)
         
     @staticmethod
@@ -36,7 +37,7 @@ class FileSystemHandler:
             return Path(path)
         except Exception as e:
             logger.error(f"Failed to normalize path {path}: {e}")
-            return Path(path) # Return original path as Path object on error
+            return Path(path)
         
     @staticmethod
     def validate_path(path: Path) -> bool:
@@ -50,7 +51,6 @@ class FileSystemHandler:
                 logger.warning(f"Validation failed: No read access - {path}")
                 return False
             # Check write access (important for many operations)
-            # For directories, check write on parent; for files, check write on file itself
             if path.is_dir():
                 if not os.access(path, os.W_OK):
                     logger.warning(f"Validation failed: No write access to directory - {path}")
@@ -60,7 +60,7 @@ class FileSystemHandler:
                 if not os.access(path.parent, os.W_OK):
                     logger.warning(f"Validation failed: No write access to parent dir of file - {path.parent}")
                     return False
-            return True # Passed existence and access checks
+            return True
         except Exception as e:
             logger.error(f"Failed to validate path {path}: {e}")
             return False
@@ -192,16 +192,16 @@ class FileSystemHandler:
             if recursive and path.is_dir():
                 for root, dirs, files in os.walk(path):
                     try:
-                        os.chmod(root, 0o755) # Dirs typically 755
+                        os.chmod(root, 0o755)
                     except Exception as dir_e:
                         logger.warning(f"Failed to chmod dir {root}: {dir_e}")
                     for file in files:
                         try:
-                            os.chmod(os.path.join(root, file), 0o644) # Files typically 644
+                            os.chmod(os.path.join(root, file), 0o644)
                         except Exception as file_e:
                             logger.warning(f"Failed to chmod file {os.path.join(root, file)}: {file_e}")
             elif path.is_file():
-                os.chmod(path, 0o644 if permissions == 0o755 else permissions) # Default file perms 644
+                os.chmod(path, 0o644 if permissions == 0o755 else permissions)
             elif path.is_dir():
                 os.chmod(path, permissions) # Set specific perm for top-level dir if not recursive
             logger.debug(f"Set permissions for {path} (recursive={recursive})")
@@ -238,12 +238,6 @@ class FileSystemHandler:
                 if abs_path_str.startswith(pattern):
                     logger.debug(f"Path {path} matches SD card pattern: {pattern}")
                     return True
-
-            # Less reliable: Check mount point info (can be slow/complex)
-            # try:
-            #      # ... (logic using /proc/mounts or df command) ...
-            # except Exception as mount_e:
-            #      logger.warning(f"Could not reliably check mount point for {path}: {mount_e}")
 
             logger.debug(f"Path {path} does not appear to be on a standard SD card mount.")
             return False
@@ -306,7 +300,7 @@ class FileSystemHandler:
             
             FileSystemHandler.ensure_directory(destination.parent)
             
-            shutil.move(str(source), str(destination)) # shutil.move needs strings
+            shutil.move(str(source), str(destination))
             logger.info(f"Moved directory {source} to {destination}")
             return True
         except Exception as e:
@@ -321,8 +315,6 @@ class FileSystemHandler:
                 logger.error(f"Copy failed: Source is not a directory - {source}")
                 return False
             
-            # shutil.copytree needs destination to NOT exist unless dirs_exist_ok=True (Py 3.8+)
-            # Ensure parent exists
             FileSystemHandler.ensure_directory(destination.parent)
 
             shutil.copytree(source, destination, dirs_exist_ok=dirs_exist_ok) 
@@ -392,100 +384,6 @@ class FileSystemHandler:
             logger.error(f"Failed to add backupPath entry to {modlist_ini}: {e}")
             return False # Backup succeeded, but adding entry failed
 
-    @staticmethod
-    def blank_downloads_dir(modlist_ini: Path) -> bool:
-        """Blanks the download_directory line in ModOrganizer.ini."""
-        logger.info(f"Blanking download_directory in {modlist_ini}...")
-        try:
-            content = modlist_ini.read_text().splitlines()
-            new_content = []
-            found = False
-            for line in content:
-                if line.strip().startswith("download_directory="):
-                    new_content.append("download_directory=")
-                    found = True
-                else:
-                    new_content.append(line)
-            
-            if found:
-                modlist_ini.write_text("\n".join(new_content) + "\n")
-                logger.debug("download_directory line blanked.")
-            else:
-                logger.warning("download_directory line not found.")
-                # Consider if we should add it blank?
-            
-            return True
-        except Exception as e:
-            logger.error(f"Failed to blank download_directory in {modlist_ini}: {e}")
-            return False
-
-    @staticmethod
-    def copy_file(src: Path, dst: Path, overwrite: bool = False) -> bool:
-        """Copy a single file."""
-        try:
-            if not src.is_file():
-                logger.error(f"Copy failed: Source is not a file - {src}")
-                return False
-            if dst.exists() and not overwrite:
-                logger.warning(f"Copy skipped: Destination exists and overwrite=False - {dst}")
-                return False # Or True, depending on desired behavior for skip
-            
-            FileSystemHandler.ensure_directory(dst.parent)
-            shutil.copy2(src, dst)
-            logger.debug(f"Copied file {src} to {dst}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to copy file {src} to {dst}: {e}")
-            return False
-
-    @staticmethod
-    def move_file(src: Path, dst: Path, overwrite: bool = False) -> bool:
-        """Move a single file."""
-        try:
-            if not src.is_file():
-                logger.error(f"Move failed: Source is not a file - {src}")
-                return False
-            if dst.exists() and not overwrite:
-                logger.warning(f"Move skipped: Destination exists and overwrite=False - {dst}")
-                return False
-            
-            FileSystemHandler.ensure_directory(dst.parent)
-            shutil.move(str(src), str(dst)) # shutil.move needs strings
-            # Create backup with timestamp
-            timestamp = os.path.getmtime(modlist_ini)
-            backup_path = modlist_ini.with_suffix(f'.{timestamp:.0f}.bak')
-            
-            # Copy file to backup
-            shutil.copy2(modlist_ini, backup_path)
-            
-            # Copy game path to backup path
-            with open(modlist_ini, 'r') as f:
-                lines = f.readlines()
-            
-            game_path_line = None
-            for line in lines:
-                if line.startswith('gamePath'):
-                    game_path_line = line
-                    break
-            
-            if game_path_line:
-                # Create backup path entry
-                backup_path_line = game_path_line.replace('gamePath', 'backupPath')
-                
-                # Append to file if not already present
-                with open(modlist_ini, 'a') as f:
-                    f.write(backup_path_line)
-                
-                self.logger.debug(f"Backed up ModOrganizer.ini and created backupPath entry")
-                return True
-            else:
-                self.logger.error("No gamePath found in ModOrganizer.ini")
-                return False
-            
-        except Exception as e:
-            self.logger.error(f"Error backing up ModOrganizer.ini: {e}")
-            return False
-    
     def blank_downloads_dir(self, modlist_ini: Path) -> bool:
         """
         Blank or reset the MO2 Downloads Directory
@@ -664,7 +562,7 @@ class FileSystemHandler:
                     self.logger.debug(f"Created game-specific directory: {dir_path}")
             
             # CRITICAL: Create game-specific Documents directories in Wine prefix
-            # This is required for USVFS to virtualize profile INI files on first launch
+            # Required for USVFS to virtualize profile INIs on first launch
             if game_name in game_docs_dirs:
                 docs_dir_name = game_docs_dirs[game_name]
                 
@@ -701,267 +599,3 @@ class FileSystemHandler:
         except Exception as e:
             self.logger.error(f"Error creating required directories: {e}")
             return False
-
-    @staticmethod
-    def all_owned_by_user(path: Path) -> bool:
-        """
-        Returns True if all files and directories under 'path' are owned by the current user.
-        """
-        uid = os.getuid()
-        gid = os.getgid()
-        for root, dirs, files in os.walk(path):
-            for name in dirs + files:
-                full_path = os.path.join(root, name)
-                try:
-                    stat = os.stat(full_path)
-                    if stat.st_uid != uid or stat.st_gid != gid:
-                        return False
-                except Exception:
-                    return False
-        return True
-
-    @staticmethod
-    def verify_ownership_and_permissions(path: Path) -> tuple[bool, str]:
-        """
-        Verify and fix ownership/permissions for modlist directory.
-        Returns (success, error_message).
-
-        Logic:
-        - If files NOT owned by user: Can't fix without sudo, return error with instructions
-        - If files owned by user: Try to fix permissions ourselves with chmod
-        """
-        if not path.exists():
-            logger.error(f"Path does not exist: {path}")
-            return False, f"Path does not exist: {path}"
-
-        # Check if all files/dirs are owned by the user
-        if not FileSystemHandler.all_owned_by_user(path):
-            # Files not owned by us - need sudo to fix
-            try:
-                user_name = pwd.getpwuid(os.geteuid()).pw_name
-                group_name = grp.getgrgid(os.geteuid()).gr_name
-            except KeyError:
-                logger.error("Could not determine current user or group name.")
-                return False, "Could not determine current user or group name."
-
-            logger.error(f"Ownership issue detected: Some files in {path} are not owned by {user_name}")
-
-            error_msg = (
-                f"\nOwnership Issue Detected\n"
-                f"Some files in the modlist directory are not owned by your user account.\n"
-                f"This can happen if the modlist was copied from another location or installed by a different user.\n\n"
-                f"To fix this, open a terminal and run:\n\n"
-                f"  sudo chown -R {user_name}:{group_name} \"{path}\"\n"
-                f"  sudo chmod -R 755 \"{path}\"\n\n"
-                f"After running these commands, retry the configuration process."
-            )
-            return False, error_msg
-
-        # Files are owned by us - try to fix permissions ourselves
-        logger.info(f"Files in {path} are owned by current user, verifying permissions...")
-        try:
-            result = subprocess.run(
-                ['chmod', '-R', '755', str(path)],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode == 0:
-                logger.info(f"Permissions set successfully for {path}")
-                return True, ""
-            else:
-                logger.warning(f"chmod returned non-zero but we'll continue: {result.stderr}")
-                # Non-critical if chmod fails on our own files, might be read-only filesystem or similar
-                return True, ""
-        except Exception as e:
-            logger.warning(f"Error running chmod: {e}, continuing anyway")
-            # Non-critical error, we own the files so proceed
-            return True, ""
-
-    @staticmethod
-    def set_ownership_and_permissions_sudo(path: Path, status_callback=None) -> bool:
-        """
-        DEPRECATED: Use verify_ownership_and_permissions() instead.
-        This method is kept for backwards compatibility but no longer executes sudo.
-        """
-        logger.warning("set_ownership_and_permissions_sudo() is deprecated - use verify_ownership_and_permissions()")
-        success, error_msg = FileSystemHandler.verify_ownership_and_permissions(path)
-        if not success:
-            logger.error(error_msg)
-            print(error_msg)
-        return success
-
-    def download_file(self, url: str, destination_path: Path, overwrite: bool = False, quiet: bool = False) -> bool:
-        """Downloads a file from a URL to a destination path."""
-        self.logger.info(f"Downloading {url} to {destination_path}...")
-        
-        if not overwrite and destination_path.exists():
-            self.logger.info(f"File already exists, skipping download: {destination_path}")
-            # Only print if not quiet
-            if not quiet:
-                print(f"File {destination_path.name} already exists, skipping download.")
-            return True # Consider existing file as success
-            
-        try:
-            # Ensure destination directory exists
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Perform the download with streaming
-            with requests.get(url, stream=True, timeout=300, verify=True) as r:
-                r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-                with open(destination_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                        
-            self.logger.info("Download complete.")
-            # Only print if not quiet
-            if not quiet:
-                print("Download complete.")
-            return True
-            
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Download failed: {e}")
-            print(f"Error: Download failed for {url}. Check network connection and URL.")
-            # Clean up potentially incomplete file
-            if destination_path.exists():
-                try: destination_path.unlink() 
-                except OSError: pass
-            return False
-        except Exception as e:
-            self.logger.error(f"Error during download or file writing: {e}", exc_info=True)
-            print("Error: An unexpected error occurred during download.")
-             # Clean up potentially incomplete file
-            if destination_path.exists():
-                try: destination_path.unlink() 
-                except OSError: pass
-            return False 
-
-    @staticmethod
-    def find_steam_library() -> Optional[Path]:
-        """
-        Find the Steam library containing game installations, prioritizing vdf.
-        
-        Returns:
-            Optional[Path]: Path object to the Steam library's steamapps/common dir, or None if not found
-        """
-        logger.info("Detecting Steam library location...")
-        
-        # Try finding libraryfolders.vdf in common Steam paths
-        possible_vdf_paths = [
-            Path.home() / ".steam/steam/config/libraryfolders.vdf",
-            Path.home() / ".local/share/Steam/config/libraryfolders.vdf",
-            Path.home() / ".steam/root/config/libraryfolders.vdf",
-            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf"  # Flatpak
-        ]
-        
-        libraryfolders_vdf_path: Optional[Path] = None
-        for path_obj in possible_vdf_paths:
-            # Explicitly ensure path_obj is Path before checking is_file
-            current_path = Path(path_obj)
-            if current_path.is_file():
-                libraryfolders_vdf_path = current_path # Assign the confirmed Path object
-                logger.debug(f"Found libraryfolders.vdf at: {libraryfolders_vdf_path}")
-                break
-        
-        # Check AFTER loop - libraryfolders_vdf_path is now definitely Path or None
-        if not libraryfolders_vdf_path:
-            logger.warning("libraryfolders.vdf not found...")
-            # Proceed to default check below if vdf not found
-        else:
-            # Parse the VDF file to extract library paths
-            try:
-                # Try importing vdf here if not done globally
-                with open(libraryfolders_vdf_path, 'r') as f:
-                    data = vdf.load(f)
-                
-                # Look for library folders (indices are strings '0', '1', etc.)
-                libraries = data.get('libraryfolders', {}) 
-                
-                for key in libraries:
-                     if isinstance(libraries[key], dict) and 'path' in libraries[key]:
-                        lib_path_str = libraries[key]['path']
-                        if lib_path_str:
-                             # Check if this library path is valid
-                             potential_lib_path = Path(lib_path_str) / "steamapps/common"
-                             if potential_lib_path.is_dir():
-                                logger.info(f"Using Steam library path from vdf: {potential_lib_path}")
-                                return potential_lib_path # Return first valid Path object found
-                
-                logger.warning("No valid library paths found within libraryfolders.vdf.")
-                # Proceed to default check below if vdf parsing fails to find a valid path
-
-            except ImportError:
-                logger.error("Python 'vdf' library not found. Cannot parse libraryfolders.vdf.")
-                # Proceed to default check below
-            except Exception as e:
-                logger.error(f"Error parsing libraryfolders.vdf: {e}")
-                # Proceed to default check below
-
-        # Fallback: Check default location if VDF parsing didn't yield a result
-        default_path = Path.home() / ".steam/steam/steamapps/common"
-        if default_path.is_dir():
-            logger.warning(f"Using default Steam library path: {default_path}")
-            return default_path 
-        
-        logger.error("No valid Steam library found via vdf or at default location.")
-        return None
-
-    @staticmethod
-    def find_compat_data(appid: str) -> Optional[Path]:
-        """Find the compatdata directory for a given AppID."""
-        if not appid or not appid.isdigit():
-            logger.error(f"Invalid AppID provided for compatdata search: {appid}")
-            return None
-
-        logger.debug(f"Searching for compatdata directory for AppID: {appid}")
-        
-        # Standard Steam locations
-        possible_bases = [
-            Path.home() / ".steam/steam/steamapps/compatdata",
-            Path.home() / ".local/share/Steam/steamapps/compatdata",
-        ]
-        
-        # Try to get library path from vdf to check there too
-        # Use type hint for clarity
-        steam_lib_common_path: Optional[Path] = FileSystemHandler.find_steam_library() 
-        if steam_lib_common_path:
-            # find_steam_library returns steamapps/common, go up two levels for library root
-            library_root = steam_lib_common_path.parent.parent 
-            vdf_compat_path = library_root / "steamapps/compatdata"
-            if vdf_compat_path.is_dir() and vdf_compat_path not in possible_bases:
-                possible_bases.insert(0, vdf_compat_path) # Prioritize library path from vdf
-
-        for base_path in possible_bases:
-            if not base_path.is_dir():
-                logger.debug(f"Compatdata base path does not exist or is not a directory: {base_path}")
-                continue
-                
-            potential_path = base_path / appid
-            if potential_path.is_dir():
-                logger.info(f"Found compatdata directory: {potential_path}")
-                return potential_path # Return Path object
-            else:
-                logger.debug(f"Compatdata for {appid} not found in {base_path}")
-
-        logger.warning(f"Compatdata directory for AppID {appid} not found in standard or detected library locations.")
-        return None
-
-    @staticmethod
-    def find_steam_config_vdf() -> Optional[Path]:
-        """Finds the active Steam config.vdf file."""
-        logger.debug("Searching for Steam config.vdf...")
-        possible_steam_paths = [
-            Path.home() / ".steam/steam",
-            Path.home() / ".local/share/Steam",
-            Path.home() / ".steam/root"
-        ]
-        for steam_path in possible_steam_paths:
-            potential_path = steam_path / "config/config.vdf"
-            if potential_path.is_file():
-                logger.info(f"Found config.vdf at: {potential_path}")
-                return potential_path # Return Path object
-
-        logger.warning("Could not locate Steam's config.vdf file in standard locations.")
-        return None
-
-    # ... (rest of the class) ... 

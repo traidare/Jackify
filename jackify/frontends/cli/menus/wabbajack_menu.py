@@ -37,9 +37,6 @@ class WabbajackMenuHandler:
             print(f"   {COLOR_ACTION}→ Modlist already downloaded? Configure and add to Steam{COLOR_RESET}")
             print(f"{COLOR_SELECTION}3.{COLOR_RESET} Configure Existing Modlist (In Steam)")
             print(f"   {COLOR_ACTION}→ Modlist already in Steam? Re-configure it here{COLOR_RESET}")
-            # HIDDEN FOR FIRST RELEASE - UNCOMMENT WHEN READY
-            # print(f"{COLOR_SELECTION}4.{COLOR_RESET} Install Wabbajack Application")
-            # print(f"   {COLOR_ACTION}→ Downloads and configures the Wabbajack app itself (via WINE){COLOR_RESET}")
             print(f"{COLOR_SELECTION}0.{COLOR_RESET} Return to Main Menu")
             selection = input(f"\n{COLOR_PROMPT}Enter your selection (0-3): {COLOR_RESET}").strip()
             
@@ -52,9 +49,6 @@ class WabbajackMenuHandler:
                 self._execute_legacy_configure_new_modlist(cli_instance)
             elif selection == "3":
                 self._execute_legacy_configure_existing_modlist(cli_instance)
-            # HIDDEN FOR FIRST RELEASE - UNCOMMENT WHEN READY
-            # elif selection == "4":
-            #     self._execute_legacy_install_wabbajack(cli_instance)
             elif selection == "0":
                 break
             else:

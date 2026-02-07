@@ -184,7 +184,9 @@ class NexusDownloadService:
             if file_name_filter:
                 filtered = [f for f in files if file_name_filter.lower() in f.get('file_name', '').lower()]
                 if not filtered:
-                    return False, None, f"No files found matching '{file_name_filter}'"
+                    available_files = [f.get('file_name', 'unknown') for f in files]
+                    logger.warning(f"No files matching '{file_name_filter}' in: {available_files}")
+                    return False, None, f"No files found matching '{file_name_filter}'. Available: {', '.join(available_files)}"
                 files = filtered
 
             # Get the most recent file

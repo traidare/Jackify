@@ -35,7 +35,8 @@ class AdditionalMenuHandler:
             print(f"   {COLOR_ACTION}→ Authorize with Nexus using OAuth or manage API key{COLOR_RESET}")
             print(f"{COLOR_SELECTION}2.{COLOR_RESET} Tale of Two Wastelands (TTW) Installation")
             print(f"   {COLOR_ACTION}→ Install TTW using TTW_Linux_Installer{COLOR_RESET}")
-            print(f"{COLOR_SELECTION}3.{COLOR_RESET} Coming Soon...")
+            print(f"{COLOR_SELECTION}3.{COLOR_RESET} Install Wabbajack Application")
+            print(f"   {COLOR_ACTION}→ Downloads and configures the Wabbajack app itself (via Proton){COLOR_RESET}")
             print(f"{COLOR_SELECTION}0.{COLOR_RESET} Return to Main Menu")
             selection = input(f"\n{COLOR_PROMPT}Enter your selection (0-3): {COLOR_RESET}").strip()
 
@@ -46,8 +47,7 @@ class AdditionalMenuHandler:
             elif selection == "2":
                 self._execute_ttw_install(cli_instance)
             elif selection == "3":
-                print(f"\n{COLOR_INFO}More features coming soon!{COLOR_RESET}")
-                input("\nPress Enter to return to menu...")
+                self._execute_install_wabbajack(cli_instance)
             elif selection == "0":
                 break
             else:
@@ -65,7 +65,7 @@ class AdditionalMenuHandler:
 
     def _execute_legacy_recovery_menu(self, cli_instance):
         """LEGACY BRIDGE: Execute recovery menu"""
-        # This will be handled by the RecoveryMenuHandler
+        # Handled by RecoveryMenuHandler
         from .recovery_menu import RecoveryMenuHandler
         
         recovery_handler = RecoveryMenuHandler()
@@ -107,9 +107,25 @@ class AdditionalMenuHandler:
             input("Press Enter to return to menu...")
             return
 
-        # Prompt for TTW .mpi file
+        # Prompt for TTW .mpi file with tab completion
+        try:
+            import readline
+            from ....backend.handlers.completers import path_completer
+            READLINE_AVAILABLE = True
+        except ImportError:
+            READLINE_AVAILABLE = False
+        
         print(f"\n{COLOR_PROMPT}TTW Installer File (.mpi){COLOR_RESET}")
-        mpi_path = input(f"{COLOR_PROMPT}Path to TTW .mpi file: {COLOR_RESET}").strip()
+        if READLINE_AVAILABLE:
+            readline.set_completer_delims(' \t\n;')
+            readline.set_completer(path_completer)
+            readline.parse_and_bind("tab: complete")
+        try:
+            mpi_path = input(f"{COLOR_PROMPT}Path to TTW .mpi file: {COLOR_RESET}").strip()
+        finally:
+            if READLINE_AVAILABLE:
+                readline.set_completer(None)
+        
         if not mpi_path:
             print(f"{COLOR_WARNING}No .mpi file specified. Cancelling.{COLOR_RESET}")
             input("Press Enter to return to menu...")
@@ -121,10 +137,19 @@ class AdditionalMenuHandler:
             input("Press Enter to return to menu...")
             return
 
-        # Prompt for output directory
+        # Prompt for output directory with tab completion
         print(f"\n{COLOR_PROMPT}TTW Installation Directory{COLOR_RESET}")
         default_output = Path.home() / "ModdedGames" / "TTW"
-        output_path = input(f"{COLOR_PROMPT}TTW install directory (Enter for default: {default_output}): {COLOR_RESET}").strip()
+        if READLINE_AVAILABLE:
+            readline.set_completer_delims(' \t\n;')
+            readline.set_completer(path_completer)
+            readline.parse_and_bind("tab: complete")
+        try:
+            output_path = input(f"{COLOR_PROMPT}TTW install directory (Enter for default: {default_output}): {COLOR_RESET}").strip()
+        finally:
+            if READLINE_AVAILABLE:
+                readline.set_completer(None)
+        
         if not output_path:
             output_path = default_output
         else:
@@ -280,3 +305,12 @@ class AdditionalMenuHandler:
             else:
                 print(f"\n{COLOR_ERROR}Invalid selection.{COLOR_RESET}")
                 time.sleep(1)
+
+    def _execute_install_wabbajack(self, cli_instance):
+        """Execute Wabbajack application installation"""
+        from jackify.frontends.cli.commands.install_wabbajack import InstallWabbajackCommand
+
+        command = InstallWabbajackCommand()
+        if self.logger:
+            self.logger.debug("AdditionalMenuHandler: Executing Install Wabbajack command")
+        command.run()

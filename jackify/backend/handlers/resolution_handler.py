@@ -100,11 +100,7 @@ class ResolutionHandler:
             while True:
                 user_res = input(f"{COLOR_PROMPT}Enter desired resolution (e.g., 1920x1080): {COLOR_RESET}").strip()
                 if self._validate_resolution_format(user_res):
-                    # Optional: Add confirmation step here if desired
-                    # confirm = input(f"{COLOR_PROMPT}Use resolution {user_res}? (Y/n): {COLOR_RESET}").lower()
-                    # if confirm != 'n':
-                    #     return user_res
-                    return user_res # Return validated resolution
+                    return user_res
                 else:
                     print(f"{COLOR_ERROR}Invalid format. Please use format WxH (e.g., 1920x1080){COLOR_RESET}")
         else:

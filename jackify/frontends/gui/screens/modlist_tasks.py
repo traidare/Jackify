@@ -78,7 +78,7 @@ class ModlistTasksScreen(QWidget):
         """Set up the user interface"""
         main_layout = QVBoxLayout(self)
         main_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        main_layout.setContentsMargins(30, 30, 30, 30)  # Reduced from 50
+        main_layout.setContentsMargins(30, 30, 30, 30)
         main_layout.setSpacing(12)  # Match main menu spacing
 
         if self.debug:
@@ -147,11 +147,11 @@ class ModlistTasksScreen(QWidget):
         
         # Create grid layout for buttons
         button_grid = QGridLayout()
-        button_grid.setSpacing(12)  # Reduced from 16
+        button_grid.setSpacing(12)
         button_grid.setAlignment(Qt.AlignHCenter)
 
         button_width = 400
-        button_height = 40  # Reduced from 50
+        button_height = 40
 
         for i, (label, action_id, description) in enumerate(MENU_ITEMS):
             # Create button
@@ -179,7 +179,7 @@ class ModlistTasksScreen(QWidget):
             # Create description label
             desc_label = QLabel(description)
             desc_label.setAlignment(Qt.AlignHCenter)
-            desc_label.setStyleSheet("color: #999; font-size: 11px;")  # Reduced from 12px
+            desc_label.setStyleSheet("color: #999; font-size: 11px;")
             desc_label.setWordWrap(True)
             desc_label.setFixedWidth(button_width)
             

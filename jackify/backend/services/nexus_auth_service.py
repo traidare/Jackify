@@ -259,7 +259,7 @@ class NexusAuthService:
                 oauth_data = token_data.get('oauth', {})
 
                 # Build NexusOAuthState JSON matching upstream Wabbajack format
-                # This allows engine to auto-refresh tokens during long installations
+                # Engine auto-refreshes tokens during long installations
                 nexus_oauth_state = {
                     "oauth": {
                         "access_token": oauth_data.get('access_token'),

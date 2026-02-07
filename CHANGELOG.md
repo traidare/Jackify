@@ -1,5 +1,26 @@
 # Jackify Changelog
 
+## v0.3.0 - Codebase Refactoring
+**Release Date:** 2026-02-06
+
+### Technical Improvements
+- **Code Architecture**: Refactored 13 large files (1000-5000 lines each) into 50+ focused modules using mixin pattern. All main files now under 600 lines.
+
+### Bug Fixes
+- **Configure New Modlist GUI**: Fixed window not shrinking when Show Details unchecked
+- **CLI Wabbajack Installer**: Added missing installation command to CLI menu
+- **Wabbajack Installer**: Fixed installation to non-primary disk
+
+### Improvements
+- **Wabbajack Install - Honour Install Proton**: Wabbajack installer now uses the user's selected Install Proton from Settings (same as modlist install/configure). Previously hardcoded to Proton Experimental. Fallback to Proton Experimental when no selection or path invalid.
+- **STEAM_COMPAT_MOUNTS (Issue #155)**: Launch options now include mountpoints for both the modlist install path and the download path when known, so MO2 can access game and downloads on different drives. Uses new mountpoint helper and passes install_dir/download_dir through the Install a Modlist workflow.
+- **MO2 download_directory (Issue #154)**: When configuring after Install a Modlist, Jackify now sets `download_directory` in ModOrganizer.ini to the correct Wine path (Z: or D: on SD card) so MO2 finds the download folder. Configure New and Configure Existing continue to leave or blank the key as before.
+- **Winetricks / Protontricks**: For Flatpak Steam, use protontricks only. Winetricks alone struggles with the flatpak sandbox.
+- **Wine Component Animation**: Added pulser animation for individual wine component installation progress in Configure Existing and Install Modlist workflows
+- **Wabbajack Installer Log Rotation**: Added log rotation for Wabbajack installer workflow logs
+
+---
+
 ## v0.2.2.2 - ModOrganizer.ini Path Fixes for SD Card Installations
 **Release Date:** 2026-01-28
 

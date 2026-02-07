@@ -133,7 +133,7 @@ class ProtontricksDetectionService:
                 return False, error_msg
             
             # Install command - use --user flag for user-level installation (works on Steam Deck)
-            # This avoids requiring system-wide installation permissions
+            # Avoids system-wide installation permissions
             install_cmd = ["flatpak", "install", "--user", "-y", "--noninteractive", "flathub", "com.github.Matoking.protontricks"]
             
             # Use clean environment
@@ -186,7 +186,7 @@ class ProtontricksDetectionService:
                 elif "network" in stderr_msg.lower() or "connection" in stderr_msg.lower():
                     error_msg = f"Network error during installation. Check your internet connection.\n\nDetails: {stderr_msg}"
                 elif "already installed" in stderr_msg.lower():
-                    # This might actually be success - clear cache and re-detect
+                    # Might be success -- clear cache and re-detect
                     logger.info("Protontricks appears to already be installed (according to flatpak output)")
                     self._cached_detection_valid = False
                     return True, "Protontricks is already installed."

@@ -2,14 +2,9 @@
 Wabbajack Installer Handler
 
 Automated Wabbajack.exe installation and configuration via Proton.
-Self-contained implementation inspired by Wabbajack-Proton-AuCu (MIT).
 
-This handler provides:
-- Automatic Wabbajack.exe download
-- Steam shortcuts.vdf manipulation
-- WebView2 installation
-- Win7 registry configuration
-- Optional Heroic GOG game detection
+Provides: Wabbajack.exe download, Steam shortcuts.vdf handling,
+WebView2 install, Win7 registry for compatibility, optional Heroic GOG detection.
 """
 
 import json
@@ -271,28 +266,54 @@ class WabbajackInstallerHandler:
         return None
 
     def get_compat_data_path(self, app_id: int) -> Optional[Path]:
-        """Get compatdata path for AppID"""
-        home = Path.home()
-        steam_paths = [
-            home / ".steam/steam",
-            home / ".local/share/Steam",
-            home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
-        ]
+        """
+        Get compatdata path for AppID. Uses same detection logic as create_prefix_with_proton_wrapper.
 
-        for steam_path in steam_paths:
-            compat_path = steam_path / f"steamapps/compatdata/{app_id}"
-            if compat_path.parent.exists():
-                # Parent exists, so this is valid location even if prefix doesn't exist yet
-                return compat_path
+        Priority:
+        1. Check if prefix already exists at any known location
+        2. Use PathHandler library detection (Flatpak-aware via libraryfolders.vdf)
+        3. Fallback to native ~/.steam/steam
+        """
+        from .path_handler import PathHandler
+        path_handler = PathHandler()
+        all_libraries = path_handler.get_all_steam_library_paths()
 
+        # Check if Flatpak Steam by looking for .var/app/com.valvesoftware.Steam in library paths
+        is_flatpak_steam = any('.var/app/com.valvesoftware.Steam' in str(lib) for lib in all_libraries)
+
+        # Determine compatdata root using same logic as create_prefix_with_proton_wrapper
+        if is_flatpak_steam and all_libraries:
+            # Flatpak Steam: use first library root (from libraryfolders.vdf)
+            library_root = all_libraries[0]
+            compatdata_dir = library_root / "steamapps/compatdata"
+            self.logger.debug(f"Flatpak Steam detected, using library root: {library_root}")
+        else:
+            # Native Steam
+            compatdata_dir = Path.home() / ".steam/steam/steamapps/compatdata"
+            self.logger.debug("Native Steam detected")
+
+        compat_path = compatdata_dir / str(app_id)
+
+        # Check if prefix already exists there
+        if compat_path.exists():
+            self.logger.debug(f"Found existing compatdata at: {compat_path}")
+            return compat_path
+
+        # Prefix doesn't exist yet - return expected path if compatdata root exists
+        if compatdata_dir.is_dir():
+            self.logger.debug(f"Using compatdata location: {compat_path}")
+            return compat_path
+
+        self.logger.warning(f"Compatdata root does not exist: {compatdata_dir}")
         return None
 
-    def init_wine_prefix(self, app_id: int) -> Path:
+    def init_wine_prefix(self, app_id: int, proton_path: Optional[Path] = None) -> Path:
         """
         Initialize Wine prefix using Proton.
 
         Args:
             app_id: Steam AppID
+            proton_path: Optional path to Proton directory; if None, uses Proton Experimental
 
         Returns:
             Path to created prefix
@@ -300,9 +321,9 @@ class WabbajackInstallerHandler:
         Raises:
             RuntimeError: If prefix creation fails
         """
-        proton_path = self.find_proton_experimental()
+        proton_path = proton_path or self.find_proton_experimental()
         if not proton_path:
-            raise RuntimeError("Proton Experimental not found. Please install it from Steam.")
+            raise RuntimeError("Proton not found. Install a Proton version in Steam or set Install Proton in Settings.")
 
         compat_data = self.get_compat_data_path(app_id)
         if not compat_data:
@@ -318,10 +339,15 @@ class WabbajackInstallerHandler:
         env = os.environ.copy()
         env['STEAM_COMPAT_DATA_PATH'] = str(compat_data)
         env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = str(compat_data.parent.parent.parent)
+        # Suppress GUI windows
+        env['DISPLAY'] = ''
+        env['WAYLAND_DISPLAY'] = ''
+        env['WINEDEBUG'] = '-all'
+        env['WINEDLLOVERRIDES'] = 'msdia80.dll=n;conhost.exe=d;cmd.exe=d'
 
         self.logger.info(f"Initializing Wine prefix for AppID {app_id}...")
         result = subprocess.run(
-            [str(proton_bin), 'run', 'wineboot'],
+            [str(proton_bin), 'run', 'wineboot', '-u'],
             env=env,
             capture_output=True,
             text=True,
@@ -334,7 +360,7 @@ class WabbajackInstallerHandler:
         self.logger.info(f"Prefix created: {prefix_path}")
         return prefix_path
 
-    def run_in_prefix(self, app_id: int, exe_path: Path, args: List[str] = None) -> None:
+    def run_in_prefix(self, app_id: int, exe_path: Path, args: List[str] = None, proton_path: Optional[Path] = None) -> None:
         """
         Run executable in Wine prefix using Proton.
 
@@ -342,13 +368,14 @@ class WabbajackInstallerHandler:
             app_id: Steam AppID
             exe_path: Path to executable
             args: Optional command line arguments
+            proton_path: Optional path to Proton directory; if None, uses Proton Experimental
 
         Raises:
             RuntimeError: If execution fails
         """
-        proton_path = self.find_proton_experimental()
+        proton_path = proton_path or self.find_proton_experimental()
         if not proton_path:
-            raise RuntimeError("Proton Experimental not found")
+            raise RuntimeError("Proton not found")
 
         compat_data = self.get_compat_data_path(app_id)
         if not compat_data:
@@ -362,8 +389,14 @@ class WabbajackInstallerHandler:
         env = os.environ.copy()
         env['STEAM_COMPAT_DATA_PATH'] = str(compat_data)
         env['STEAM_COMPAT_CLIENT_INSTALL_PATH'] = str(compat_data.parent.parent.parent)
+        # Suppress Wine debug output
+        env['WINEDEBUG'] = '-all'
+        # Suppress cmd.exe and conhost.exe windows (the flickers you see)
+        # Keep DISPLAY so installers can run, but prevent console windows
+        env['WINEDLLOVERRIDES'] = 'msdia80.dll=n;conhost.exe=d;cmd.exe=d'
 
         self.logger.info(f"Running {exe_path.name} in prefix...")
+        self.logger.debug(f"Command: {' '.join(cmd)}")
         result = subprocess.run(
             cmd,
             env=env,
@@ -379,22 +412,24 @@ class WabbajackInstallerHandler:
             if result.stdout:
                 error_msg += f"\nStdout: {result.stdout}"
             self.logger.error(error_msg)
+            self.logger.debug(f"Full command output - returncode: {result.returncode}, stdout length: {len(result.stdout) if result.stdout else 0}, stderr length: {len(result.stderr) if result.stderr else 0}")
             raise RuntimeError(error_msg)
 
-    def apply_registry(self, app_id: int, reg_content: str) -> None:
+    def apply_registry(self, app_id: int, reg_content: str, proton_path: Optional[Path] = None) -> None:
         """
         Apply registry content to Wine prefix.
 
         Args:
             app_id: Steam AppID
             reg_content: Registry file content
+            proton_path: Optional path to Proton directory; if None, uses Proton Experimental
 
         Raises:
             RuntimeError: If registry application fails
         """
-        proton_path = self.find_proton_experimental()
+        proton_path = proton_path or self.find_proton_experimental()
         if not proton_path:
-            raise RuntimeError("Proton Experimental not found")
+            raise RuntimeError("Proton not found")
 
         compat_data = self.get_compat_data_path(app_id)
         if not compat_data:
@@ -434,13 +469,14 @@ class WabbajackInstallerHandler:
             if temp_reg.exists():
                 temp_reg.unlink()
 
-    def install_webview2(self, app_id: int, install_folder: Path) -> None:
+    def install_webview2(self, app_id: int, install_folder: Path, proton_path: Optional[Path] = None) -> None:
         """
         Download and install WebView2 runtime.
 
         Args:
             app_id: Steam AppID
             install_folder: Directory to download installer to
+            proton_path: Optional path to Proton directory; if None, uses Proton Experimental
 
         Raises:
             RuntimeError: If installation fails
@@ -456,11 +492,18 @@ class WabbajackInstallerHandler:
             self.logger.info(f"WebView2 installer path: {webview_installer}")
             self.logger.info(f"AppID: {app_id}")
             try:
-                self.run_in_prefix(app_id, webview_installer, ["/silent", "/install"])
+                self.run_in_prefix(app_id, webview_installer, ["/silent", "/install"], proton_path=proton_path)
                 self.logger.info("WebView2 installed successfully")
             except RuntimeError as e:
+                error_str = str(e)
+                # Exit code 8 might mean "already installed" - log but don't fail
+                if "exit code 8" in error_str:
+                    self.logger.warning(f"WebView2 installer returned exit code 8: {error_str}")
+                    self.logger.warning("This may indicate WebView2 is already installed. Continuing...")
+                    # Don't raise - treat as non-fatal
+                    return
                 self.logger.error(f"WebView2 installation failed: {e}")
-                # Re-raise to let caller handle it
+                # Re-raise for other errors
                 raise
 
         finally:
@@ -472,17 +515,18 @@ class WabbajackInstallerHandler:
                 except Exception as e:
                     self.logger.warning(f"Failed to cleanup WebView2 installer: {e}")
 
-    def apply_win7_registry(self, app_id: int) -> None:
+    def apply_win7_registry(self, app_id: int, proton_path: Optional[Path] = None) -> None:
         """
         Apply Windows 7 registry settings.
 
         Args:
             app_id: Steam AppID
+            proton_path: Optional path to Proton directory; if None, uses Proton Experimental
 
         Raises:
             RuntimeError: If registry application fails
         """
-        self.apply_registry(app_id, self.WIN7_REGISTRY)
+        self.apply_registry(app_id, self.WIN7_REGISTRY, proton_path=proton_path)
 
     def detect_heroic_gog_games(self) -> List[Dict]:
         """

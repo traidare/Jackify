@@ -36,7 +36,7 @@ class AdditionalTasksScreen(QWidget):
     def _setup_ui(self):
         """Set up the user interface following ModlistTasksScreen pattern"""
         layout = QVBoxLayout()
-        layout.setContentsMargins(30, 30, 30, 30)  # Reduced from 40
+        layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(12)  # Match main menu spacing
         
         # Header section
@@ -98,11 +98,11 @@ class AdditionalTasksScreen(QWidget):
         
         # Create grid layout for buttons (mirror ModlistTasksScreen pattern)
         button_grid = QGridLayout()
-        button_grid.setSpacing(12)  # Reduced from 16
+        button_grid.setSpacing(12)
         button_grid.setAlignment(Qt.AlignHCenter)
 
         button_width = 400
-        button_height = 40  # Reduced from 50
+        button_height = 40
 
         for i, (label, action_id, description) in enumerate(MENU_ITEMS):
             # Create button
@@ -130,7 +130,7 @@ class AdditionalTasksScreen(QWidget):
             # Description label
             desc_label = QLabel(description)
             desc_label.setAlignment(Qt.AlignHCenter)
-            desc_label.setStyleSheet("color: #999; font-size: 11px;")  # Reduced from 12px
+            desc_label.setStyleSheet("color: #999; font-size: 11px;")
             desc_label.setWordWrap(True)
             desc_label.setFixedWidth(button_width)
 

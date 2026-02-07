@@ -354,7 +354,7 @@ class UpdateService:
             
             script_content = f'''#!/bin/bash
 # Jackify Update Helper Script
-# This script safely replaces the current AppImage with the new version
+# Safely replaces current AppImage with new version
 
 CURRENT_APPIMAGE="{current_appimage}"
 NEW_APPIMAGE="{new_appimage}"

@@ -423,8 +423,10 @@ class JackifyCLI:
         elif command == "configure-modlist":
             return self.commands['configure_modlist'].execute(args)
         elif command == "install-wabbajack":
-            # Legacy functionality - TODO: extract to command handler
-            return self._handle_legacy_install_wabbajack()
+            print("Wabbajack installation is available through the interactive menu:")
+            print("  Run: jackify --cli")
+            print("  Then select: Additional Tasks > Install Wabbajack")
+            return 0
         elif command == "install-mo2":
             print("MO2 installation not yet implemented")
             print("This functionality is coming soon!")
@@ -493,12 +495,6 @@ class JackifyCLI:
             logger.error(f"Steam restart failed with exception: {e}")
             return 1
     
-    def _handle_legacy_install_wabbajack(self):
-        """Handle install-wabbajack command (legacy functionality)"""
-        print("Install Wabbajack functionality not yet migrated to new structure")
-        return 1
-    
-        return 1
     
     def _handle_legacy_recovery(self, args):
         """Handle recovery command (legacy functionality)"""
@@ -513,7 +509,10 @@ class JackifyCLI:
     # LEGACY BRIDGE: Methods that menu handlers expect to find on cli_instance
     def _cmd_install_wabbajack(self, args):
         """LEGACY BRIDGE: Install Wabbajack application"""
-        return self._handle_legacy_install_wabbajack()
+        from jackify.frontends.cli.commands.install_wabbajack import InstallWabbajackCommand
+        command_instance = InstallWabbajackCommand()
+        command_instance.run()
+        return 0
 
 
 def main():
@@ -522,6 +521,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # This should not be called directly - use __main__.py instead
+    # Do not call directly -- use __main__.py
     print("Please use: python -m jackify.frontends.cli")
     sys.exit(1)

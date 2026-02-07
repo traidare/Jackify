@@ -179,7 +179,7 @@ class EnginePerformanceMonitor:
                     if metrics.parent_cpu_percent is not None:
                         parent_info = f", Python wrapper: {metrics.parent_cpu_percent:.1f}% CPU"
                         
-                    self.logger.warning(f"🚨 ENGINE STALL DETECTED: jackify-engine CPU at {metrics.cpu_percent:.1f}% "
+                    self.logger.warning(f"ENGINE STALL DETECTED: jackify-engine CPU at {metrics.cpu_percent:.1f}% "
                                       f"for {self.stall_duration}s+ (Memory: {metrics.memory_mb:.1f}MB, "
                                       f"Threads: {metrics.thread_count}, FDs: {metrics.fd_count}{parent_info})")
                     

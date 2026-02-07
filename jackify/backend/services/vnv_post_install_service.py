@@ -271,7 +271,7 @@ class VNVPostInstallService:
 
             if not patcher_path:
                 # Try to download from Nexus
-                # Note: The Linux version is named "FNV4GB for Proton", not "linux"
+                # Linux version is named "FNV4GB for Proton", not "linux"
                 success, patcher_path, msg = self.download_service.download_latest_file(
                     self.GAME_DOMAIN,
                     self.LINUX_4GB_PATCHER_MOD_ID,
@@ -410,11 +410,12 @@ class VNVPostInstallService:
                     logger.info(f"Using cached BSA Decompressor MPI: {mpi_path}")
                 else:
                     # Try to download from Nexus
+                    # Look for files with .mpi extension (TTW installer format)
                     success, mpi_path, msg = self.download_service.download_latest_file(
                         self.GAME_DOMAIN,
                         self.FNV_BSA_DECOMPRESSOR_MOD_ID,
                         self.cache_dir,
-                        file_name_filter="mpi",
+                        file_name_filter=".mpi",
                         progress_callback=progress_callback
                     )
 

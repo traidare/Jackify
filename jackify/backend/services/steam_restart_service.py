@@ -11,7 +11,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 STRATEGY_JACKIFY = "jackify"
-STRATEGY_NAK_SIMPLE = "nak_simple"
+STRATEGY_SIMPLE = "simple"
 
 
 def _get_restart_strategy() -> str:
@@ -20,7 +20,9 @@ def _get_restart_strategy() -> str:
         from jackify.backend.handlers.config_handler import ConfigHandler
 
         strategy = ConfigHandler().get("steam_restart_strategy", STRATEGY_JACKIFY)
-        if strategy not in (STRATEGY_JACKIFY, STRATEGY_NAK_SIMPLE):
+        if strategy == "nak_simple":
+            strategy = STRATEGY_SIMPLE
+        if strategy not in (STRATEGY_JACKIFY, STRATEGY_SIMPLE):
             return STRATEGY_JACKIFY
         return strategy
     except Exception as exc:  # pragma: no cover - defensive logging only
@@ -29,8 +31,8 @@ def _get_restart_strategy() -> str:
 
 
 def _strategy_label(strategy: str) -> str:
-    if strategy == STRATEGY_NAK_SIMPLE:
-        return "NaK simple restart"
+    if strategy == STRATEGY_SIMPLE:
+        return "Simple restart"
     return "Jackify hardened restart"
 
 def _get_clean_subprocess_env():
@@ -137,30 +139,79 @@ def is_steam_deck() -> bool:
         logger.debug(f"Error detecting Steam Deck: {e}")
     return False
 
-def is_flatpak_steam() -> bool:
-    """Detect if Steam is installed as a Flatpak."""
+def steam_path_indicates_flatpak(steam_path) -> bool:
+    """True if this Steam path is under the Flatpak Steam app dir (user is running Flatpak Steam)."""
+    if steam_path is None:
+        return False
+    path_str = os.fspath(steam_path)
+    return ".var" in path_str and "app" in path_str and "com.valvesoftware.Steam" in path_str
+
+
+def _flatpak_steam_data_path_exists() -> bool:
+    """True if the Flatpak Steam data directory exists (fallback when resolved_path is None, e.g. AppImage)."""
     try:
-        # First check if flatpak command exists
-        if not shutil.which('flatpak'):
+        from pathlib import Path
+        base = Path.home() / ".var" / "app" / "com.valvesoftware.Steam"
+        for rel in ("data/Steam", ".local/share/Steam", "home/.local/share/Steam"):
+            candidate = base / rel
+            if (candidate / "config" / "loginusers.vdf").exists():
+                return True
+        return False
+    except Exception as e:
+        logger.debug("Flatpak Steam path check failed: %s", e)
+        return False
+
+
+def _get_flatpak_command():
+    """Resolve flatpak executable (for detection when PATH is minimal, e.g. AppImage)."""
+    exe = shutil.which("flatpak")
+    if exe:
+        return exe
+    for p in ("/usr/bin/flatpak", "/usr/local/bin/flatpak"):
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def is_flatpak_steam() -> bool:
+    """Detect if Steam is installed as a Flatpak. Uses flatpak CLI only (no dir heuristic)
+    so we don't wrongly choose Flatpak when the user has both Flatpak and native Steam."""
+    try:
+        flatpak_cmd = _get_flatpak_command()
+        if not flatpak_cmd:
             return False
-        
-        # Verify the app is actually installed (not just directory exists)
-        result = subprocess.run(['flatpak', 'list', '--app'],
-                              stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL,  # Suppress stderr to avoid error messages
-                              text=True,
-                              timeout=5)
+        env = _get_clean_subprocess_env()
+        result = subprocess.run(
+            [flatpak_cmd, "list", "--app"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+            env=env,
+        )
         if result.returncode == 0:
-            # Check for exact match - "com.valvesoftware.Steam" as a whole word
-            # This prevents matching "com.valvesoftware.SteamLink" or similar
             for line in result.stdout.splitlines():
                 parts = line.split()
-                if parts and parts[0] == 'com.valvesoftware.Steam':
+                if parts and parts[0] == "com.valvesoftware.Steam":
                     return True
         return False
     except Exception as e:
         logger.debug(f"Error detecting Flatpak Steam: {e}")
     return False
+
+
+def _get_steam_executable(env=None):
+    """Resolve steam executable path for native Steam. Prefer PATH, then common locations."""
+    env = env or os.environ
+    path_env = env.get("PATH", "")
+    exe = shutil.which("steam", path=path_env)
+    if exe:
+        return exe
+    for candidate in ("/usr/games/steam", "/usr/bin/steam"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "steam"
+
 
 def get_steam_processes() -> list:
     """Return a list of psutil.Process objects for running Steam processes."""
@@ -194,53 +245,46 @@ def wait_for_steam_exit(timeout: int = 60, check_interval: float = 0.5) -> bool:
         time.sleep(check_interval)
     return False
 
-def _start_steam_nak_style(is_steamdeck_flag=False, is_flatpak_flag=False, env_override=None) -> bool:
+def _start_steam_simple(is_steamdeck_flag=False, is_flatpak_flag=False, env_override=None) -> bool:
     """
-    Start Steam using a simplified NaK-style restart (single command, no env cleanup).
-    
-    CRITICAL: Do NOT use start_new_session - Steam needs to inherit the session
-    to connect to display/tray. Ensure all GUI environment variables are preserved.
+    Start Steam using a simplified restart (single command, no env cleanup).
+    Do NOT use start_new_session - Steam needs to inherit the session for display/tray.
     """
     env = env_override if env_override is not None else os.environ.copy()
-    
-    # Log critical GUI variables for debugging
+
     gui_vars = ['DISPLAY', 'WAYLAND_DISPLAY', 'XDG_SESSION_TYPE', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR']
     for var in gui_vars:
         if var in env:
-            logger.debug(f"NaK-style restart: {var}={env[var][:50] if len(str(env[var])) > 50 else env[var]}")
+            logger.debug(f"Simple restart: {var}={env[var][:50] if len(str(env[var])) > 50 else env[var]}")
         else:
-            logger.warning(f"NaK-style restart: {var} is NOT SET - Steam GUI may fail!")
-    
+            logger.warning(f"Simple restart: {var} is NOT SET - Steam GUI may fail!")
+
     try:
         if is_steamdeck_flag:
-            logger.info("NaK-style restart: Steam Deck detected, restarting via systemctl.")
+            logger.info("Simple restart: Steam Deck detected, restarting via systemctl.")
             subprocess.Popen(["systemctl", "--user", "restart", "app-steam@autostart.service"], env=env)
         elif is_flatpak_flag:
-            logger.info("NaK-style restart: Flatpak Steam detected, running flatpak command.")
-            subprocess.Popen(["flatpak", "run", "com.valvesoftware.Steam"], 
-                           env=env, stderr=subprocess.DEVNULL)
+            logger.info("Simple restart: Flatpak Steam detected, running flatpak command.")
+            flatpak_cmd = _get_flatpak_command() or "flatpak"
+            subprocess.Popen([flatpak_cmd, "run", "com.valvesoftware.Steam"],
+                            env=env, stderr=subprocess.DEVNULL)
         else:
-            logger.info("NaK-style restart: launching Steam directly (inheriting session for GUI).")
-            # NaK uses simple "steam" command without -foreground flag
-            # Do NOT use start_new_session - Steam needs session access for GUI
-            # Use shell=True to ensure proper environment inheritance
-            # This helps with GUI display access on some systems
+            logger.info("Simple restart: launching Steam directly (inheriting session for GUI).")
             subprocess.Popen("steam", shell=True, env=env)
 
         time.sleep(5)
-        # Use steamwebhelper for detection (actual Steam process, not steam-powerbuttond)
         check_result = subprocess.run(['pgrep', '-f', 'steamwebhelper'], capture_output=True, timeout=10, env=env)
         if check_result.returncode == 0:
-            logger.info("NaK-style restart detected running Steam process.")
+            logger.info("Simple restart detected running Steam process.")
             return True
 
-        logger.warning("NaK-style restart did not detect Steam process after launch.")
+        logger.warning("Simple restart did not detect Steam process after launch.")
         return False
     except FileNotFoundError as exc:
-        logger.error(f"NaK-style restart command not found: {exc}")
+        logger.error(f"Simple restart command not found: {exc}")
         return False
     except Exception as exc:
-        logger.error(f"NaK-style restart encountered an error: {exc}")
+        logger.error(f"Simple restart encountered an error: {exc}")
         return False
 
 
@@ -254,8 +298,8 @@ def start_steam(is_steamdeck_flag=None, is_flatpak_flag=None, env_override=None,
         env_override: Optional environment dictionary for subprocess calls
         strategy: Restart strategy identifier
     """
-    if strategy == STRATEGY_NAK_SIMPLE:
-        return _start_steam_nak_style(
+    if strategy == STRATEGY_SIMPLE:
+        return _start_steam_simple(
             is_steamdeck_flag=is_steamdeck_flag,
             is_flatpak_flag=is_flatpak_flag,
             env_override=env_override or os.environ.copy(),
@@ -284,10 +328,10 @@ def start_steam(is_steamdeck_flag=None, is_flatpak_flag=None, env_override=None,
         if _is_flatpak:
             logger.info("Flatpak Steam detected - trying flatpak run command first")
             try:
-                # Try without flags first (most reliable for Ubuntu/PopOS)
-                logger.debug("Executing: flatpak run com.valvesoftware.Steam")
-                subprocess.Popen(["flatpak", "run", "com.valvesoftware.Steam"],
-                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                flatpak_cmd = _get_flatpak_command() or "flatpak"
+                logger.debug("Executing: %s run com.valvesoftware.Steam", flatpak_cmd)
+                subprocess.Popen([flatpak_cmd, "run", "com.valvesoftware.Steam"],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(7)  # Give Flatpak more time to start
                 # For Flatpak Steam, check for the flatpak process, not steamwebhelper
                 check_result = subprocess.run(['pgrep', '-f', 'com.valvesoftware.Steam'], capture_output=True, timeout=10, env=env)
@@ -301,11 +345,11 @@ def start_steam(is_steamdeck_flag=None, is_flatpak_flag=None, env_override=None,
                 logger.error(f"Flatpak Steam start failed: {e}")
                 return False  # Flatpak Steam must use flatpak command, don't fall back
 
-        # Use startup methods with -foreground flag to ensure GUI opens
+        steam_exe = _get_steam_executable(env)
         start_methods = [
-            {"name": "Popen", "cmd": ["steam", "-foreground"], "kwargs": {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL, "start_new_session": True, "env": env}},
-            {"name": "setsid", "cmd": ["setsid", "steam", "-foreground"], "kwargs": {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL, "env": env}},
-            {"name": "nohup", "cmd": ["nohup", "steam", "-foreground"], "kwargs": {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL, "start_new_session": True, "preexec_fn": os.setpgrp, "env": env}}
+            {"name": "Popen", "cmd": [steam_exe, "-foreground"], "kwargs": {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL, "start_new_session": True, "env": env}},
+            {"name": "setsid", "cmd": ["setsid", steam_exe, "-foreground"], "kwargs": {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL, "env": env}},
+            {"name": "nohup", "cmd": ["nohup", steam_exe, "-foreground"], "kwargs": {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL, "start_new_session": True, "env": env}}
         ]
         
         for method in start_methods:
@@ -335,6 +379,106 @@ def start_steam(is_steamdeck_flag=None, is_flatpak_flag=None, env_override=None,
         logger.error(f"Error starting Steam: {e}")
         return False
 
+def _resolve_steam_path_for_restart():
+    """Return the Steam path we're using (for shortcuts/config). Used to decide Flatpak vs native when CLI detection fails."""
+    try:
+        from jackify.backend.services.native_steam_service import NativeSteamService
+        svc = NativeSteamService()
+        if svc.find_steam_user() and svc.steam_path:
+            return svc.steam_path
+    except Exception as e:
+        logger.debug("Could not resolve Steam path for restart: %s", e)
+    return None
+
+
+def shutdown_steam(progress_callback: Optional[Callable[[str], None]] = None, system_info=None) -> bool:
+    """
+    Shut down Steam completely across all distros.
+    Required before modifying VDF files to prevent race conditions.
+
+    Args:
+        progress_callback: Optional callback for progress updates
+        system_info: Optional SystemInfo object with pre-detected Steam installation types
+
+    Returns:
+        True if shutdown successful, False otherwise
+    """
+    shutdown_env = _get_clean_subprocess_env()
+
+    _is_steam_deck = system_info.is_steamdeck if system_info else is_steam_deck()
+    resolved_path = _resolve_steam_path_for_restart()
+    if resolved_path is not None:
+        _is_flatpak = steam_path_indicates_flatpak(resolved_path)
+        logger.info("Steam path in use: %s -> flatpak=%s", resolved_path, _is_flatpak)
+    else:
+        _is_flatpak = _flatpak_steam_data_path_exists()
+        if _is_flatpak:
+            logger.info("Steam path in use: (flatpak data path detected) -> flatpak=True")
+        else:
+            _is_flatpak = system_info.is_flatpak_steam if system_info else is_flatpak_steam()
+
+    def report(msg):
+        if progress_callback:
+            progress_callback(msg)
+        else:
+            logger.info(msg)
+
+    report("Shutting down Steam...")
+
+    # Steam Deck: Use systemctl for shutdown
+    if _is_steam_deck:
+        try:
+            report("Steam Deck detected - using systemctl shutdown...")
+            subprocess.run(['systemctl', '--user', 'stop', 'app-steam@autostart.service'],
+                         timeout=15, check=False, capture_output=True, env=shutdown_env)
+            time.sleep(2)
+        except Exception as e:
+            logger.debug(f"systemctl stop failed on Steam Deck: {e}")
+    # Flatpak Steam: Use flatpak kill command
+    elif _is_flatpak:
+        try:
+            report("Flatpak Steam detected - stopping via flatpak...")
+            flatpak_cmd = _get_flatpak_command() or "flatpak"
+            subprocess.run([flatpak_cmd, "kill", "com.valvesoftware.Steam"],
+                          timeout=15, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=shutdown_env)
+            time.sleep(2)
+        except Exception as e:
+            logger.debug(f"flatpak kill failed: {e}")
+
+    # All systems: Use pkill approach
+    try:
+        pkill_result = subprocess.run(['pkill', 'steam'], timeout=15, check=False, capture_output=True, env=shutdown_env)
+        logger.debug(f"pkill steam result: {pkill_result.returncode}")
+        time.sleep(2)
+
+        # Check if Steam is still running
+        check_result = subprocess.run(['pgrep', '-f', 'steamwebhelper'], capture_output=True, timeout=10, env=shutdown_env)
+        if check_result.returncode == 0:
+            # Force kill if still running
+            report("Steam still running - force terminating...")
+            force_result = subprocess.run(['pkill', '-9', 'steam'], timeout=15, check=False, capture_output=True, env=shutdown_env)
+            logger.debug(f"pkill -9 steam result: {force_result.returncode}")
+            time.sleep(2)
+
+            # Final check
+            final_check = subprocess.run(['pgrep', '-f', 'steamwebhelper'], capture_output=True, timeout=10, env=shutdown_env)
+            if final_check.returncode != 0:
+                logger.info("Steam processes successfully force terminated.")
+            else:
+                logger.warning("Steam processes may still be running after termination attempts.")
+                report("Steam shutdown incomplete")
+                return False
+        else:
+            logger.info("Steam processes successfully terminated.")
+    except Exception as e:
+        logger.warning(f"Error during Steam shutdown: {e}")
+        report("Steam shutdown had issues")
+        return False
+
+    report("Steam shut down successfully")
+    return True
+
+
 def robust_steam_restart(progress_callback: Optional[Callable[[str], None]] = None, timeout: int = 60, system_info=None) -> bool:
     """
     Robustly restart Steam across all distros. Returns True on success, False on failure.
@@ -350,14 +494,24 @@ def robust_steam_restart(progress_callback: Optional[Callable[[str], None]] = No
     strategy = _get_restart_strategy()
     start_env = shutdown_env if strategy == STRATEGY_JACKIFY else os.environ.copy()
 
-    # Use cached detection from system_info if available, otherwise detect
     _is_steam_deck = system_info.is_steamdeck if system_info else is_steam_deck()
-    _is_flatpak = system_info.is_flatpak_steam if system_info else is_flatpak_steam()
+    resolved_path = _resolve_steam_path_for_restart()
+    if resolved_path is not None:
+        _is_flatpak = steam_path_indicates_flatpak(resolved_path)
+        logger.info("Steam path in use: %s -> flatpak=%s", resolved_path, _is_flatpak)
+    else:
+        _is_flatpak = _flatpak_steam_data_path_exists()
+        if _is_flatpak:
+            logger.info("Steam path in use: (flatpak data path detected) -> flatpak=True")
+        else:
+            _is_flatpak = system_info.is_flatpak_steam if system_info else is_flatpak_steam()
 
     def report(msg):
-        logger.info(msg)
         if progress_callback:
             progress_callback(msg)
+        else:
+            # Only log directly if no callback (callback chain handles logging)
+            logger.info(msg)
 
     report("Shutting down Steam...")
     report(f"Steam restart strategy: {_strategy_label(strategy)}")
@@ -375,8 +529,9 @@ def robust_steam_restart(progress_callback: Optional[Callable[[str], None]] = No
     elif _is_flatpak:
         try:
             report("Flatpak Steam detected - stopping via flatpak...")
-            subprocess.run(['flatpak', 'kill', 'com.valvesoftware.Steam'],
-                         timeout=15, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=shutdown_env)
+            flatpak_cmd = _get_flatpak_command() or "flatpak"
+            subprocess.run([flatpak_cmd, "kill", "com.valvesoftware.Steam"],
+                          timeout=15, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=shutdown_env)
             time.sleep(2)
         except Exception as e:
             logger.debug(f"flatpak kill failed: {e}")

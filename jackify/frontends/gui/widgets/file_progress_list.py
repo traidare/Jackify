@@ -11,14 +11,18 @@ import shiboken6
 import time
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, 
+    QWidget, QVBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QProgressBar, QHBoxLayout, QSizePolicy
 )
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QFont
 
 from jackify.shared.progress_models import FileProgress, OperationType
-from ..shared_theme import JACKIFY_COLOR_BLUE
+
+from .summary_progress_widget import SummaryProgressWidget
+from .file_progress_item import FileProgressItem
+
+__all__ = ['SummaryProgressWidget', 'FileProgressItem', 'FileProgressList']
+
 
 def _debug_log(message):
     """Log message only if debug mode is enabled"""
@@ -26,322 +30,6 @@ def _debug_log(message):
     config_handler = ConfigHandler()
     if config_handler.get('debug_mode', False):
         print(message)
-
-
-class SummaryProgressWidget(QWidget):
-    """Widget showing summary progress for phases like Installing."""
-    
-    def __init__(self, phase_name: str, current_step: int, max_steps: int, parent=None):
-        super().__init__(parent)
-        self.phase_name = phase_name
-        self.current_step = current_step
-        self.max_steps = max_steps
-        # Smooth interpolation for counter updates
-        self._target_step = current_step
-        self._target_max = max_steps
-        self._display_step = current_step
-        self._display_max = max_steps
-        self._interpolation_timer = QTimer(self)
-        self._interpolation_timer.timeout.connect(self._interpolate_counter)
-        self._interpolation_timer.setInterval(16)  # ~60fps
-        self._interpolation_timer.start()
-        self._setup_ui()
-        self._update_display()
-    
-    def _setup_ui(self):
-        """Set up the UI for summary display."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        # Text label showing phase and count (no progress bar for cleaner display)
-        self.text_label = QLabel()
-        self.text_label.setStyleSheet("color: #ccc; font-size: 12px; font-weight: bold;")
-        layout.addWidget(self.text_label)
-    
-    def _interpolate_counter(self):
-        """Smoothly interpolate counter display toward target values."""
-        # Interpolate step
-        step_diff = self._target_step - self._display_step
-        if abs(step_diff) < 0.5:
-            self._display_step = self._target_step
-        else:
-            # Smooth interpolation (20% per frame)
-            self._display_step += step_diff * 0.2
-        
-        # Interpolate max (usually doesn't change, but handle it)
-        max_diff = self._target_max - self._display_max
-        if abs(max_diff) < 0.5:
-            self._display_max = self._target_max
-        else:
-            self._display_max += max_diff * 0.2
-        
-        # Update display with interpolated values
-        self._update_display()
-    
-    def _update_display(self):
-        """Update the display with current progress."""
-        # Use interpolated display values for smooth counter updates
-        display_step = int(round(self._display_step))
-        display_max = int(round(self._display_max))
-        
-        if display_max > 0:
-            new_text = f"{self.phase_name} ({display_step}/{display_max})"
-        else:
-            new_text = f"{self.phase_name}"
-
-        # Only update text if it changed (reduces repaints)
-        if self.text_label.text() != new_text:
-            self.text_label.setText(new_text)
-
-    def update_progress(self, current_step: int, max_steps: int):
-        """Update target values (display will smoothly interpolate)."""
-        # Update targets (render loop will smoothly interpolate)
-        self._target_step = current_step
-        self._target_max = max_steps
-        # Also update actual values for reference
-        self.current_step = current_step
-        self.max_steps = max_steps
-
-
-class FileProgressItem(QWidget):
-    """Widget representing a single file's progress."""
-    
-    def __init__(self, file_progress: FileProgress, parent=None):
-        super().__init__(parent)
-        self.file_progress = file_progress
-        self._target_percent = file_progress.percent  # Target value for smooth animation
-        self._current_display_percent = file_progress.percent  # Currently displayed value
-        self._spinner_position = 0  # For custom indeterminate spinner animation (0-200 range for smooth wraparound)
-        self._is_indeterminate = False  # Track if we're in indeterminate mode
-        self._animation_timer = QTimer(self)
-        self._animation_timer.timeout.connect(self._animate_progress)
-        self._animation_timer.setInterval(16)  # ~60fps for smooth animation
-        self._setup_ui()
-        self._update_display()
-    
-    def _setup_ui(self):
-        """Set up the UI for this file item."""
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(8)
-        
-        # Operation icon/indicator (simple text for now)
-        operation_label = QLabel(self._get_operation_symbol())
-        operation_label.setFixedWidth(20)
-        operation_label.setAlignment(Qt.AlignCenter)
-        operation_label.setStyleSheet(f"color: {JACKIFY_COLOR_BLUE}; font-weight: bold;")
-        layout.addWidget(operation_label)
-        
-        # Filename (truncated if too long)
-        filename_label = QLabel(self._truncate_filename(self.file_progress.filename))
-        filename_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        filename_label.setToolTip(self.file_progress.filename)  # Full name in tooltip
-        filename_label.setStyleSheet("color: #ccc; font-size: 11px;")
-        layout.addWidget(filename_label, 1)
-        self.filename_label = filename_label
-        
-        # Progress percentage (only show if we have valid progress data)
-        percent_label = QLabel()
-        percent_label.setFixedWidth(40)
-        percent_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        percent_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        layout.addWidget(percent_label)
-        self.percent_label = percent_label
-        
-        # Progress indicator: either progress bar (with %) or animated spinner (no %)
-        progress_bar = QProgressBar()
-        progress_bar.setFixedHeight(12)
-        progress_bar.setFixedWidth(80)
-        progress_bar.setTextVisible(False)  # Hide text, we have percent label
-
-        # Apply stylesheet ONCE here instead of on every update
-        progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                border: 1px solid #444;
-                border-radius: 2px;
-                background-color: #1a1a1a;
-            }}
-            QProgressBar::chunk {{
-                background-color: {JACKIFY_COLOR_BLUE};
-                border-radius: 1px;
-            }}
-        """)
-
-        layout.addWidget(progress_bar)
-        self.progress_bar = progress_bar
-    
-    def _get_operation_symbol(self) -> str:
-        """Get symbol for operation type."""
-        symbols = {
-            OperationType.DOWNLOAD: "↓",
-            OperationType.EXTRACT: "↻",
-            OperationType.VALIDATE: "✓",
-            OperationType.INSTALL: "→",
-        }
-        return symbols.get(self.file_progress.operation, "•")
-    
-    def _truncate_filename(self, filename: str, max_length: int = 40) -> str:
-        """Truncate filename if too long."""
-        if len(filename) <= max_length:
-            return filename
-        return filename[:max_length-3] + "..."
-    
-    def _update_display(self):
-        """Update the display with current progress."""
-        # Check if this is a summary item (e.g., "Installing files (1234/5678)")
-        is_summary = hasattr(self.file_progress, '_is_summary') and self.file_progress._is_summary
-
-        # Check if progress bar should be hidden (e.g., "Installing Files: 234/35346")
-        no_progress_bar = hasattr(self.file_progress, '_no_progress_bar') and self.file_progress._no_progress_bar
-
-        # Update filename - DON'T truncate for install phase items
-        # Only truncate for download phase to keep consistency there
-        if 'Installing Files' in self.file_progress.filename or 'Converting Texture' in self.file_progress.filename or 'BSA:' in self.file_progress.filename:
-            name_display = self.file_progress.filename  # Don't truncate
-        else:
-            name_display = self._truncate_filename(self.file_progress.filename)
-
-        if not is_summary and not no_progress_bar:
-            size_display = self.file_progress.size_display
-            if size_display:
-                name_display = f"{name_display} ({size_display})"
-
-        self.filename_label.setText(name_display)
-        self.filename_label.setToolTip(self.file_progress.filename)
-
-        # For items with _no_progress_bar flag (e.g., "Installing Files: 234/35346")
-        # Hide the progress bar and percentage - just show the text
-        if no_progress_bar:
-            self._animation_timer.stop()  # Stop animation for items without progress bars
-            self.percent_label.setText("")  # No percentage
-            self.progress_bar.setVisible(False)  # Hide progress bar
-            return
-
-        # Ensure progress bar is visible for other items
-        self.progress_bar.setVisible(True)
-
-        # For summary items, calculate progress from step/max
-        if is_summary:
-            summary_step = getattr(self.file_progress, '_summary_step', 0)
-            summary_max = getattr(self.file_progress, '_summary_max', 0)
-
-            if summary_max > 0:
-                percent = (summary_step / summary_max) * 100.0
-                # Update target for smooth animation
-                self._target_percent = max(0, min(100, percent))
-                
-                # Start animation timer if not already running
-                if not self._animation_timer.isActive():
-                    self._animation_timer.start()
-                
-                self.progress_bar.setRange(0, 100)
-                # Progress bar value will be updated by animation timer
-            else:
-                # No max for summary - use custom animated spinner
-                self._is_indeterminate = True
-                self.percent_label.setText("")
-                self.progress_bar.setRange(0, 100)  # Use determinate range for custom animation
-                if not self._animation_timer.isActive():
-                    self._animation_timer.start()
-            return
-
-        # Check if this is a queued item (not yet started)
-        # Queued items have total_size > 0 but percent == 0, current_size == 0, speed <= 0
-        is_queued = (
-            self.file_progress.total_size > 0 and
-            self.file_progress.percent == 0 and
-            self.file_progress.current_size == 0 and
-            self.file_progress.speed <= 0
-        )
-
-        if is_queued:
-            # Queued download - show "Queued" text with empty progress bar
-            self._is_indeterminate = False
-            self._animation_timer.stop()
-            self.percent_label.setText("Queued")
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
-            return
-
-        # Check if we have meaningful progress data
-        # For operations like BSA building, we may not have percent or size data
-        has_meaningful_progress = (
-            self.file_progress.percent > 0 or
-            (self.file_progress.total_size > 0 and self.file_progress.current_size > 0) or
-            (self.file_progress.speed > 0 and self.file_progress.percent >= 0)
-        )
-
-        # Use determinate mode if we have actual progress data, otherwise use custom animated spinner
-        if has_meaningful_progress:
-            # Normal progress mode
-            self._is_indeterminate = False
-            # Update target for smooth animation
-            self._target_percent = max(0, self.file_progress.percent)
-
-            # Start animation timer if not already running
-            if not self._animation_timer.isActive():
-                self._animation_timer.start()
-
-            self.progress_bar.setRange(0, 100)
-            # Progress bar value will be updated by animation timer
-        else:
-            # No progress data (e.g., texture conversions, BSA building) - use custom animated spinner
-            self._is_indeterminate = True
-            self.percent_label.setText("")  # Clear percent label
-            self.progress_bar.setRange(0, 100)  # Use determinate range for custom animation
-            # Start animation timer for custom spinner
-            if not self._animation_timer.isActive():
-                self._animation_timer.start()
-
-    def _animate_progress(self):
-        """Smoothly animate progress bar from current to target value, or animate spinner."""
-        if self._is_indeterminate:
-            # Custom indeterminate spinner animation
-            # Use a bouncing/pulsing effect: position moves 0-100-0 smoothly
-            # Increment by 4 units per frame for fast animation (full cycle in ~0.8s at 60fps)
-            self._spinner_position = (self._spinner_position + 4) % 200
-
-            # Create bouncing effect: 0->100->0
-            if self._spinner_position < 100:
-                display_value = self._spinner_position
-            else:
-                display_value = 200 - self._spinner_position
-
-            self.progress_bar.setValue(display_value)
-        else:
-            # Normal progress animation
-            # Calculate difference
-            diff = self._target_percent - self._current_display_percent
-
-            # If very close, snap to target and stop animation
-            if abs(diff) < 0.1:
-                self._current_display_percent = self._target_percent
-                self._animation_timer.stop()
-            else:
-                # Smooth interpolation (ease-out for natural feel)
-                # Move 20% of remaining distance per frame (~60fps = smooth)
-                self._current_display_percent += diff * 0.2
-
-            # Update display
-            display_percent = max(0, min(100, self._current_display_percent))
-            self.progress_bar.setValue(int(display_percent))
-
-            # Update percentage label
-            if self.file_progress.percent > 0:
-                self.percent_label.setText(f"{display_percent:.0f}%")
-            else:
-                self.percent_label.setText("")
-    
-    def update_progress(self, file_progress: FileProgress):
-        """Update with new progress data."""
-        self.file_progress = file_progress
-        self._update_display()
-    
-    def cleanup(self):
-        """Clean up resources when widget is no longer needed."""
-        if self._animation_timer.isActive():
-            self._animation_timer.stop()
 
 
 class FileProgressList(QWidget):
@@ -584,6 +272,10 @@ class FileProgressList(QWidget):
             elif fp.filename.startswith('BSA:'):
                 bsa_name = fp.filename.split('(')[0].strip()
                 current_keys.add(f"__bsa_{bsa_name}__")
+            elif fp.filename.startswith('Wine component:'):
+                rest = fp.filename.split(':', 1)[1].strip()
+                comp_id = rest.split('|')[0].strip() if '|' in rest else rest
+                current_keys.add(f"__wine_comp_{comp_id}__")
             else:
                 current_keys.add(fp.filename)
         
@@ -608,15 +300,16 @@ class FileProgressList(QWidget):
             if 'Installing Files:' in file_progress.filename:
                 item_key = "__installing_files__"
             elif 'Converting Texture:' in file_progress.filename:
-                # Extract base filename for stable key
                 base_name = file_progress.filename.split('(')[0].strip()
                 item_key = f"__texture_{base_name}__"
             elif file_progress.filename.startswith('BSA:'):
-                # Extract BSA filename for stable key
                 bsa_name = file_progress.filename.split('(')[0].strip()
                 item_key = f"__bsa_{bsa_name}__"
+            elif file_progress.filename.startswith('Wine component:'):
+                rest = file_progress.filename.split(':', 1)[1].strip()
+                comp_id = rest.split('|')[0].strip() if '|' in rest else rest
+                item_key = f"__wine_comp_{comp_id}__"
             else:
-                # Use filename as key for regular files
                 item_key = file_progress.filename
             
             if item_key in self._file_items:
@@ -685,6 +378,19 @@ class FileProgressList(QWidget):
 
         # Remove transition message after brief delay (will be replaced by actual content)
         # The next update_files call with actual content will clear this automatically
+
+    def clear_summary(self):
+        """Remove the summary widget so file-list items can take over immediately."""
+        if self._summary_widget:
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                if item and item.data(Qt.UserRole) == "__summary__":
+                    widget = self.list_widget.itemWidget(item)
+                    if widget:
+                        self.list_widget.removeItemWidget(item)
+                    self.list_widget.takeItem(i)
+                    break
+            self._summary_widget = None
 
     def clear(self):
         """Clear all file items."""
@@ -787,7 +493,7 @@ class FileProgressList(QWidget):
             total_cpu = main_cpu
 
             # Add CPU usage from ALL child processes recursively
-            # This includes jackify-engine, texconv.exe, wine processes, etc.
+            # Includes jackify-engine, texconv.exe, wine processes, etc.
             child_count = 0
             child_cpu_sum = 0.0
             try:
@@ -825,8 +531,8 @@ class FileProgressList(QWidget):
                 pass
 
             # Also search for ALL Jackify-related processes by name/cmdline
-            # This catches processes that may not be direct children (shell launches, Proton/wine wrappers, etc.)
-            # NOTE: Since children() is recursive, this typically only finds Proton spawn cases.
+            # Catches non-direct children: shell launches, Proton/wine wrappers, etc.
+            # children() is recursive, so typically only finds Proton spawn cases
             tracked_pids = {self._cpu_process_cache.pid}  # Avoid double-counting
             tracked_pids.update(current_child_pids)
 
@@ -868,7 +574,7 @@ class FileProgressList(QWidget):
                         # Check command line (e.g., wine running jackify tools, or paths containing jackify)
                         if not is_jackify and cmdline_str:
                             # Check for jackify tool names in command line (catches wine running texconv.exe, etc.)
-                            # This includes: texconv, texconv.exe, texdiag, 7z, 7zz, bsarch, jackify-engine
+                            # Includes texconv, texconv.exe, texdiag, 7z, 7zz, bsarch, jackify-engine
                             is_jackify = any(name in cmdline_str for name in jackify_names)
                             
                             # Also check for .exe variants (wine runs .exe files)

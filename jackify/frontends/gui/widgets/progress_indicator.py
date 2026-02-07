@@ -136,7 +136,7 @@ class OverallProgressIndicator(QWidget):
                     eta_seconds = -1.0
                     if using_aggregated:
                         # For concurrent downloads: sum all active download speeds (not average)
-                        # This gives us the combined throughput
+                        # Combined throughput
                         active_speeds = [f.speed for f in progress.active_files if f.speed > 0]
                         if active_speeds:
                             combined_speed = sum(active_speeds)  # Sum speeds for concurrent downloads
@@ -189,7 +189,7 @@ class OverallProgressIndicator(QWidget):
             is_bsa_building = progress.get_phase_label() == "Building BSAs"
             
             # For install/extract/download/BSA building phases, prefer step-based progress (more accurate)
-            # This prevents carrying over 100% from previous phases (e.g., .wabbajack download)
+            # Prevent carrying over 100% from previous phases
             if progress.phase in (InstallationPhase.INSTALL, InstallationPhase.EXTRACT, InstallationPhase.DOWNLOAD) or is_bsa_building:
                 if progress.phase_max_steps > 0:
                     display_percent = (progress.phase_step / progress.phase_max_steps) * 100.0

@@ -73,7 +73,7 @@ def diagnose_stalled_engine(pid: int, duration: int = 60) -> Dict[str, Any]:
             samples.append(sample)
             
             # Real-time status
-            status_icon = "🟢" if sample['cpu_percent'] > 10 else "🟡" if sample['cpu_percent'] > 2 else "🔴"
+            status_icon = "[OK]" if sample['cpu_percent'] > 10 else "[WARN]" if sample['cpu_percent'] > 2 else "[CRIT]"
             print(f"{status_icon} CPU: {sample['cpu_percent']:5.1f}% | Memory: {sample['memory_mb']:6.1f}MB | "
                   f"Threads: {sample['thread_count']:2d} | Status: {sample['status']}")
             

@@ -65,7 +65,7 @@ def get_clean_subprocess_env(extra_env=None):
     current_path = env.get('PATH', '')
 
     # Ensure common system directories are in PATH if not already present
-    # This is critical for tools like lz4 that might be in /usr/bin, /usr/local/bin, etc.
+    # Critical for tools in /usr/bin, /usr/local/bin, etc.
     system_paths = ['/usr/bin', '/usr/local/bin', '/bin', '/sbin', '/usr/sbin']
     path_parts = current_path.split(':') if current_path else []
     for sys_path in system_paths:
@@ -73,10 +73,10 @@ def get_clean_subprocess_env(extra_env=None):
             path_parts.append(sys_path)
 
     # Add bundled tools directory to PATH if running as AppImage
-    # This ensures cabextract and winetricks are available to subprocesses
+    # cabextract and winetricks must be available to subprocesses
     # System utilities (wget, curl, unzip, xz, gzip, sha256sum) come from system PATH
-    # Note: appdir was saved before env cleanup above
-    # Note: lz4 was only needed for TTW installer and is no longer bundled
+    # appdir saved before env cleanup above
+    # lz4 was only needed for TTW installer, no longer bundled
     tools_dir = None
     
     if appdir:

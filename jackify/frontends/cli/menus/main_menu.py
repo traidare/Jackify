@@ -43,7 +43,7 @@ class MainMenuHandler:
             print(f"{COLOR_SELECTION}1.{COLOR_RESET} Modlist Tasks")
             print(f"   {COLOR_ACTION}→ Install & Configure Modlists{COLOR_RESET}")
             print(f"{COLOR_SELECTION}2.{COLOR_RESET} Additional Tasks & Tools")
-            print(f"   {COLOR_ACTION}→ TTW automation, Wabbajack via Wine, MO2, NXM Handling, Recovery{COLOR_RESET}")
+            print(f"   {COLOR_ACTION}→ Nexus OAuth, TTW Installation, Install Wabbajack{COLOR_RESET}")
             print(f"{COLOR_SELECTION}0.{COLOR_RESET} Exit Jackify")
             choice = input(f"\n{COLOR_PROMPT}Enter your selection (0-2): {COLOR_RESET}").strip()
             

@@ -5,9 +5,12 @@ from pathlib import Path
 import re
 import time
 import os
+import logging
 from .ui_colors import COLOR_PROMPT, COLOR_SELECTION, COLOR_RESET, COLOR_INFO, COLOR_ERROR, COLOR_SUCCESS, COLOR_WARNING
 from .status_utils import show_status, clear_status
 from jackify.shared.ui_utils import print_section_header, print_subsection_header
+
+logger = logging.getLogger(__name__)
 
 class MO2Handler:
     """
@@ -17,6 +20,7 @@ class MO2Handler:
         self.menu_handler = menu_handler
         # Import shortcut handler from menu_handler if available
         self.shortcut_handler = getattr(menu_handler, 'shortcut_handler', None)
+        self.logger = logging.getLogger(__name__)
 
     def _is_dangerous_path(self, path: Path) -> bool:
         # Block /, /home, /root, and the user's home directory
@@ -30,7 +34,7 @@ class MO2Handler:
         print_section_header('Mod Organizer 2 Installation')
         # 1. Check for 7z
         if not shutil.which('7z'):
-            print(f"{COLOR_ERROR}[ERROR] 7z is not installed. Please install it (e.g., sudo apt install p7zip-full).{COLOR_RESET}\n")
+            print(f"{COLOR_ERROR}[ERROR] 7z is not installed. Please install it (e.g., sudo apt install p7zip-full).{COLOR_RESET}")
             return False
         # 2. Prompt for install location
         default_dir = Path.home() / "ModOrganizer2"
@@ -64,12 +68,12 @@ class MO2Handler:
                 install_dir.mkdir(parents=True, exist_ok=True)
                 show_status(f"Created directory: {install_dir}")
             except Exception as e:
-                print(f"{COLOR_ERROR}[ERROR] Could not create directory: {e}{COLOR_RESET}\n")
+                print(f"{COLOR_ERROR}[ERROR] Could not create directory: {e}{COLOR_RESET}")
                 return False
         else:
             files = list(install_dir.iterdir())
             if files:
-                print(f"Warning: The directory '{install_dir}' is not empty.")
+                print(f"{COLOR_WARNING}The directory '{install_dir}' is not empty.{COLOR_RESET}")
                 print("Warning: This will permanently delete all files in the folder. Type 'DELETE' to confirm:")
                 confirm = input("").strip()
                 if confirm != 'DELETE':
@@ -92,7 +96,7 @@ class MO2Handler:
             response.raise_for_status()
             release = response.json()
         except Exception as e:
-            print(f"{COLOR_ERROR}[ERROR] Failed to fetch MO2 release info: {e}{COLOR_RESET}\n")
+            print(f"{COLOR_ERROR}[ERROR] Failed to fetch MO2 release info: {e}{COLOR_RESET}")
             return False
 
         # 6. Find the correct .7z asset (exclude -pdbs, -src, etc)
@@ -103,7 +107,7 @@ class MO2Handler:
                 asset = a
                 break
         if not asset:
-            print(f"{COLOR_ERROR}[ERROR] Could not find main MO2 .7z asset in latest release.{COLOR_RESET}\n")
+            print(f"{COLOR_ERROR}[ERROR] Could not find main MO2 .7z asset in latest release.{COLOR_RESET}")
             return False
 
         # 7. Download the archive
@@ -116,7 +120,7 @@ class MO2Handler:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
         except Exception as e:
-            print(f"{COLOR_ERROR}[ERROR] Failed to download MO2 archive: {e}{COLOR_RESET}\n")
+            print(f"{COLOR_ERROR}[ERROR] Failed to download MO2 archive: {e}{COLOR_RESET}")
             return False
 
         # 8. Extract using 7z (suppress noisy output)
@@ -124,16 +128,16 @@ class MO2Handler:
         try:
             result = subprocess.run(['7z', 'x', str(archive_path), f'-o{install_dir}'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if result.returncode != 0:
-                print(f"{COLOR_ERROR}[ERROR] Extraction failed: {result.stderr.decode(errors='ignore')}{COLOR_RESET}\n")
+                print(f"{COLOR_ERROR}[ERROR] Extraction failed: {result.stderr.decode(errors='ignore')}{COLOR_RESET}")
                 return False
         except Exception as e:
-            print(f"{COLOR_ERROR}[ERROR] Extraction failed: {e}{COLOR_RESET}\n")
+            print(f"{COLOR_ERROR}[ERROR] Extraction failed: {e}{COLOR_RESET}")
             return False
 
         # 9. Validate extraction
         mo2_exe = next(install_dir.glob('**/ModOrganizer.exe'), None)
         if not mo2_exe:
-            print(f"{COLOR_ERROR}[ERROR] ModOrganizer.exe not found after extraction. Please check extraction.{COLOR_RESET}\n")
+            print(f"{COLOR_ERROR}[ERROR] ModOrganizer.exe not found after extraction. Please check extraction.{COLOR_RESET}")
             return False
         else:
             show_status(f"MO2 installed at: {mo2_exe.parent}")
@@ -154,7 +158,7 @@ class MO2Handler:
                     proton_version="proton_experimental"
                 )
                 if not success or not app_id:
-                    print(f"{COLOR_ERROR}[ERROR] Failed to create Steam shortcut.{COLOR_RESET}\n")
+                    print(f"{COLOR_ERROR}[ERROR] Failed to create Steam shortcut.{COLOR_RESET}")
                 else:
                     show_status(f"Steam shortcut created for '{COLOR_INFO}{shortcut_name}{COLOR_RESET}'.")
                     # Restart Steam and show manual steps (reuse logic from Configure Modlist)
@@ -178,7 +182,7 @@ class MO2Handler:
                     print("  9. CLOSE Mod Organizer completely and return here")
                     print("───────────────────────────────────────────────────────────────────\n")
             except Exception as e:
-                print(f"{COLOR_ERROR}[ERROR] Failed to create Steam shortcut: {e}{COLOR_RESET}\n")
+                print(f"{COLOR_ERROR}[ERROR] Failed to create Steam shortcut: {e}{COLOR_RESET}")
 
         print(f"{COLOR_SUCCESS}Mod Organizer 2 has been installed successfully!{COLOR_RESET}\n")
         return True 

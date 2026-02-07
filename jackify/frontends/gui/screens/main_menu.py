@@ -15,8 +15,8 @@ class MainMenu(QWidget):
         self.dev_mode = dev_mode
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        layout.setContentsMargins(30, 30, 30, 30)  # Reduced from 50
-        layout.setSpacing(12)  # Reduced from 20
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(12)
 
         # Header zone with fixed height for consistent layout across all menu screens
         header_widget = QWidget()
@@ -60,7 +60,7 @@ class MainMenu(QWidget):
 
         # Menu buttons
         button_width = 400
-        button_height = 40  # Reduced from 50/60
+        button_height = 40
         MENU_ITEMS = [
             ("Modlist Tasks", "modlist_tasks", "Manage your modlists with native Linux tools"),
             ("Additional Tasks", "additional_tasks", "Additional Tasks & Tools, such as TTW Installation"),
@@ -94,14 +94,14 @@ class MainMenu(QWidget):
             btn_container = QWidget()
             btn_layout = QVBoxLayout()
             btn_layout.setContentsMargins(0, 0, 0, 0)
-            btn_layout.setSpacing(3)  # Reduced from 4
+            btn_layout.setSpacing(3)
             btn_layout.setAlignment(Qt.AlignHCenter)
             btn_layout.addWidget(btn)
 
             # Description label with proper alignment
             desc_label = QLabel(description)
             desc_label.setAlignment(Qt.AlignHCenter)
-            desc_label.setStyleSheet("color: #999; font-size: 11px;")  # Reduced from 12px
+            desc_label.setStyleSheet("color: #999; font-size: 11px;")
             desc_label.setWordWrap(True)
             desc_label.setFixedWidth(button_width)
             btn_layout.addWidget(desc_label)
@@ -110,7 +110,7 @@ class MainMenu(QWidget):
             layout.addWidget(btn_container)
 
         # Disclaimer
-        layout.addSpacing(12)  # Reduced from 20
+        layout.addSpacing(12)
         disclaimer = QLabel(DISCLAIMER_TEXT)
         disclaimer.setWordWrap(True)
         disclaimer.setAlignment(Qt.AlignCenter)
@@ -151,7 +151,6 @@ class MainMenu(QWidget):
         elif action_id == "additional_tasks" and self.stacked_widget:
             self.stacked_widget.setCurrentIndex(3)
         elif action_id == "return_main_menu":
-            # This is the main menu, so do nothing
             pass
         elif self.stacked_widget:
             self.stacked_widget.setCurrentIndex(1)  # Default to placeholder 

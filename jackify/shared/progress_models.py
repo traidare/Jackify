@@ -248,7 +248,7 @@ class InstallationProgress:
         # Only update if we have a previous value and the change isn't too extreme
         if use_smoothing and self._smoothed_eta_seconds > 0:
             # If new ETA is wildly different (>50% change), use weighted average
-            # This prevents temporary speed drops from causing huge ETA jumps
+            # Prevent temporary speed drops from causing huge ETA jumps
             change_ratio = abs(eta_seconds - self._smoothed_eta_seconds) / max(self._smoothed_eta_seconds, 1.0)
             if change_ratio > 0.5:
                 # Large change - use 70% old, 30% new (smooth transition)
@@ -359,7 +359,7 @@ class InstallationProgress:
                 return "Building BSAs"
 
         # For FINALIZE phase, always prefer phase_name over generic "Finalising" label
-        # This allows post-install steps to show specific labels (e.g., "Installing Wine components")
+        # Post-install steps can show specific labels
         if self.phase == InstallationPhase.FINALIZE and self.phase_name:
             return self.phase_name
 
@@ -427,7 +427,7 @@ class InstallationProgress:
     def add_file(self, file_progress: FileProgress):
         """Add or update a file in active files list."""
         # Don't re-add files that are already at 100% unless they're being actively updated
-        # This prevents completed files from cluttering the list
+        # Prevent completed files from cluttering the list
         if file_progress.percent >= 100.0:
             # Check if this file already exists at 100%
             existing = None
@@ -438,7 +438,7 @@ class InstallationProgress:
             
             if existing and existing.percent >= 100.0:
                 # File is already at 100% - only update if it's very recent (within 0.5s)
-                # This allows the completion notification to refresh the timestamp
+                # Completion notification refreshes the timestamp
                 if time.time() - existing.last_update < 0.5:
                     existing.last_update = time.time()
                 # Otherwise, don't re-add it - let remove_completed_files handle cleanup

@@ -5,17 +5,10 @@ Reusable tab completion functions for Jackify CLI, including bash-like path comp
 
 import os
 import readline
-import logging # Added for debugging
+import logging
 
-# Get a logger for this module
-completer_logger = logging.getLogger(__name__) # Logger will be named src.modules.completers
-
-# Set level to DEBUG for this logger to ensure all debug messages are generated.
-# These messages will be handled by handlers configured in the main application (e.g., via LoggingHandler).
+completer_logger = logging.getLogger(__name__)
 completer_logger.setLevel(logging.INFO)
-
-# Ensure messages DO NOT propagate to the root logger's console handler by default.
-# A dedicated file handler will be added in jackify-cli.py.
 completer_logger.propagate = False 
 
 # IMPORTANT: Do NOT include '/' in the completer delimiters!
@@ -68,7 +61,6 @@ def path_completer(text, state):
 
     final_match_strings_for_readline = []
     text_dir_part = os.path.dirname(text)
-    # If text is a directory with trailing slash, use it as the base for completions
     if os.path.isdir(text) and text.endswith(os.sep):
         base_path = text
     elif os.path.isdir(text):
