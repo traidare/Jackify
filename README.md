@@ -41,9 +41,9 @@ Jackify is a Linux application for installing and configuring Wabbajack modlists
 - **GE-Proton 10-14** — While other Proton versions may work, GE-Proton 10-14 is highly recommended for ENB compatibility
   - See [Installing Additional Tools](https://github.com/Omni-guides/Jackify/wiki/Installing-Additional-Tools#installing-ge-proton)
 - **Nexus Mods Premium subscription** (required for automated downloads)
-  - See [Installing a Modlist with Jackify](https://github.com/Omni-guides/Jackify/wiki/Installing-a-Modlist-with-Jackify) for the full automated workflow
-  - Non-Premium users can still install modlists via Wabbajack under Proton — see [Installing a Modlist with Wabbajack](https://github.com/Omni-guides/Jackify/wiki/Installing-a-Modlist-with-Wabbajack)
+  - Non-Premium users can still install modlists via Wabbajack under Proton
   - Native non-premium support planned for a future release
+  - See the [User Guide](https://github.com/Omni-guides/Jackify/wiki/User-Guide) for full details on the options available
 - **FUSE** (required for AppImage execution, pre-installed on most distributions)
 - **Ubuntu/Debian-based distros only** (Ubuntu, Kubuntu, Linux Mint, Pop!_OS, Zorin OS, elementary OS, and others): Qt platform plugin library
   - `sudo apt install libxcb-cursor-dev`
@@ -82,7 +82,7 @@ Jackify follows a clean separation between frontend and backend:
 - **Native Engine**: Powered by jackify-engine (custom fork of wabbajack-cli) for optimal Linux performance and compatibility. Texconv for hash-matched texture conversion requires Proton.
 - **Steam Integration**: Direct Steam shortcuts.vdf manipulation for shortcut creation and management
 
-All Jackify relted files and configuration data is are stored in `~/Jackify/` (Jackify) and `~/.config/jackify/`.
+All Jackify relted files and configuration data is are stored in `~/Jackify/` and `~/.config/jackify/`.
 
 ## Contributing
 
