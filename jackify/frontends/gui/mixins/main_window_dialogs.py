@@ -11,6 +11,43 @@ from jackify.frontends.gui.dialogs.settings_dialog import SettingsDialog
 
 class MainWindowDialogsMixin:
     """Mixin for settings/about dialogs, open URL, and cleanup."""
+    def _stop_qthread(self, thread, thread_name: str, cooperative_timeout_ms: int = 5000):
+        """Stop a QThread robustly to avoid teardown crashes on app exit."""
+        if thread is None:
+            return None
+        try:
+            if not thread.isRunning():
+                return None
+        except RuntimeError:
+            return None
+
+        try:
+            thread.requestInterruption()
+        except Exception:
+            pass
+
+        try:
+            thread.quit()
+        except Exception:
+            pass
+
+        try:
+            if thread.wait(cooperative_timeout_ms):
+                return None
+        except Exception:
+            pass
+
+        try:
+            thread.terminate()
+        except Exception:
+            pass
+
+        try:
+            if not thread.wait(10000):
+                print(f"WARNING: {thread_name} still running during shutdown")
+        except Exception:
+            pass
+        return None
 
     def open_settings_dialog(self):
         try:
@@ -83,27 +120,35 @@ class MainWindowDialogsMixin:
     def cleanup_processes(self):
         try:
             if hasattr(self, '_update_thread') and self._update_thread is not None:
-                if self._update_thread.isRunning():
-                    self._update_thread.quit()
-                    self._update_thread.wait(2000)
-                self._update_thread = None
+                self._update_thread = self._stop_qthread(self._update_thread, "_update_thread")
             if hasattr(self, '_gallery_cache_preload_thread') and self._gallery_cache_preload_thread is not None:
-                if self._gallery_cache_preload_thread.isRunning():
-                    self._gallery_cache_preload_thread.quit()
-                    self._gallery_cache_preload_thread.wait(2000)
-                self._gallery_cache_preload_thread = None
+                self._gallery_cache_preload_thread = self._stop_qthread(
+                    self._gallery_cache_preload_thread,
+                    "_gallery_cache_preload_thread",
+                )
             for service in self.gui_services.values():
                 if hasattr(service, 'cleanup'):
                     service.cleanup()
             screens = [
-                self.modlist_tasks_screen, self.install_modlist_screen,
-                self.configure_new_modlist_screen, self.configure_existing_modlist_screen,
+                getattr(self, 'modlist_tasks_screen', None),
+                getattr(self, 'additional_tasks_screen', None),
+                getattr(self, 'install_modlist_screen', None),
+                getattr(self, 'install_ttw_screen', None),
+                getattr(self, 'configure_new_modlist_screen', None),
+                getattr(self, 'wabbajack_installer_screen', None),
+                getattr(self, 'configure_existing_modlist_screen', None),
+                getattr(self, 'install_mo2_screen', None),
             ]
             for screen in screens:
+                if screen is None:
+                    continue
                 if hasattr(screen, 'cleanup_processes'):
                     screen.cleanup_processes()
                 elif hasattr(screen, 'cleanup'):
                     screen.cleanup()
+                elif hasattr(screen, 'worker'):
+                    worker = getattr(screen, 'worker', None)
+                    setattr(screen, 'worker', self._stop_qthread(worker, f"{screen.__class__.__name__}.worker"))
             try:
                 subprocess.run(['pkill', '-f', 'jackify-engine'], timeout=5, capture_output=True)
             except Exception:

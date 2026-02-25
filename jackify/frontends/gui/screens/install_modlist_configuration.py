@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QMessageBox, QProgressDialog
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from jackify.frontends.gui.services.message_service import MessageService
+from jackify.shared.errors import manual_steps_incomplete, configuration_failed
 from jackify.frontends.gui.dialogs import SuccessDialog
 from jackify.backend.handlers.validation_handler import ValidationHandler
 from jackify.backend.models.modlist import ModlistContext
@@ -10,17 +11,10 @@ from pathlib import Path
 import traceback
 import os
 import time
+import logging
 
+logger = logging.getLogger(__name__)
 from .install_modlist_shortcut_dialog import InstallModlistShortcutDialogMixin
-
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
 
 class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
     """Mixin providing configuration phase workflow and dialog management for InstallModlistScreen."""
@@ -50,13 +44,17 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
             finally:
                 self.steam_restart_progress = None
         # Controls are managed by the proper control management system
+        # Delay focus reclaim so Steam's window finishes painting before we steal it back
+        try:
+            from PySide6.QtCore import QTimer
+            win = self.window()
+            QTimer.singleShot(10000, lambda: (win.raise_(), win.activateWindow()))
+        except Exception:
+            pass
 
     def _detect_game_type_from_mo2_ini(self, install_dir: str) -> str:
         """Detect game type by checking ModOrganizer.ini for loader executables."""
         from pathlib import Path
-        import logging
-        logger = logging.getLogger(__name__)
-        
         mo2_ini = Path(install_dir) / "ModOrganizer.ini"
         if not mo2_ini.exists():
             return 'skyrim'  # Fallback to most common
@@ -116,12 +114,21 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
 
                 # Check for TTW eligibility before showing final success dialog
                 install_dir = self.install_dir_edit.text().strip()
-                if self._check_ttw_eligibility(modlist_name, self._current_game_type, install_dir):
+                ttw_modlist_name = modlist_name
+                try:
+                    from jackify.backend.utils.modlist_meta import get_modlist_name
+                    canonical_name = get_modlist_name(install_dir)
+                    if canonical_name:
+                        ttw_modlist_name = canonical_name
+                except Exception:
+                    pass
+
+                if self._check_ttw_eligibility(ttw_modlist_name, self._current_game_type, install_dir):
                     # Offer TTW installation
                     reply = MessageService.question(
                         self,
                         "Install TTW?",
-                        f"{modlist_name} requires Tale of Two Wastelands!\n\n"
+                        f"{ttw_modlist_name} requires Tale of Two Wastelands!\n\n"
                         "Would you like to install TTW now?\n\n"
                         "This will:\n"
                         "• Guide you through TTW installation\n"
@@ -136,14 +143,16 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                     )
 
                     if reply == QMessageBox.Yes:
+                        self._cleanup_config_thread()
                         # Navigate to TTW screen
-                        self._initiate_ttw_workflow(modlist_name, install_dir)
+                        self._initiate_ttw_workflow(ttw_modlist_name, install_dir)
                         return  # Don't show success dialog yet, will show after TTW completes
 
                 # Check for VNV post-install automation after TTW check
                 vnv_automation_running = self._check_and_run_vnv_automation(modlist_name, install_dir)
 
                 if vnv_automation_running:
+                    self._cleanup_config_thread()
                     # Store success dialog params for later (after VNV automation completes)
                     self._pending_success_dialog_params = {
                         'modlist_name': modlist_name,
@@ -179,60 +188,49 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                         enb_dialog.exec()  # Modal dialog - blocks until user clicks OK
                     except Exception as e:
                         # Non-blocking: if dialog fails, just log and continue
-                        import logging
-                        logger = logging.getLogger(__name__)
                         logger.warning(f"Failed to show ENB dialog: {e}")
             elif hasattr(self, '_manual_steps_retry_count') and self._manual_steps_retry_count >= 3:
                 # Max retries reached - show failure message
                 self._end_post_install_feedback(False)
-                MessageService.critical(self, "Manual Steps Failed",
-                                   "Manual steps validation failed after multiple attempts.")
+                MessageService.show_error(self, manual_steps_incomplete())
             else:
                 # Configuration failed for other reasons
                 self._end_post_install_feedback(False)
-                MessageService.critical(self, "Configuration Failed",
-                                   "Post-install configuration failed. Please check the console output.")
+                MessageService.show_error(self, configuration_failed("Post-install configuration failed."))
         except Exception as e:
             # Ensure controls are re-enabled even on unexpected errors
             self._enable_controls_after_operation()
             raise
-        # Clean up thread
-        if hasattr(self, 'config_thread') and self.config_thread is not None:
-            # Disconnect all signals to prevent "Internal C++ object already deleted" errors
-            try:
-                self.config_thread.progress_update.disconnect()
-                self.config_thread.configuration_complete.disconnect()
-                self.config_thread.error_occurred.disconnect()
-            except:
-                pass  # Ignore errors if already disconnected
-            if self.config_thread.isRunning():
-                self.config_thread.quit()
-                self.config_thread.wait(5000)  # Wait up to 5 seconds
-            self.config_thread.deleteLater()
-            self.config_thread = None
+        self._cleanup_config_thread()
 
     def on_configuration_error(self, error_message):
         """Handle configuration error on main thread"""
         self._safe_append_text(f"Configuration failed with error: {error_message}")
-        MessageService.critical(self, "Configuration Error", f"Configuration failed: {error_message}")
+        MessageService.show_error(self, configuration_failed(str(error_message)))
 
         # Re-enable all controls on error
         self._enable_controls_after_operation()
 
-        # Clean up thread
-        if hasattr(self, 'config_thread') and self.config_thread is not None:
-            # Disconnect all signals to prevent "Internal C++ object already deleted" errors
-            try:
-                self.config_thread.progress_update.disconnect()
-                self.config_thread.configuration_complete.disconnect()
-                self.config_thread.error_occurred.disconnect()
-            except:
-                pass  # Ignore errors if already disconnected
-            if self.config_thread.isRunning():
-                self.config_thread.quit()
-                self.config_thread.wait(5000)  # Wait up to 5 seconds
-            self.config_thread.deleteLater()
-            self.config_thread = None
+        self._cleanup_config_thread()
+
+    def _cleanup_config_thread(self):
+        """Safely stop and release the configuration worker thread."""
+        if not hasattr(self, 'config_thread') or self.config_thread is None:
+            return
+
+        try:
+            self.config_thread.progress_update.disconnect()
+            self.config_thread.configuration_complete.disconnect()
+            self.config_thread.error_occurred.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+
+        if self.config_thread.isRunning():
+            self.config_thread.quit()
+            self.config_thread.wait(5000)
+
+        self.config_thread.deleteLater()
+        self.config_thread = None
 
     def show_manual_steps_dialog(self, extra_warning=""):
         modlist_name = self.modlist_name_edit.text().strip() or "your modlist"
@@ -278,12 +276,12 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
         mo2_exe_path = self._get_mo2_path(install_dir, modlist_name)
         
         # Add delay to allow Steam filesystem updates to complete
-        self._safe_append_text("Waiting for Steam filesystem updates to complete...")
+        logger.info("Waiting for Steam filesystem updates to complete...")
         time.sleep(2)
         
         # CRITICAL: Re-detect the AppID after Steam restart and manual steps
         # Steam assigns a NEW AppID during restart, different from the one we initially created
-        self._safe_append_text(f"Re-detecting AppID for shortcut '{modlist_name}' after Steam restart...")
+        logger.info(f"Re-detecting AppID for shortcut '{modlist_name}' after Steam restart...")
         from jackify.backend.handlers.shortcut_handler import ShortcutHandler
         from jackify.backend.services.platform_detection_service import PlatformDetectionService
 
@@ -299,7 +297,7 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
             return
         
         self._safe_append_text(f"Found Steam-assigned AppID: {current_appid}")
-        self._safe_append_text(f"Validating manual steps completion for AppID: {current_appid}")
+        logger.info(f"Validating manual steps completion for AppID: {current_appid}")
         
         # Check 1: Proton version
         proton_ok = False
@@ -326,12 +324,12 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                 modlist_handler.compat_data_path = Path(compat_data_path_str)
             
             # Check Proton version
-            self._safe_append_text(f"Attempting to detect Proton version for AppID {current_appid}...")
+            logger.info(f"Attempting to detect Proton version for AppID {current_appid}...")
             if modlist_handler._detect_proton_version():
-                self._safe_append_text(f"Raw detected Proton version: '{modlist_handler.proton_ver}'")
+                logger.info(f"Raw detected Proton version: '{modlist_handler.proton_ver}'")
                 if modlist_handler.proton_ver and 'experimental' in modlist_handler.proton_ver.lower():
                     proton_ok = True
-                    self._safe_append_text(f"Proton version validated: {modlist_handler.proton_ver}")
+                    logger.info(f"Proton version validated: {modlist_handler.proton_ver}")
                 else:
                     self._safe_append_text(f"Error: Wrong Proton version detected: '{modlist_handler.proton_ver}' (expected 'experimental' in name)")
             else:
@@ -347,14 +345,14 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
             from jackify.backend.handlers.path_handler import PathHandler
             path_handler = PathHandler()
             
-            self._safe_append_text(f"Searching for compatdata directory for AppID {current_appid}...")
-            self._safe_append_text("Checking standard Steam locations and Flatpak Steam...")
+            logger.info(f"Searching for compatdata directory for AppID {current_appid}...")
+            logger.info("Checking standard Steam locations and Flatpak Steam...")
             prefix_path_str = path_handler.find_compat_data(current_appid)
-            self._safe_append_text(f"Compatdata search result: '{prefix_path_str}'")
+            logger.info(f"Compatdata search result: '{prefix_path_str}'")
             
             if prefix_path_str and os.path.isdir(prefix_path_str):
                 compatdata_ok = True
-                self._safe_append_text(f"Compatdata directory found: {prefix_path_str}")
+                logger.info(f"Compatdata directory found: {prefix_path_str}")
             else:
                 if prefix_path_str:
                     self._safe_append_text(f"Error: Path exists but is not a directory: {prefix_path_str}")
@@ -370,7 +368,7 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
         # Handle validation results
         if proton_ok and compatdata_ok:
             self._safe_append_text("Manual steps validation passed!")
-            self._safe_append_text("Continuing configuration with updated AppID...")
+            logger.info("Continuing configuration with updated AppID...")
             
             # Continue configuration with the corrected AppID and context
             self.continue_configuration_after_manual_steps(current_appid, modlist_name, install_dir)
@@ -390,9 +388,9 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
         """Continue the configuration process with the new AppID after automated prefix creation"""
         # Headers are now shown at start of Steam Integration
         # No need to show them again here
-        debug_print("Configuration phase continues after Steam Integration")
+        logger.debug("Configuration phase continues after Steam Integration")
         
-        debug_print(f"continue_configuration_after_automated_prefix called with appid: {new_appid}")
+        logger.debug(f"continue_configuration_after_automated_prefix called with appid: {new_appid}")
         try:
             # Update the context with the new AppID (same format as manual steps)
             updated_context = {
@@ -408,7 +406,7 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                 'game_name': self.context.get('game_name', 'Skyrim Special Edition') if hasattr(self, 'context') else 'Skyrim Special Edition'
             }
             self.context = updated_context  # Ensure context is always set
-            debug_print(f"Updated context with new AppID: {new_appid}")
+            logger.debug(f"Updated context with new AppID: {new_appid}")
             
             # Get Steam Deck detection once and pass to ConfigThread
             from jackify.backend.services.platform_detection_service import PlatformDetectionService
@@ -514,7 +512,7 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                 'appid': new_appid  # Use the NEW AppID from Steam
             }
             
-            debug_print(f"Updated context with new AppID: {new_appid}")
+            logger.debug(f"Updated context with new AppID: {new_appid}")
             
             # Clean up old thread if exists and wait for it to finish
             if hasattr(self, 'config_thread') and self.config_thread is not None:
@@ -523,7 +521,7 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                     self.config_thread.progress_update.disconnect()
                     self.config_thread.configuration_complete.disconnect()
                     self.config_thread.error_occurred.disconnect()
-                except:
+                except (RuntimeError, TypeError):
                     pass  # Ignore errors if already disconnected
                 if self.config_thread.isRunning():
                     self.config_thread.quit()
@@ -622,4 +620,3 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                     self.error_occurred.emit(str(e))
         
         return ConfigThread(context, is_steamdeck, detect_game_type_func, parent=self)
-

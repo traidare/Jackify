@@ -110,7 +110,7 @@ class InstallationProgress:
     @property
     def phase_progress_text(self) -> str:
         """Get phase progress text like '[12/14]'."""
-        if self.phase_max_steps > 0:
+        if self.phase_max_steps > 0 and self.phase_step > 0:
             return f"[{self.phase_step}/{self.phase_max_steps}]"
         elif self.phase_step > 0:
             return f"[{self.phase_step}]"
@@ -273,15 +273,9 @@ class InstallationProgress:
         secs = int(seconds % 60)
         
         if hours > 0:
-            if minutes > 0:
-                return f"{hours}h {minutes}m"
-            else:
-                return f"{hours}h"
+            return f"{hours}h {minutes:02d}m"
         elif minutes > 0:
-            if secs > 0:
-                return f"{minutes}m {secs}s"
-            else:
-                return f"{minutes}m"
+            return f"{minutes}m {secs:02d}s"
         else:
             return f"{secs}s"
     
@@ -348,6 +342,14 @@ class InstallationProgress:
     
     def get_phase_label(self) -> str:
         """Return a short, stable label for the current phase."""
+        # During install+texture conversion, keep a stable combined label to avoid
+        # rapid banner flipping between install and conversion text.
+        if self.phase == InstallationPhase.INSTALL and self.texture_conversion_total > 0:
+            has_install_counter = self.phase_max_steps > 0 and self.phase_max_steps != self.texture_conversion_total
+            if has_install_counter:
+                return "Installing + Converting Textures"
+            return "Converting Textures"
+
         # Check for specific operations first (more specific than generic phase labels)
         if self.phase_name:
             phase_lower = self.phase_name.lower()
@@ -358,9 +360,12 @@ class InstallationProgress:
             if 'bsa' in phase_lower or ('building' in phase_lower and self.phase == InstallationPhase.INSTALL):
                 return "Building BSAs"
 
-        # For FINALIZE phase, always prefer phase_name over generic "Finalising" label
-        # Post-install steps can show specific labels
-        if self.phase == InstallationPhase.FINALIZE and self.phase_name:
+        # For FINALIZE and INITIALIZATION phases, prefer phase_name over the generic label.
+        # INITIALIZATION cycles through many short sections ("Configuring Installer",
+        # "Looking for unmodified files", etc.) that are more informative than "Preparing".
+        if self.phase in (InstallationPhase.FINALIZE, InstallationPhase.INITIALIZATION) and self.phase_name:
+            return self.phase_name
+        if self.phase == InstallationPhase.DOWNLOAD and self.phase_name:
             return self.phase_name
 
         phase_labels = {
@@ -397,11 +402,26 @@ class InstallationProgress:
         else:
             # Normal phase - show phase progress
             phase_prog = self.phase_progress_text
+            # For download phase, hide zero-step counters (e.g. [0/2]) because
+            # they are confusing when byte/speed progress is already active.
+            if self.phase == InstallationPhase.DOWNLOAD and self.phase_step <= 0:
+                phase_prog = ""
+            # If current step reflects texture counters, don't duplicate that as
+            # the primary install counter.
+            if self.phase == InstallationPhase.INSTALL and self.texture_conversion_total > 0:
+                if self.phase_max_steps > 0 and self.phase_max_steps == self.texture_conversion_total:
+                    phase_prog = ""
             if phase_prog:
                 parts.append(phase_prog)
 
             # Data progress (but not during BSA building)
             data_prog = self.data_progress_text
+            if data_prog:
+                # Some engine versions report a changing remaining total while keeping
+                # processed bytes at 0. Avoid showing misleading "(0B/YYY)" pairs.
+                if self.phase == InstallationPhase.DOWNLOAD and self.data_total > 0 and self.data_processed <= 0:
+                    data_prog = ""
+
             if data_prog:
                 # Don't show if it's 100% complete (adds no value)
                 if self.data_total > 0 and self.data_processed < self.data_total:
@@ -409,6 +429,10 @@ class InstallationProgress:
                 elif self.data_total == 0 and self.data_processed > 0:
                     # Show partial progress even without total
                     parts.append(f"({data_prog})")
+            if self.phase == InstallationPhase.INSTALL and self.texture_conversion_total > 0:
+                tex_total = self.texture_conversion_total
+                tex_current = max(0, min(self.texture_conversion_current, tex_total))
+                parts.append(f"Converting textures: {tex_current}/{tex_total}")
 
         # Overall speed (if available, but not during BSA building)
         if self.bsa_building_total == 0:
@@ -500,4 +524,3 @@ class InstallationProgress:
         # Update speed history for ETA smoothing
         if speed > 0:
             self._update_speed_history(op_key, speed)
-

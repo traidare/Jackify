@@ -16,13 +16,6 @@ import vdf
 
 logger = logging.getLogger(__name__)
 
-def debug_print(message):
-    """Log debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        logger.debug(message)
-
 from .automated_prefix_shortcuts import ShortcutOperationsMixin
 from .automated_prefix_proton import ProtonOperationsMixin
 from .automated_prefix_creation import PrefixCreationMixin
@@ -169,7 +162,6 @@ exit"""
         except Exception as e:
             logger.error(f"Error getting config path: {e}")
             return None
-
 
     def kill_running_processes(self) -> bool:
         """

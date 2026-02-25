@@ -181,15 +181,15 @@ class ModlistSelectionMixin:
     def browse_wabbajack_file(self):
         file, _ = QFileDialog.getOpenFileName(self, "Select .wabbajack File", os.path.expanduser("~"), "Wabbajack Files (*.wabbajack)")
         if file:
-            self.file_edit.setText(file)
+            self.file_edit.setText(os.path.realpath(file))
 
     def browse_install_dir(self):
         dir = QFileDialog.getExistingDirectory(self, "Select Install Directory", self.install_dir_edit.text())
         if dir:
-            self.install_dir_edit.setText(dir)
+            self.install_dir_edit.setText(os.path.realpath(dir))
 
     def browse_downloads_dir(self):
         dir = QFileDialog.getExistingDirectory(self, "Select Downloads Directory", self.downloads_dir_edit.text())
         if dir:
-            self.downloads_dir_edit.setText(dir)
+            self.downloads_dir_edit.setText(os.path.realpath(dir))
 

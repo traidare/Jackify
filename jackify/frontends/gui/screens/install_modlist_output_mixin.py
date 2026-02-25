@@ -6,8 +6,10 @@ on_installation_output, on_installation_progress, on_premium_required_detected, 
 import time
 
 from jackify.shared.progress_models import InstallationPhase, OperationType, FileProgress
+import logging
 
 
+logger = logging.getLogger(__name__)
 class InstallModlistOutputMixin:
     """Mixin providing signal handlers for InstallerThread output/progress/premium/progress_updated."""
 
@@ -17,6 +19,12 @@ class InstallModlistOutputMixin:
             self._write_to_log_file(message)
             return
         msg_lower = message.lower()
+        if (
+            'contains files with foreign characters' in msg_lower and
+            'using proton 7z.exe for extraction' in msg_lower
+        ):
+            self._write_to_log_file(message)
+            return
         token_error_keywords = [
             'token has expired', 'token expired', 'oauth token', 'authentication failed',
             'unauthorized', '401', '403', 'refresh token', 'authorization failed',
@@ -24,10 +32,10 @@ class InstallModlistOutputMixin:
         ]
         is_token_error = any(keyword in msg_lower for keyword in token_error_keywords)
         if is_token_error:
-            if not hasattr(self, '_token_error_notified'):
+            if not self._token_error_notified:
                 self._token_error_notified = True
                 from jackify.frontends.gui.services.message_service import MessageService
-                MessageService.error(
+                MessageService.critical(
                     self,
                     "Authentication Error",
                     (
@@ -104,6 +112,10 @@ class InstallModlistOutputMixin:
             if is_stalled and has_active_downloads:
                 if self._stalled_download_start_time is None:
                     self._stalled_download_start_time = time.time()
+                    self._stalled_data_snapshot = progress_state.data_processed
+                elif progress_state.data_processed > self._stalled_data_snapshot:
+                    self._stalled_download_start_time = time.time()
+                    self._stalled_data_snapshot = progress_state.data_processed
                 else:
                     stalled_duration = time.time() - self._stalled_download_start_time
                     if stalled_duration > 120 and not self._stalled_download_notified:
@@ -133,6 +145,7 @@ class InstallModlistOutputMixin:
             else:
                 self._stalled_download_start_time = None
                 self._stalled_download_notified = False
+                self._stalled_data_snapshot = 0
         self.progress_indicator.update_progress(progress_state)
         phase_label = progress_state.get_phase_label()
         is_installation_phase = (
@@ -206,14 +219,12 @@ class InstallModlistOutputMixin:
             except RuntimeError as e:
                 if "already deleted" in str(e):
                     if getattr(self, 'debug', False):
-                        from .install_modlist import debug_print
-                        debug_print(f"DEBUG: Ignoring widget deletion error: {e}")
+                        logger.debug(f"DEBUG: Ignoring widget deletion error: {e}")
                     return
                 raise
             except Exception as e:
                 if getattr(self, 'debug', False):
-                    from .install_modlist import debug_print
-                    debug_print(f"DEBUG: Error updating file progress list: {e}")
+                    logger.debug(f"DEBUG: Error updating file progress list: {e}")
                 import logging
                 logging.getLogger(__name__).error(f"Error updating file progress list: {e}", exc_info=True)
         else:

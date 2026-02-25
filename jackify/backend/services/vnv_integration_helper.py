@@ -114,7 +114,7 @@ def should_offer_vnv_automation(modlist_name: str, modlist_install_location: Opt
 def run_vnv_automation_if_applicable(
     modlist_name: str,
     modlist_install_location: Path,
-    game_root: Path,
+    game_root: Optional[Path],
     ttw_installer_path: Optional[Path] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
     manual_file_callback: Optional[Callable[[str, str], Optional[Path]]] = None,
@@ -144,10 +144,27 @@ def run_vnv_automation_if_applicable(
 
         logger.info(f"VNV detected: {modlist_name}")
 
+        # Resolve game root for Fallout New Vegas if caller didn't provide one.
+        # CLI flows may pass None and rely on auto-detection.
+        resolved_game_root = game_root
+        if resolved_game_root is None:
+            try:
+                from jackify.backend.handlers.path_handler import PathHandler
+                game_paths = PathHandler().find_vanilla_game_paths()
+                resolved_game_root = game_paths.get('Fallout New Vegas')
+            except Exception as detect_err:
+                logger.debug(f"VNV game root auto-detection failed: {detect_err}")
+
+        if resolved_game_root is None:
+            logger.warning("VNV detected but Fallout New Vegas game root could not be resolved")
+            if progress_callback:
+                progress_callback("VNV automation skipped: Fallout New Vegas path not found")
+            return False, None
+
         # Initialize service
         vnv_service = VNVPostInstallService(
             modlist_install_location=modlist_install_location,
-            game_root=game_root,
+            game_root=resolved_game_root,
             ttw_installer_path=ttw_installer_path
         )
 

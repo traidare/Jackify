@@ -246,6 +246,7 @@ class ModlistService(ModlistServiceInstallationMixin):
                 'appid': getattr(context, 'app_id', None),  # Use updated app_id from Steam
                 'engine_installed': getattr(context, 'engine_installed', False),  # Path manipulation flag
                 'download_dir': str(context.download_dir) if getattr(context, 'download_dir', None) else None,
+                'modlist_source': getattr(context, 'modlist_source', None),
             }
             
             debug_callback(f"Configuration context built: {config_context}")

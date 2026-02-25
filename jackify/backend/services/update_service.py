@@ -31,6 +31,7 @@ class UpdateInfo:
     release_date: str
     changelog: str
     download_url: str
+    source: str = "github"
     file_size: Optional[int] = None
     is_critical: bool = False
     is_delta_update: bool = False
@@ -100,9 +101,17 @@ class UpdateService:
                             break
                 
                 if download_url:
+                    # Prefer Nexus CDN for Premium users when release embeds nexus_file_id
+                    release_body = release_data.get('body', '')
+                    nexus_url = self._try_nexus_download_url(release_body)
+                    update_source = "github"
+                    if nexus_url:
+                        download_url = nexus_url
+                        update_source = "nexus"
+
                     # Determine if this is a delta update
                     is_delta = '.delta' in download_url or 'delta' in download_url.lower()
-                    
+
                     # Safety checks to prevent segfault
                     try:
                         # Sanitize string fields
@@ -111,9 +120,9 @@ class UpdateService:
                         safe_date = str(release_data.get('published_at', ''))
                         safe_changelog = str(release_data.get('body', ''))[:1000]  # Limit size
                         safe_url = str(download_url)
-                        
+
                         logger.debug(f"Creating UpdateInfo for version {safe_version}")
-                        
+
                         update_info = UpdateInfo(
                             version=safe_version,
                             tag_name=safe_tag,
@@ -121,7 +130,8 @@ class UpdateService:
                             changelog=safe_changelog,
                             download_url=safe_url,
                             file_size=file_size,
-                            is_delta_update=is_delta
+                            is_delta_update=is_delta,
+                            source=update_source,
                         )
                         
                         logger.debug(f"UpdateInfo created successfully")
@@ -142,6 +152,56 @@ class UpdateService:
             logger.error(f"Unexpected error checking for updates: {e}")
             return None
     
+    def _try_nexus_download_url(self, release_body: str) -> Optional[str]:
+        """
+        If the user is Nexus Premium and the release body embeds nexus_file_id,
+        return a Nexus CDN download URL. Returns None on any failure.
+
+        Release body format expected:
+            nexus_mod_id: 12345
+            nexus_file_id: 67890
+        """
+        import re
+        try:
+            mod_match = re.search(r'nexus_mod_id:\s*(\d+)', release_body, re.IGNORECASE)
+            file_match = re.search(r'nexus_file_id:\s*(\d+)', release_body, re.IGNORECASE)
+            if not file_match:
+                return None
+            nexus_file_id = int(file_match.group(1))
+            nexus_mod_id = int(mod_match.group(1)) if mod_match else None
+
+            from jackify.backend.services.nexus_auth_service import NexusAuthService
+            auth_service = NexusAuthService()
+            token = auth_service.get_auth_token()
+            if not token:
+                return None
+
+            from jackify.backend.services.nexus_premium_service import NexusPremiumService
+            is_premium, _ = NexusPremiumService().check_premium_status(token)
+            if not is_premium:
+                logger.debug("Nexus download skipped: user is not Premium")
+                return None
+
+            if nexus_mod_id is None:
+                return None
+
+            api_url = f"https://api.nexusmods.com/v1/games/site/mods/{nexus_mod_id}/files/{nexus_file_id}/download_link.json"
+            resp = requests.get(
+                api_url,
+                headers={"apikey": token, "Accept": "application/json"},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            links = resp.json()
+            if isinstance(links, list) and links:
+                cdn_url = links[0].get("URI")
+                if cdn_url:
+                    logger.debug(f"Using Nexus CDN URL for update")
+                    return cdn_url
+        except Exception as e:
+            logger.debug(f"Nexus download URL lookup failed: {e}")
+        return None
+
     def _is_newer_version(self, version: str) -> bool:
         """
         Compare versions to determine if update is newer.

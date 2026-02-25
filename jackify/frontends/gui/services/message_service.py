@@ -6,8 +6,13 @@ Provides message boxes that don't steal focus from the current application
 import random
 import string
 from typing import Optional
-from PySide6.QtWidgets import QMessageBox, QWidget, QLineEdit, QLabel, QVBoxLayout, QHBoxLayout, QCheckBox
+from PySide6.QtWidgets import (
+    QMessageBox, QWidget, QLineEdit, QLabel, QVBoxLayout, QHBoxLayout,
+    QCheckBox, QTextEdit, QPushButton, QDialog, QDialogButtonBox, QSizePolicy,
+    QStyle,
+)
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
 
 
 class NonFocusMessageBox(QMessageBox):
@@ -118,6 +123,7 @@ class SafeMessageBox(NonFocusMessageBox):
     
     def _setup_medium_safety(self, danger_action: str, safe_action: str):
         """Medium safety: requires wait period"""
+        self._danger_action_text = danger_action
         self.proceed_btn = self.addButton(danger_action, QMessageBox.ActionRole)
         self.cancel_btn = self.addButton(safe_action, QMessageBox.ActionRole)
         self.setDefaultButton(self.cancel_btn)
@@ -143,7 +149,8 @@ class SafeMessageBox(NonFocusMessageBox):
                 if self.safety_level == "high":
                     self.proceed_btn.setText(f"Please wait {self.countdown_remaining}s...")
                 else:
-                    self.proceed_btn.setText(f"OK ({self.countdown_remaining}s)")
+                    action_label = getattr(self, "_danger_action_text", "OK")
+                    self.proceed_btn.setText(f"{action_label} ({self.countdown_remaining}s)")
                 self.proceed_btn.setEnabled(False)
             if hasattr(self, 'cancel_btn'):
                 self.cancel_btn.setEnabled(False)
@@ -154,7 +161,7 @@ class SafeMessageBox(NonFocusMessageBox):
                 if self.safety_level == "high":
                     self.proceed_btn.setText("Proceed")
                 else:
-                    self.proceed_btn.setText("OK")
+                    self.proceed_btn.setText(getattr(self, "_danger_action_text", "OK"))
                 self.proceed_btn.setEnabled(True)
             if hasattr(self, 'cancel_btn'):
                 self.cancel_btn.setEnabled(True)
@@ -284,4 +291,147 @@ class MessageService:
         clicked = msg_box.clickedButton()
         if clicked and clicked.text() == "Yes":
             return QMessageBox.Yes
-        return QMessageBox.No 
+        return QMessageBox.No
+
+    @staticmethod
+    def show_error(parent: Optional[QWidget], error) -> None:
+        """Show a structured error dialog for a JackifyError.
+
+        Displays title, plain-English message, optional "what to do" suggestion,
+        and an optional collapsible technical detail pane.
+
+        Args:
+            parent: Parent widget (may be None).
+            error:  A JackifyError instance (imported inside to preserve
+                    backend/frontend separation).
+        """
+        from jackify.shared.errors import JackifyError
+
+        if not isinstance(error, JackifyError):
+            # Fallback for plain exceptions
+            dialog = _ErrorDialog(parent, str(error), str(error), None, [], None)
+            dialog.exec()
+            return
+
+        dialog = _ErrorDialog(
+            parent,
+            error.title,
+            error.message,
+            error.suggestion,
+            getattr(error, 'solutions', []),
+            error.technical,
+        )
+        dialog.exec()
+
+
+class _ErrorDialog(QDialog):
+    """Internal dialog used by MessageService.show_error()."""
+
+    _DETAIL_HEIGHT = 140
+
+    def __init__(self, parent, title: str, message: str,
+                 suggestion: Optional[str], solutions, technical: Optional[str]):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self._technical = technical
+        self._detail_visible = False
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        # Icon + message row
+        icon_label = QLabel()
+        icon_label.setPixmap(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxCritical).pixmap(32, 32)
+        )
+        icon_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        msg_label = QLabel(message)
+        msg_label.setWordWrap(True)
+        msg_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        top_row = QHBoxLayout()
+        top_row.addWidget(icon_label)
+        top_row.addWidget(msg_label, 1)
+        layout.addLayout(top_row)
+
+        # Suggestion row
+        if suggestion:
+            sug_label = QLabel(f"What to do: {suggestion}")
+            sug_label.setWordWrap(True)
+            sug_label.setStyleSheet("color: #aaaaaa; padding-left: 42px;")
+            layout.addWidget(sug_label)
+
+        # Numbered solutions list
+        if solutions:
+            steps_label = QLabel("Things to try:")
+            steps_label.setStyleSheet("color: #cccccc; padding-left: 42px; font-weight: bold;")
+            layout.addWidget(steps_label)
+            for i, step in enumerate(solutions, start=1):
+                step_label = QLabel(f"  {i}. {step}")
+                step_label.setWordWrap(True)
+                step_label.setStyleSheet("color: #aaaaaa; padding-left: 52px;")
+                layout.addWidget(step_label)
+
+        # Technical detail toggle
+        if technical:
+            self._toggle_btn = QPushButton("Show technical detail")
+            self._toggle_btn.setCheckable(False)
+            self._toggle_btn.setStyleSheet(
+                "QPushButton { text-align: left; border: none; color: #888888; "
+                "padding: 0; font-size: 11px; } "
+                "QPushButton:hover { color: #cccccc; }"
+            )
+            self._toggle_btn.clicked.connect(self._toggle_detail)
+            layout.addWidget(self._toggle_btn)
+
+            self._detail_edit = QTextEdit()
+            self._detail_edit.setReadOnly(True)
+            self._detail_edit.setPlainText(technical)
+            mono = QFont("Monospace")
+            mono.setStyleHint(QFont.TypeWriter)
+            self._detail_edit.setFont(mono)
+            self._detail_edit.setStyleSheet(
+                "background-color: #1a1a1a; color: #cccccc; "
+                "border: 1px solid #333333; border-radius: 4px;"
+            )
+            self._detail_edit.setFixedHeight(self._DETAIL_HEIGHT)
+            self._detail_edit.hide()
+            layout.addWidget(self._detail_edit)
+
+        # OK button — disabled for 3s to prevent accidental dismissal
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self._ok_btn = buttons.button(QDialogButtonBox.Ok)
+        self._ok_countdown = 3
+        self._ok_btn.setEnabled(False)
+        self._ok_btn.setText(f"OK ({self._ok_countdown}s)")
+        self._ok_timer = QTimer(self)
+        self._ok_timer.timeout.connect(self._tick_ok_countdown)
+        self._ok_timer.start(1000)
+
+        self.setMinimumWidth(440)
+        self.adjustSize()
+
+    def _tick_ok_countdown(self):
+        self._ok_countdown -= 1
+        if self._ok_countdown > 0:
+            self._ok_btn.setText(f"OK ({self._ok_countdown}s)")
+        else:
+            self._ok_timer.stop()
+            self._ok_btn.setText("OK")
+            self._ok_btn.setEnabled(True)
+
+    def _toggle_detail(self):
+        self._detail_visible = not self._detail_visible
+        if self._detail_visible:
+            self._detail_edit.show()
+            self._toggle_btn.setText("Hide technical detail")
+        else:
+            self._detail_edit.hide()
+            self._toggle_btn.setText("Show technical detail")
+        self.adjustSize()

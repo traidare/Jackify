@@ -7,15 +7,6 @@ import vdf
 
 logger = logging.getLogger(__name__)
 
-
-def debug_print(message):
-    """Log debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        logger.debug(message)
-
-
 class ProtonOperationsMixin:
     """Mixin providing Proton and compatibility tool methods for AutomatedPrefixService."""
 
@@ -112,7 +103,7 @@ class ProtonOperationsMixin:
         # STL sets the compatibility tool in config.vdf, not shortcuts.vdf
         # We know this works from manual testing, so just log that we're skipping this check
         logger.info(f"Skipping Proton version check for '{shortcut_name}' - STL handles this correctly")
-        debug_print(f"[DEBUG] Skipping Proton version check for '{shortcut_name}' - STL handles this correctly")
+        logger.debug(f"[DEBUG] Skipping Proton version check for '{shortcut_name}' - STL handles this correctly")
 
     def set_proton_version_for_shortcut(self, appid: int, proton_version: str) -> bool:
         """
@@ -165,7 +156,7 @@ class ProtonOperationsMixin:
             os.fsync(f.fileno()) if hasattr(f, 'fileno') else None
 
             logger.info(f"Set Proton version {proton_version} for AppID {appid}")
-            debug_print(f"[DEBUG] Set Proton version {proton_version} for AppID {appid} in config.vdf")
+            logger.debug(f"[DEBUG] Set Proton version {proton_version} for AppID {appid} in config.vdf")
 
             # Small delay to ensure filesystem write completes
             import time
@@ -175,7 +166,7 @@ class ProtonOperationsMixin:
             with open(config_path, 'r') as f:
                 verify_data = vdf.load(f)
             compat_mapping = verify_data.get('Software', {}).get('Valve', {}).get('Steam', {}).get('CompatToolMapping', {}).get(str(appid))
-            debug_print(f"[DEBUG] Verification: AppID {appid} -> {compat_mapping}")
+            logger.debug(f"[DEBUG] Verification: AppID {appid} -> {compat_mapping}")
             
             return True
             
@@ -324,14 +315,14 @@ class ProtonOperationsMixin:
             config_data['Software']['Valve']['Steam']['CompatToolMapping'][str(unsigned_appid)] = compat_entry
             
             logger.info(f"Added compatibility tool entry: {str(unsigned_appid)} -> {compat_tool}")
-            debug_print(f"[DEBUG] Added compatibility tool entry: {str(unsigned_appid)} -> {compat_tool}")
+            logger.debug(f"[DEBUG] Added compatibility tool entry: {str(unsigned_appid)} -> {compat_tool}")
             
             # Write back to file (text format)
             with open(config_path, 'w') as f:
                 vdf.dump(config_data, f)
             
             logger.info(f"Set compatibility tool STL-style: AppID {unsigned_appid} -> {compat_tool}")
-            debug_print(f"[DEBUG] Set compatibility tool STL-style: AppID {unsigned_appid} -> {compat_tool}")
+            logger.debug(f"[DEBUG] Set compatibility tool STL-style: AppID {unsigned_appid} -> {compat_tool}")
             
             return True
             
@@ -564,7 +555,7 @@ class ProtonOperationsMixin:
                 f.writelines(lines)
             
             logger.info(f"Updated localconfig.vdf: Signed AppID {signed_appid_int} -> OverlayAppEnable=1, DisableLaunchInVR=1")
-            debug_print(f"[DEBUG] Updated localconfig.vdf: Signed AppID {signed_appid_int} -> OverlayAppEnable=1, DisableLaunchInVR=1")
+            logger.debug(f"[DEBUG] Updated localconfig.vdf: Signed AppID {signed_appid_int} -> OverlayAppEnable=1, DisableLaunchInVR=1")
             
             return True
             

@@ -167,6 +167,6 @@ class ConfigureNewModlistConsoleMixin:
     def browse_install_dir(self):
         file, _ = QFileDialog.getOpenFileName(self, "Select ModOrganizer.exe", os.path.expanduser("~"), "ModOrganizer.exe (ModOrganizer.exe)")
         if file:
-            self.install_dir_edit.setText(file)
+            self.install_dir_edit.setText(os.path.realpath(file))
 
 

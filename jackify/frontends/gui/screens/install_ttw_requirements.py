@@ -6,16 +6,9 @@ from pathlib import Path
 import os
 import requests
 import traceback
+import logging
 
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class TTWRequirementsMixin:
     """Mixin providing TTW installer requirement checking and validation for InstallTTWScreen."""
 
@@ -117,7 +110,7 @@ class TTWRequirementsMixin:
             self.ttw_installer_btn.setText("Install now")
             self.ttw_installer_btn.setEnabled(True)
             self.ttw_installer_btn.setVisible(True)
-            debug_print(f"DEBUG: TTW_Linux_Installer status check failed: {e}")
+            logger.debug(f"DEBUG: TTW_Linux_Installer status check failed: {e}")
 
     def install_ttw_installer(self):
         """Install or update TTW_Linux_Installer"""
@@ -185,7 +178,7 @@ class TTWRequirementsMixin:
                 except Exception as e:
                     error_msg = f"Error installing TTW_Linux_Installer: {str(e)}"
                     self.progress.emit(error_msg)
-                    debug_print(f"DEBUG: TTW_Linux_Installer installation error: {e}")
+                    logger.debug(f"DEBUG: TTW_Linux_Installer installation error: {e}")
                     self.finished.emit(False, error_msg)
 
         # Create and start thread

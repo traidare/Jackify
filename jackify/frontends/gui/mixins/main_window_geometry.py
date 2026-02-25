@@ -7,16 +7,10 @@ from PySide6.QtWidgets import QMainWindow, QApplication
 from PySide6.QtCore import Qt, QTimer, QRect
 
 from jackify.frontends.gui.utils import get_screen_geometry, set_responsive_minimum
+import logging
 
+logger = logging.getLogger(__name__)
 ENABLE_WINDOW_HEIGHT_ANIMATION = False
-
-
-def _debug_print(message):
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    ch = ConfigHandler()
-    if ch.get('debug_mode', False):
-        print(message)
-
 
 class MainWindowGeometryMixin:
     """Mixin for window geometry, save/restore, compact mode, and resize behavior."""
@@ -135,10 +129,10 @@ class MainWindowGeometryMixin:
                 self.showMaximized()
 
     def _on_child_resize_request(self, mode: str):
-        _debug_print(f"DEBUG: _on_child_resize_request called with mode='{mode}', current_size={self.size()}")
+        logger.debug(f"DEBUG: _on_child_resize_request called with mode='{mode}', current_size={self.size()}")
         try:
             if self.system_info and self.system_info.is_steamdeck:
-                _debug_print("DEBUG: Steam Deck detected, ignoring resize request")
+                logger.debug("DEBUG: Steam Deck detected, ignoring resize request")
                 try:
                     if hasattr(self, 'install_ttw_screen') and self.install_ttw_screen.show_details_checkbox:
                         self.install_ttw_screen.show_details_checkbox.setVisible(False)
@@ -183,7 +177,7 @@ class MainWindowGeometryMixin:
             before = self.size()
             self._programmatic_resize = True
             self.resize(self.size().width(), target_height)
-            _debug_print(f"DEBUG: Animated fallback resize from {before} to {self.size()}")
+            logger.debug(f"DEBUG: Animated fallback resize from {before} to {self.size()}")
             QTimer.singleShot(100, lambda: setattr(self, '_programmatic_resize', False))
             return
         start_rect = self.geometry()

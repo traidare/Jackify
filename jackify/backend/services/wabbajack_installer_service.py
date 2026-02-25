@@ -16,7 +16,8 @@ from ..handlers.config_handler import ConfigHandler
 from ..handlers.wine_utils import WineUtils
 from .native_steam_service import NativeSteamService
 from .steam_restart_service import (
-    start_steam, is_flatpak_steam, is_steam_deck, _get_clean_subprocess_env, robust_steam_restart
+    start_steam, is_flatpak_steam, is_steam_deck, _get_clean_subprocess_env, robust_steam_restart,
+    ensure_flatpak_steam_filesystem_access,
 )
 from .automated_prefix_service import AutomatedPrefixService
 
@@ -48,8 +49,14 @@ class WabbajackInstallerService:
                 if not steam_name.startswith('proton'):
                     steam_name = f"proton_{steam_name}"
                 return path, steam_name
-        path = self.handler.find_proton_experimental()
-        return path, "proton_experimental" if path else None
+        best = WineUtils.select_best_proton()
+        if best:
+            return Path(best['path']), best['steam_compat_name']
+        valve = WineUtils.select_best_valve_proton()
+        if valve:
+            return Path(valve['path']), valve.get('steam_compat_name', 'proton_experimental')
+        logger.error("No Proton version found")
+        return None, None
 
     def install_wabbajack(
         self,
@@ -92,6 +99,9 @@ class WabbajackInstallerService:
         # Detect Steam installation type once at the start for consistent use throughout
         _is_steam_deck = is_steam_deck()
         _is_flatpak = is_flatpak_steam()
+
+        if _is_flatpak:
+            ensure_flatpak_steam_filesystem_access(install_folder)
 
         try:
             # Step 1: Check requirements

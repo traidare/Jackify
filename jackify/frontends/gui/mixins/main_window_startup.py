@@ -7,14 +7,9 @@ import sys
 
 from PySide6.QtCore import QThread, Signal, QTimer
 from PySide6.QtWidgets import QDialog
+import logging
 
-
-def _debug_print(message):
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    ch = ConfigHandler()
-    if ch.get('debug_mode', False):
-        print(message)
-
+logger = logging.getLogger(__name__)
 
 class MainWindowStartupMixin:
     """Mixin for startup and background tasks."""
@@ -38,23 +33,23 @@ class MainWindowStartupMixin:
                     if metadata:
                         modlists_with_mods = sum(1 for m in metadata.modlists if hasattr(m, 'mods') and m.mods)
                         if modlists_with_mods > 0:
-                            _debug_print(f"Gallery cache ready ({modlists_with_mods} modlists with mods)")
+                            logger.debug(f"Gallery cache ready ({modlists_with_mods} modlists with mods)")
                         else:
-                            _debug_print("Gallery cache updated")
+                            logger.debug("Gallery cache updated")
                     else:
-                        _debug_print("Failed to load gallery cache")
+                        logger.debug("Failed to load gallery cache")
                 except Exception as e:
-                    _debug_print(f"Gallery cache preload error: {str(e)}")
+                    logger.debug(f"Gallery cache preload error: {str(e)}")
 
         self._gallery_cache_preload_thread = GalleryCachePreloadThread()
         self._gallery_cache_preload_thread.start()
-        _debug_print("Started background gallery cache preload")
+        logger.debug("Started background gallery cache preload")
 
     def _check_protontricks_on_startup(self):
         try:
             method = self.config_handler.get('component_installation_method', 'winetricks')
             if method != 'system_protontricks':
-                _debug_print(f"Skipping protontricks check (current method: {method}).")
+                logger.debug(f"Skipping protontricks check (current method: {method}).")
                 return
             is_installed, installation_type, details = self.protontricks_service.detect_protontricks()
             if not is_installed:
@@ -66,13 +61,13 @@ class MainWindowStartupMixin:
                     print("User chose to exit due to missing protontricks")
                     sys.exit(1)
             else:
-                _debug_print(f"Protontricks detected: {details}")
+                logger.debug(f"Protontricks detected: {details}")
         except Exception as e:
             print(f"Error checking protontricks: {e}")
 
     def _check_for_updates_on_startup(self):
         try:
-            _debug_print("Checking for updates on startup...")
+            logger.debug("Checking for updates on startup...")
 
             class UpdateCheckThread(QThread):
                 update_available = Signal(object)
@@ -87,7 +82,7 @@ class MainWindowStartupMixin:
                         self.update_available.emit(update_info)
 
             def on_update_available(update_info):
-                _debug_print(f"Update available: v{update_info.version}")
+                logger.debug(f"Update available: v{update_info.version}")
 
                 def show_update_dialog():
                     from jackify.frontends.gui.dialogs.update_dialog import UpdateDialog
@@ -99,4 +94,4 @@ class MainWindowStartupMixin:
             self._update_thread.update_available.connect(on_update_available)
             self._update_thread.start()
         except Exception as e:
-            _debug_print(f"Error setting up update check: {e}")
+            logger.debug(f"Error setting up update check: {e}")

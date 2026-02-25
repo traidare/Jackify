@@ -94,7 +94,7 @@ class SettingsDialog(SettingsDialogTabsMixin, SettingsDialogProtonMixin, QDialog
     def _pick_directory(self, line_edit):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text() or os.path.expanduser("~"))
         if dir_path:
-            line_edit.setText(dir_path)
+            line_edit.setText(os.path.realpath(dir_path))
 
     def _show_help(self):
         MessageService.information(self, "Help", "Help/documentation coming soon!", safety_level="low")
@@ -130,7 +130,17 @@ class SettingsDialog(SettingsDialogTabsMixin, SettingsDialogProtonMixin, QDialog
         auth_service = NexusAuthService()
         authenticated, method, username = auth_service.get_auth_status()
         if authenticated and method == 'oauth':
-            self.oauth_status_label.setText(f"Authorised as {username}" if username else "Authorised")
+            tier_label = ""
+            try:
+                token = auth_service.get_auth_token()
+                if token:
+                    from jackify.backend.services.nexus_premium_service import NexusPremiumService
+                    is_premium, _ = NexusPremiumService().check_premium_status(token, is_oauth=True)
+                    tier_label = " [Premium]" if is_premium else " [Free]"
+            except Exception:
+                pass
+            display = f"Authorised as {username}{tier_label}" if username else "Authorised"
+            self.oauth_status_label.setText(display)
             self.oauth_status_label.setStyleSheet("color: #3fd0ea;")
             self.oauth_btn.setText("Revoke")
         elif method == 'oauth_expired':
@@ -323,7 +333,7 @@ class SettingsDialog(SettingsDialogTabsMixin, SettingsDialogProtonMixin, QDialog
             # Check if debug mode changed and prompt for restart
             new_debug_mode = self.debug_checkbox.isChecked()
             if new_debug_mode != self._original_debug_mode:
-                reply = MessageService.question(self, "Restart Required", "Debug mode change requires a restart. Restart Jackify now?", safety_level="low")
+                reply = MessageService.question(self, "Restart Required", "Debug mode change requires a restart. Restart Jackify now?", safety_level="medium")
                 if reply == QMessageBox.Yes:
                     import os, sys
                     # User requested restart - do it regardless of execution environment
@@ -382,5 +392,4 @@ class SettingsDialog(SettingsDialogTabsMixin, SettingsDialogProtonMixin, QDialog
         label = QLabel(text)
         label.setStyleSheet("font-weight: bold; color: #fff;")
         return label
-
 

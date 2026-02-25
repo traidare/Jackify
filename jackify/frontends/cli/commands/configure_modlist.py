@@ -91,12 +91,17 @@ class ConfigureModlistCommand:
         try:
             # Build configuration context from args
             context = self._build_context_from_args(args)
-            
+
             # Use legacy implementation for now - will migrate to backend services later
             result = self._execute_legacy_configuration(context)
-            
+
             logger.info("Finished non-interactive modlist configuration")
-            return 0 if result is not True else 1
+
+            if not getattr(args, 'skip_confirmation', False) and context.get('install_dir'):
+                from jackify.backend.handlers.modlist_install_cli_ttw import prompt_ttw_if_eligible
+                prompt_ttw_if_eligible(context['install_dir'], context.get('modlist_name') or '')
+
+            return 0 if result is True else 1
             
         except Exception as e:
             logger.error(f"Failed to configure modlist: {e}")

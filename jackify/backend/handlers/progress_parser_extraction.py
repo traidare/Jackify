@@ -24,6 +24,12 @@ class ProgressParserExtractionMixin:
 
     def _extract_step_info(self, line: str) -> Optional[Tuple[int, int]]:
         """Extract step information like [12/14]."""
+        line_lower = line.lower()
+        # Texture conversion counters are tracked separately; don't let generic
+        # step parsing overwrite the primary install counter.
+        if 'converting textures' in line_lower and 'installing files' not in line_lower:
+            return None
+
         match = self.wabbajack_status_pattern.search(line)
         if match:
             current = int(match.group(1))

@@ -1,5 +1,42 @@
 # Jackify Changelog
 
+## v0.4.0 - Error Handling Rewrite
+**Release Date:** 2026-02-25
+
+### New Features
+- Structured error handling across GUI and CLI with typed `JackifyError` dialogs (clear message, suggested action, numbered recovery steps, optional technical detail).
+- Structured engine error receiver: stderr JSON errors are parsed and mapped to user-facing error types, with exit-code fallback.
+- Nexus account tier indicator in Settings OAuth (`[Premium]` / `[Free]`) with cached status checks.
+- Modlist metadata support via `.jackify_meta.json`, written after install and used by configure workflows.
+- TTW eligibility workflow expanded:
+  - Configure New / Configure Existing can trigger TTW workflow when eligible.
+  - CLI `configure-modlist` now prompts TTW when eligible.
+- FO3 support in configure workflows, including prefix/registry handling.
+- Standalone MO2 setup in Additional Tasks (GUI and CLI).
+
+### Bug Fixes
+- Proton auto-detection reliability improved, including GE-Proton ranking and fallback behavior.
+- Added detection support for system-packaged Proton layouts (Issue #162).
+- Download stall false positives reduced by checking byte advancement instead of speed readout alone.
+- Flatpak Steam access handling improved with install-directory override support.
+- TTW installer output directory is pre-populated to the modlist location.
+- Unknown game fallback behavior improved so Wine component installation can continue where appropriate.
+
+### Improvements
+- GUI debug log naming standardised to `jackify-debug.log`.
+- Error reporting/logging flow cleaned up to improve user  facing info and hopefully ease support.
+- "Lazy" GUI screen initialization (main menu first, other screens on demand).
+- Proton handling improved with Valve Proton fallback when GE-Proton is unavailable.
+- FNV/FO3/Enderal registry injection now attempts canonical `C:\Program Files (x86)\Steam\steamapps\common\<Game>` paths via in-prefix symlink, with fallback to real `Z:/D:` paths if symlink creation fails. Looking forward to feedback on this one if anyone still has their FNV launcher only show "Install" instead of "Play".
+
+### Engine Updates
+- jackify-engine updated to `0.4.8`.
+- Archive download progress improvements (remaining size + ETA).
+- Download speed reporting reliability improvements on Linux.
+- ZIP extraction fixes for Cyrillic filenames.
+
+---
+
 ## v0.3.0 - Codebase Refactoring
 **Release Date:** 2026-02-06
 

@@ -8,6 +8,7 @@ from ..utils import ansi_to_html, set_responsive_minimum
 from jackify.frontends.gui.widgets.progress_indicator import OverallProgressIndicator
 from jackify.frontends.gui.widgets.file_progress_list import FileProgressList
 from jackify.shared.progress_models import InstallationPhase, InstallationProgress
+from jackify.shared.errors import configuration_failed
 import os
 import subprocess
 import sys
@@ -23,28 +24,24 @@ from jackify.backend.services.resolution_service import ResolutionService
 from jackify.backend.handlers.config_handler import ConfigHandler
 from ..dialogs import SuccessDialog
 from jackify.frontends.gui.services.message_service import MessageService
+import logging
+logger = logging.getLogger(__name__)
 from .configure_existing_modlist_ui import ConfigureExistingModlistUIMixin
 from .configure_existing_modlist_workflow import ConfigureExistingModlistWorkflowMixin
 from .configure_existing_modlist_shortcuts import ConfigureExistingModlistShortcutsMixin
 from .configure_existing_modlist_console import ConfigureExistingModlistConsoleMixin
 from .screen_back_mixin import ScreenBackMixin
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
+from .install_modlist_ttw import TTWIntegrationMixin
 
 class ConfigureExistingModlistScreen(
     ScreenBackMixin,
+    TTWIntegrationMixin,
     ConfigureExistingModlistUIMixin,
     ConfigureExistingModlistWorkflowMixin,
     ConfigureExistingModlistShortcutsMixin,
     ConfigureExistingModlistConsoleMixin,
     QWidget,
 ):
-    steam_restart_finished = Signal(bool, str)
     resize_request = Signal(str)
 
     def cleanup_processes(self):
@@ -86,14 +83,11 @@ class ConfigureExistingModlistScreen(
         except Exception as e:
             print(f"Warning: Failed to set initial collapsed state: {e}")
 
-        # Load shortcuts after layout is done so we don't block or re-enter during showEvent
-        if not self._shortcuts_loaded:
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(150, self._load_shortcuts_async)
-            self._shortcuts_loaded = True
+        # Shortcut loading is handled by reset_screen_to_defaults() → refresh_modlist_list()
+        # which fires via _debug_screen_change on every navigation to this screen.
 
     def hideEvent(self, event):
-        """Clean up thread when screen is hidden (terminate without blocking main thread)"""
+        """Clean up thread when screen is hidden."""
         super().hideEvent(event)
         if self._shortcut_loader is not None:
             if self._shortcut_loader.isRunning():
@@ -102,6 +96,7 @@ class ConfigureExistingModlistScreen(
                 except Exception:
                     pass
                 self._shortcut_loader.terminate()
+                self._shortcut_loader.wait(2000)
             self._shortcut_loader = None
 
     def on_configuration_complete(self, success, message, modlist_name, enb_detected=False):
@@ -110,8 +105,19 @@ class ConfigureExistingModlistScreen(
         self._enable_controls_after_operation()
 
         if success:
-            # Check for VNV post-install automation after configuration
             install_dir = getattr(self, '_current_install_dir', None)
+
+            if install_dir:
+                game_type = self._detect_game_type_from_mo2_ini(install_dir)
+                if game_type in ('falloutnv', 'fallout_new_vegas'):
+                    from jackify.backend.utils.modlist_meta import get_modlist_name
+                    identified_name = get_modlist_name(install_dir)
+                    if identified_name and self._check_ttw_eligibility(identified_name, game_type, install_dir):
+                        self._cleanup_config_thread()
+                        self._initiate_ttw_workflow(identified_name, install_dir)
+                        return
+
+            # Check for VNV post-install automation after configuration
             if install_dir:
                 self._check_and_run_vnv_automation(modlist_name, install_dir)
 
@@ -142,8 +148,8 @@ class ConfigureExistingModlistScreen(
                     logging.getLogger(__name__).warning("Failed to show ENB dialog: %s", e)
         else:
             self._safe_append_text(f"Configuration failed: {message}")
-            MessageService.critical(self, "Configuration Failed", 
-                               f"Configuration failed: {message}", safety_level="medium")
+            MessageService.show_error(self, configuration_failed(str(message)))
+        self._cleanup_config_thread()
     
     def on_configuration_error(self, error_message):
         """Handle configuration error"""
@@ -151,7 +157,27 @@ class ConfigureExistingModlistScreen(
         self._enable_controls_after_operation()
 
         self._safe_append_text(f"Configuration error: {error_message}")
-        MessageService.critical(self, "Configuration Error", f"Configuration failed: {error_message}", safety_level="medium")
+        MessageService.show_error(self, configuration_failed(str(error_message)))
+        self._cleanup_config_thread()
+
+    def _cleanup_config_thread(self):
+        """Safely stop and release configuration thread."""
+        if not hasattr(self, 'config_thread') or self.config_thread is None:
+            return
+
+        try:
+            self.config_thread.progress_update.disconnect()
+            self.config_thread.configuration_complete.disconnect()
+            self.config_thread.error_occurred.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+
+        if self.config_thread.isRunning():
+            self.config_thread.quit()
+            self.config_thread.wait(5000)
+
+        self.config_thread.deleteLater()
+        self.config_thread = None
 
     def reset_screen_to_defaults(self):
         """Reset the screen to default state when navigating back from main menu"""
@@ -179,16 +205,16 @@ class ConfigureExistingModlistScreen(
 
     def cleanup(self):
         """Clean up any running threads when the screen is closed"""
-        debug_print("DEBUG: cleanup called - cleaning up ConfigurationThread")
+        logger.debug("DEBUG: cleanup called - cleaning up ConfigurationThread")
         
         # Clean up config thread if running
         if hasattr(self, 'config_thread') and self.config_thread and self.config_thread.isRunning():
-            debug_print("DEBUG: Terminating ConfigurationThread")
+            logger.debug("DEBUG: Terminating ConfigurationThread")
             try:
                 self.config_thread.progress_update.disconnect()
                 self.config_thread.configuration_complete.disconnect()
                 self.config_thread.error_occurred.disconnect()
-            except:
+            except (RuntimeError, TypeError):
                 pass
             self.config_thread.terminate()
             self.config_thread.wait(2000)  # Wait up to 2 seconds 

@@ -37,8 +37,10 @@ class AdditionalMenuHandler:
             print(f"   {COLOR_ACTION}→ Install TTW using TTW_Linux_Installer{COLOR_RESET}")
             print(f"{COLOR_SELECTION}3.{COLOR_RESET} Install Wabbajack Application")
             print(f"   {COLOR_ACTION}→ Downloads and configures the Wabbajack app itself (via Proton){COLOR_RESET}")
+            print(f"{COLOR_SELECTION}4.{COLOR_RESET} Setup Mod Organizer 2")
+            print(f"   {COLOR_ACTION}→ Download and configure a standalone MO2 instance{COLOR_RESET}")
             print(f"{COLOR_SELECTION}0.{COLOR_RESET} Return to Main Menu")
-            selection = input(f"\n{COLOR_PROMPT}Enter your selection (0-3): {COLOR_RESET}").strip()
+            selection = input(f"\n{COLOR_PROMPT}Enter your selection (0-4): {COLOR_RESET}").strip()
 
             if selection.lower() == 'q':  # Allow 'q' to re-display menu
                 continue
@@ -48,20 +50,13 @@ class AdditionalMenuHandler:
                 self._execute_ttw_install(cli_instance)
             elif selection == "3":
                 self._execute_install_wabbajack(cli_instance)
+            elif selection == "4":
+                self._execute_setup_mo2(cli_instance)
             elif selection == "0":
                 break
             else:
                 print("Invalid selection. Please try again.")
                 time.sleep(1)
-
-    def _execute_legacy_install_mo2(self, cli_instance):
-        """LEGACY BRIDGE: Execute MO2 installation"""
-        # LEGACY BRIDGE: Use legacy imports until backend migration complete
-        if hasattr(cli_instance, 'menu') and hasattr(cli_instance.menu, 'mo2_handler'):
-            cli_instance.menu.mo2_handler.install_mo2()
-        else:
-            print(f"{COLOR_INFO}MO2 handler not available - this will be implemented in Phase 2.3{COLOR_RESET}")
-            input("\nPress Enter to continue...")
 
     def _execute_legacy_recovery_menu(self, cli_instance):
         """LEGACY BRIDGE: Execute recovery menu"""
@@ -313,4 +308,13 @@ class AdditionalMenuHandler:
         command = InstallWabbajackCommand()
         if self.logger:
             self.logger.debug("AdditionalMenuHandler: Executing Install Wabbajack command")
+        command.run()
+
+    def _execute_setup_mo2(self, cli_instance):
+        """Execute standalone MO2 setup"""
+        from jackify.frontends.cli.commands.setup_mo2 import SetupMO2Command
+
+        command = SetupMO2Command()
+        if self.logger:
+            self.logger.debug("AdditionalMenuHandler: Executing Setup MO2 command")
         command.run()

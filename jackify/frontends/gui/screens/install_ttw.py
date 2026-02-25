@@ -26,22 +26,17 @@ from ..dialogs import SuccessDialog
 from jackify.backend.handlers.validation_handler import ValidationHandler
 from jackify.frontends.gui.dialogs.warning_dialog import WarningDialog
 from jackify.frontends.gui.services.message_service import MessageService
+from jackify.shared.errors import manual_steps_incomplete
+import logging
+logger = logging.getLogger(__name__)
 from .install_ttw_ui_setup import TTWUISetupMixin
 from .install_ttw_integration import TTWIntegrationMixin
 from .install_ttw_requirements import TTWRequirementsMixin
 from .install_ttw_lifecycle import TTWLifecycleMixin
-from .install_ttw_installer import TTWInstallerMixin
 from .install_ttw_workflow import TTWWorkflowMixin
+from .install_ttw_output import TTWOutputMixin
 from .install_ttw_ui import TTWUIMixin
-from .install_ttw_config import TTWConfigMixin
 from .screen_back_mixin import ScreenBackMixin
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
 
 class ModlistFetchThread(QThread):
     result = Signal(list, str)
@@ -82,9 +77,7 @@ class ModlistFetchThread(QThread):
             # Don't write to log file before workflow starts - just return error
             self.result.emit([], error_msg)
 
-
-class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TTWRequirementsMixin, TTWLifecycleMixin, QWidget, TTWInstallerMixin, TTWWorkflowMixin, TTWUIMixin, TTWConfigMixin):
-    steam_restart_finished = Signal(bool, str)
+class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TTWRequirementsMixin, TTWLifecycleMixin, QWidget, TTWWorkflowMixin, TTWOutputMixin, TTWUIMixin):
     resize_request = Signal(str)
     integration_complete = Signal(bool, str)  # Signal for modlist integration completion (success, ttw_version)
     
@@ -142,25 +135,20 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
             if saved_install_parent:
                 suggested_install_dir = os.path.join(saved_install_parent, modlist_name)
                 self.install_dir_edit.setText(suggested_install_dir)
-                debug_print(f"DEBUG: Updated install directory suggestion: {suggested_install_dir}")
+                logger.debug(f"DEBUG: Updated install directory suggestion: {suggested_install_dir}")
             
             # Update download directory suggestion
             saved_download_parent = self.config_handler.get_default_download_parent_dir()
             if saved_download_parent:
                 suggested_download_dir = os.path.join(saved_download_parent, "Downloads")
-                debug_print(f"DEBUG: Updated download directory suggestion: {suggested_download_dir}")
+                logger.debug(f"DEBUG: Updated download directory suggestion: {suggested_download_dir}")
                 
         except Exception as e:
-            debug_print(f"DEBUG: Error updating directory suggestions: {e}")
+            logger.debug(f"DEBUG: Error updating directory suggestions: {e}")
     
     def _save_parent_directories(self, install_dir, downloads_dir):
         """Removed automatic saving - user should set defaults in settings"""
         pass
-
-
-
-
-
 
     def browse_wabbajack_file(self):
         # Use QFileDialog instance to ensure consistent dialog style
@@ -187,7 +175,6 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
             dirs = dialog.selectedFiles()
             if dirs:
                 self.install_dir_edit.setText(dirs[0])
-
 
     def update_top_panel(self):
         try:
@@ -249,14 +236,20 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
             return True  # Continue anyway
 
     def _write_to_log_file(self, message):
-        """Write message to workflow log file with timestamp"""
+        """Write message to workflow log file with timestamp."""
         try:
+            import re
             from datetime import datetime
+            clean = re.sub(r'<[^>]+>', '', str(message))
+            if not clean.strip():
+                return
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             with open(self.modlist_log_path, 'a', encoding='utf-8') as f:
-                f.write(f"[{timestamp}] {message}\n")
+                for line in clean.splitlines():
+                    stripped = line.rstrip()
+                    if stripped:
+                        f.write(f"[{timestamp}] {stripped}\n")
         except Exception:
-            # Logging should never break the workflow
             pass
 
     def handle_validation_failure(self, missing_text):
@@ -271,9 +264,7 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
             elif self._manual_steps_retry_count == 2:
                 retry_guidance = "\n\nTip: If using Flatpak Steam, ensure compatdata is being created in the correct location."
             
-            MessageService.critical(self, "Manual Steps Incomplete", 
-                               f"Manual steps validation failed:\n\n{missing_text}\n\n"
-                               f"Please complete the missing steps and try again.{retry_guidance}")
+            MessageService.show_error(self, manual_steps_incomplete())
             # Show manual steps dialog again
             extra_warning = ""
             if self._manual_steps_retry_count >= 2:
@@ -281,13 +272,7 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
             self.show_manual_steps_dialog(extra_warning)
         else:
             # Max retries reached
-            MessageService.critical(self, "Manual Steps Failed", 
-                               "Manual steps validation failed after multiple attempts.\n\n"
-                               "Common issues:\n"
-                               "• Steam not fully restarted\n"
-                               "• Shortcut not launched from Steam\n"
-                               "• Flatpak Steam using different file paths\n"
-                               "• Proton - Experimental not selected")
+            MessageService.show_error(self, manual_steps_incomplete())
             self.on_configuration_complete(False, "Manual steps validation failed after multiple attempts", self._current_modlist_name)
 
     def show_next_steps_dialog(self, message):
@@ -317,11 +302,11 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
 
     def cleanup_processes(self):
         """Clean up any running processes when the window closes or is cancelled"""
-        debug_print("DEBUG: cleanup_processes called - cleaning up InstallationThread and other processes")
+        logger.debug("DEBUG: cleanup_processes called - cleaning up InstallationThread and other processes")
         
         # Clean up InstallationThread if running
         if hasattr(self, 'install_thread') and self.install_thread.isRunning():
-            debug_print("DEBUG: Cancelling running InstallationThread")
+            logger.debug("DEBUG: Cancelling running InstallationThread")
             self.install_thread.cancel()
             self.install_thread.wait(3000)  # Wait up to 3 seconds
             if self.install_thread.isRunning():
@@ -335,7 +320,7 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
             if hasattr(self, thread_name):
                 thread = getattr(self, thread_name)
                 if thread and thread.isRunning():
-                    debug_print(f"DEBUG: Terminating {thread_name}")
+                    logger.debug(f"DEBUG: Terminating {thread_name}")
                     thread.terminate()
                     thread.wait(1000)  # Wait up to 1 second
     
@@ -344,7 +329,8 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
         reply = MessageService.question(
             self, "Cancel Installation",
             "Are you sure you want to cancel the installation?",
-            critical=False  # Non-critical, won't steal focus
+            critical=False,  # Non-critical, won't steal focus
+            safety_level="medium",
         )
 
         if reply == QMessageBox.Yes:
@@ -435,13 +421,12 @@ https://wiki.scenicroute.games/Somnium/1_Installation.html</i>"""
     
     def reset_screen_to_defaults(self):
         """Reset the screen to default state when navigating back from main menu"""
-        # Reset form fields
-        self.file_edit.setText("")
-        self.install_dir_edit.setText(self.config_handler.get_modlist_install_base_dir())
-
-        # Clear console and process monitor
-        self.console.clear()
-        self.process_monitor.clear()
+        if not getattr(self, '_integration_mode', False):
+            # Reset form fields only when not pre-populated by a caller
+            self.file_edit.setText("")
+            self.install_dir_edit.setText(self.config_handler.get_modlist_install_base_dir())
+            self.console.clear()
+            self.process_monitor.clear()
 
         # Re-enable controls (in case they were disabled from previous errors)
         self._enable_controls_after_operation()

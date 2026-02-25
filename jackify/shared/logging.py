@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from datetime import datetime
 import shutil
+import sys
 
 class LoggingHandler:
     """
@@ -35,7 +36,7 @@ class LoggingHandler:
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            print(f"Failed to create log directory: {e}")
+            sys.stderr.write(f"Failed to create log directory: {e}\n")
             
     def rotate_log_file_per_run(self, log_file_path: Path, backup_count: int = 5):
         """Rotate the log file on every run, keeping up to backup_count backups."""
@@ -131,7 +132,7 @@ class LoggingHandler:
                         for old_backup in backups[:-backup_count]:
                             old_backup.unlink()
             except Exception as e:
-                print(f"Failed to rotate log file {log_file}: {e}")
+                sys.stderr.write(f"Failed to rotate log file {log_file}: {e}\n")
                 
     def cleanup_old_logs(self, days: int = 30) -> None:
         """Clean up log files older than specified days."""
@@ -141,7 +142,7 @@ class LoggingHandler:
                 if log_file.stat().st_mtime < cutoff:
                     log_file.unlink()
             except Exception as e:
-                print(f"Failed to clean up log file {log_file}: {e}")
+                sys.stderr.write(f"Failed to clean up log file {log_file}: {e}\n")
                 
     def get_log_files(self) -> List[Path]:
         """Get a list of all log files."""
@@ -153,7 +154,7 @@ class LoggingHandler:
             with open(log_file, 'r') as f:
                 return f.readlines()[-lines:]
         except Exception as e:
-            print(f"Failed to read log file {log_file}: {e}")
+            sys.stderr.write(f"Failed to read log file {log_file}: {e}\n")
             return []
             
     def search_logs(self, pattern: str) -> Dict[Path, List[str]]:
@@ -166,7 +167,7 @@ class LoggingHandler:
                     if matches:
                         results[log_file] = matches
             except Exception as e:
-                print(f"Failed to search log file {log_file}: {e}")
+                sys.stderr.write(f"Failed to search log file {log_file}: {e}\n")
         return results
         
     def export_logs(self, output_dir: Path) -> bool:
@@ -177,7 +178,7 @@ class LoggingHandler:
                 shutil.copy2(log_file, output_dir / log_file.name)
             return True
         except Exception as e:
-            print(f"Failed to export logs: {e}")
+            sys.stderr.write(f"Failed to export logs: {e}\n")
             return False
             
     def set_log_level(self, level: int) -> None:
@@ -207,7 +208,7 @@ class LoggingHandler:
                 stats['newest_file'] = max(log_files, key=lambda x: x.stat().st_mtime)
                 
         except Exception as e:
-            print(f"Failed to get log stats: {e}")
+            sys.stderr.write(f"Failed to get log stats: {e}\n")
             
         return stats 
 

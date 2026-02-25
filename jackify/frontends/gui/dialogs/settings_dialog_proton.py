@@ -15,7 +15,7 @@ class SettingsDialogProtonMixin:
             from jackify.backend.handlers.wine_utils import WineUtils
             available_protons = WineUtils.scan_valve_proton_versions()
             for proton in available_protons:
-                if proton['version'].startswith('10.'):
+                if proton['name'].startswith('Proton 10.'):
                     return proton['path']
             return 'auto'
         except Exception:

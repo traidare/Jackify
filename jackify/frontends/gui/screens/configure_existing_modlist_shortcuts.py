@@ -1,14 +1,8 @@
 """Shortcut loading for ConfigureExistingModlistScreen (Mixin)."""
 from PySide6.QtCore import QThread, Signal, QObject
+import logging
 
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class ConfigureExistingModlistShortcutsMixin:
     """Mixin providing shortcut loading for ConfigureExistingModlistScreen."""
 
@@ -73,19 +67,30 @@ class ConfigureExistingModlistShortcutsMixin:
             self.shortcut_combo.addItem("Loading modlists...")
             self.shortcut_combo.setEnabled(False)
         
-        # Clean up any existing thread first (defer so we don't block main thread)
+        # Clean up any existing thread: disconnect its signal so results are ignored,
+        # terminate it, and park it in a holding list so the QThread object is not
+        # GC'd while still running (which would cause Qt to abort).
         if self._shortcut_loader is not None:
             if self._shortcut_loader.isRunning():
-                self._shortcut_loader.finished_signal.disconnect()
+                try:
+                    self._shortcut_loader.finished_signal.disconnect()
+                except Exception:
+                    pass
                 self._shortcut_loader.terminate()
+                if not hasattr(self, '_old_loaders'):
+                    self._old_loaders = []
+                self._old_loaders.append(self._shortcut_loader)
             self._shortcut_loader = None
+
+        # Purge finished threads from the holding list
+        if hasattr(self, '_old_loaders'):
+            self._old_loaders = [t for t in self._old_loaders if t.isRunning()]
 
         # Start background thread
         self._shortcut_loader = ShortcutLoaderThread()
         self._shortcut_loader.finished_signal.connect(self._on_shortcuts_loaded)
         self._shortcut_loader.error_signal.connect(self._on_shortcuts_error)
         self._shortcut_loader.start()
-
 
     def _on_shortcuts_loaded(self, shortcuts):
         """Update UI when shortcuts are loaded"""
@@ -103,15 +108,13 @@ class ConfigureExistingModlistShortcutsMixin:
                 self.shortcut_combo.addItem(display)
                 self.shortcut_map.append(shortcut)
 
-
     def _on_shortcuts_error(self, error_msg):
         """Handle errors from shortcut loading thread"""
         # Log error from main thread (safe to write to stderr here)
-        debug_print(f"Warning: Failed to load shortcuts: {error_msg}")
+        logger.debug(f"Warning: Failed to load shortcuts: {error_msg}")
         # Update UI to show error state
         if hasattr(self, 'shortcut_combo'):
             self.shortcut_combo.clear()
             self.shortcut_combo.setEnabled(True)
             self.shortcut_combo.addItem("Error loading modlists - please try again")
-
 

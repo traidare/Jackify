@@ -20,6 +20,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QSize
 from PySide6.QtGui import QTextCursor
 
 from jackify.backend.models.configuration import SystemInfo
+from jackify.shared.errors import wabbajack_install_failed
 from ..services.message_service import MessageService
 from ..shared_theme import JACKIFY_COLOR_BLUE, DEBUG_BORDERS
 from ..utils import set_responsive_minimum
@@ -362,7 +363,7 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
         )
 
         if folder:
-            self.install_folder = Path(folder)
+            self.install_folder = Path(folder).resolve()
             self.install_dir_edit.setText(str(self.install_folder))
             self.start_btn.setEnabled(True)
         
@@ -377,7 +378,7 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
             MessageService.warning(self, "No Folder Selected", "Please select an installation folder first.")
             return
         
-        self.install_folder = Path(install_dir_text)
+        self.install_folder = Path(install_dir_text).resolve()
         
         # Get shortcut name
         self.shortcut_name = self.shortcut_name_edit.text().strip() or "Wabbajack"
@@ -390,7 +391,8 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
             "This will download Wabbajack, add to Steam, install WebView2,\n"
             "and configure the Wine prefix automatically.\n\n"
             "Steam will be restarted during installation.\n\n"
-            "Continue?"
+            "Continue?",
+            safety_level="medium",
         )
 
         if confirm != QMessageBox.Yes:
@@ -555,7 +557,7 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
             self.cancel_btn.setEnabled(True)
         else:
             self.progress_indicator.set_status("Installation failed", 0)
-            MessageService.critical(self, "Installation Failed", message)
+            MessageService.show_error(self, wabbajack_install_failed(message))
             self.start_btn.setEnabled(True)
             self.cancel_btn.setEnabled(True)
 

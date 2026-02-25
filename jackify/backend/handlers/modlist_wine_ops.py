@@ -207,8 +207,11 @@ class ModlistWineOpsMixin:
         # Add game-specific extras
         if "skyrim" in game or "fallout4" in game or "starfield" in game or "oblivion_remastered" in game or "enderal" in game:
             extras += ["d3dcompiler_47", "d3dx11_43", "d3dcompiler_43", "dotnet6", "dotnet7"]
-        elif "falloutnewvegas" in game or "fnv" in game or "oblivion" in game:
+        elif "falloutnewvegas" in game or "fnv" in game or "fallout3" in game or "fo3" in game or "oblivion" in game:
             extras += ["d3dx9_43", "d3dx9"]
+        else:
+            # Unknown game type — install the union of all known component sets
+            extras += ["d3dcompiler_47", "d3dx11_43", "d3dcompiler_43", "dotnet6", "dotnet7", "d3dx9_43", "d3dx9"]
         # Add modlist-specific extras
         modlist_lower = modlist_name.lower().replace(" ", "") if modlist_name else ""
         for key, components in self.MODLIST_WINE_COMPONENTS.items():

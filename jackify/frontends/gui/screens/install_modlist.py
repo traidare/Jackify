@@ -31,8 +31,11 @@ from jackify.backend.handlers.progress_parser import ProgressStateManager
 from jackify.frontends.gui.widgets.progress_indicator import OverallProgressIndicator
 from jackify.frontends.gui.widgets.file_progress_list import FileProgressList
 from jackify.shared.progress_models import InstallationPhase, InstallationProgress, OperationType, FileProgress
+from jackify.shared.errors import manual_steps_incomplete
 # Modlist gallery (imported at module level to avoid import delay when opening dialog)
 from jackify.frontends.gui.screens.modlist_gallery import ModlistGalleryDialog
+import logging
+logger = logging.getLogger(__name__)
 from .install_modlist_dialogs import ModlistFetchThread, SelectionDialog
 from .install_modlist_ui_setup import InstallModlistUISetupMixin
 from .install_modlist_console import ConsoleOutputMixin
@@ -47,15 +50,7 @@ from .install_modlist_nexus import NexusAuthMixin
 from .install_modlist_selection import ModlistSelectionMixin
 from .screen_back_mixin import ScreenBackMixin
 
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
 class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleOutputMixin, ProgressHandlersMixin, PostInstallFeedbackMixin, AutomatedPrefixHandlersMixin, ConfigurationPhaseMixin, QWidget, TTWIntegrationMixin, VNVAutomationMixin, InstallWorkflowMixin, NexusAuthMixin, ModlistSelectionMixin):
-    steam_restart_finished = Signal(bool, str)
     resize_request = Signal(str)  # Signal for expand/collapse like TTW screen
     def _collect_actionable_controls(self):
         """Collect all actionable controls that should be disabled during operations (except Cancel)"""
@@ -220,7 +215,7 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
                 set_responsive_minimum(main_window, min_width=960, min_height=420)
                 # DO NOT resize - let window stay at current size
         except Exception as e:
-            debug_print(f"DEBUG: showEvent exception: {e}")
+            logger.debug(f"DEBUG: showEvent exception: {e}")
     
     def _start_gallery_cache_preload(self):
         """DEPRECATED: Gallery cache preload now happens at app startup in JackifyMainWindow"""
@@ -252,22 +247,22 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
                         # Check if we got mods
                         modlists_with_mods = sum(1 for m in metadata.modlists if hasattr(m, 'mods') and m.mods)
                         if modlists_with_mods > 0:
-                            debug_print(f"DEBUG: Gallery cache ready ({modlists_with_mods} modlists with mods)")
+                            logger.debug(f"DEBUG: Gallery cache ready ({modlists_with_mods} modlists with mods)")
                         else:
                             # Cache didn't have mods, but we fetched fresh - should have mods now
-                            debug_print("DEBUG: Gallery cache updated")
+                            logger.debug("DEBUG: Gallery cache updated")
                     else:
-                        debug_print("DEBUG: Failed to load gallery cache")
+                        logger.debug("DEBUG: Failed to load gallery cache")
                         
                 except Exception as e:
-                    debug_print(f"DEBUG: Gallery cache preload error: {str(e)}")
+                    logger.debug(f"DEBUG: Gallery cache preload error: {str(e)}")
         
         # Start thread (non-blocking, invisible to user)
         self._gallery_cache_preload_thread = GalleryCachePreloadThread()
         # Don't connect finished signal - we don't need to do anything, just let it run
         self._gallery_cache_preload_thread.start()
         
-        debug_print("DEBUG: Started background gallery cache preload")
+        logger.debug("DEBUG: Started background gallery cache preload")
 
     def hideEvent(self, event):
         """Called when the widget is hidden. Do not clear main window constraints so collapse from go_back() sticks."""
@@ -288,17 +283,17 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
             if saved_install_parent:
                 suggested_install_dir = os.path.join(saved_install_parent, modlist_name)
                 self.install_dir_edit.setText(suggested_install_dir)
-                debug_print(f"DEBUG: Updated install directory suggestion: {suggested_install_dir}")
+                logger.debug(f"DEBUG: Updated install directory suggestion: {suggested_install_dir}")
             
             # Update download directory suggestion
             saved_download_parent = self.config_handler.get_default_download_parent_dir()
             if saved_download_parent:
                 suggested_download_dir = os.path.join(saved_download_parent, "Downloads")
                 self.downloads_dir_edit.setText(suggested_download_dir)
-                debug_print(f"DEBUG: Updated download directory suggestion: {suggested_download_dir}")
+                logger.debug(f"DEBUG: Updated download directory suggestion: {suggested_download_dir}")
                 
         except Exception as e:
-            debug_print(f"DEBUG: Error updating directory suggestions: {e}")
+            logger.debug(f"DEBUG: Error updating directory suggestions: {e}")
     
     def _save_parent_directories(self, install_dir, downloads_dir):
         """Removed automatic saving - user should set defaults in settings"""
@@ -380,9 +375,7 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
             elif self._manual_steps_retry_count == 2:
                 retry_guidance = "\n\nTip: If using Flatpak Steam, ensure compatdata is being created in the correct location."
             
-            MessageService.critical(self, "Manual Steps Incomplete", 
-                               f"Manual steps validation failed:\n\n{missing_text}\n\n"
-                               f"Please complete the missing steps and try again.{retry_guidance}")
+            MessageService.show_error(self, manual_steps_incomplete())
             # Show manual steps dialog again
             extra_warning = ""
             if self._manual_steps_retry_count >= 2:
@@ -390,13 +383,7 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
             self.show_manual_steps_dialog(extra_warning)
         else:
             # Max retries reached
-            MessageService.critical(self, "Manual Steps Failed", 
-                               "Manual steps validation failed after multiple attempts.\n\n"
-                               "Common issues:\n"
-                               "• Steam not fully restarted\n"
-                               "• Shortcut not launched from Steam\n"
-                               "• Flatpak Steam using different file paths\n"
-                               "• Proton - Experimental not selected")
+            MessageService.show_error(self, manual_steps_incomplete())
             self.on_configuration_complete(False, "Manual steps validation failed after multiple attempts", self._current_modlist_name)
 
     def show_next_steps_dialog(self, message):
@@ -426,34 +413,77 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
 
     def cleanup_processes(self):
         """Clean up any running processes when the window closes or is cancelled"""
-        debug_print("DEBUG: cleanup_processes called - cleaning up InstallationThread and other processes")
-        
-        # Clean up InstallationThread if running
-        if hasattr(self, 'install_thread') and self.install_thread.isRunning():
-            debug_print("DEBUG: Cancelling running InstallationThread")
-            self.install_thread.cancel()
-            self.install_thread.wait(3000)  # Wait up to 3 seconds
-            if self.install_thread.isRunning():
-                self.install_thread.terminate()
-        
-        # Clean up other threads
-        threads = [
-            'prefix_thread', 'config_thread', 'fetch_thread'
-        ]
-        for thread_name in threads:
-            if hasattr(self, thread_name):
-                thread = getattr(self, thread_name)
-                if thread and thread.isRunning():
-                    debug_print(f"DEBUG: Terminating {thread_name}")
-                    thread.terminate()
-                    thread.wait(1000)  # Wait up to 1 second
+        logger.debug("DEBUG: cleanup_processes called - cleaning up InstallationThread and other processes")
+
+        def _stop_thread(attr_name: str, cancel_method: Optional[str] = None, cooperative_ms: int = 5000, force_ms: int = 10000):
+            thread = getattr(self, attr_name, None)
+            if thread is None:
+                return
+            try:
+                running = thread.isRunning()
+            except RuntimeError:
+                setattr(self, attr_name, None)
+                return
+
+            if not running:
+                setattr(self, attr_name, None)
+                return
+
+            logger.debug(f"DEBUG: Stopping {attr_name}")
+
+            if cancel_method and hasattr(thread, cancel_method):
+                try:
+                    getattr(thread, cancel_method)()
+                except Exception:
+                    pass
+            else:
+                try:
+                    thread.requestInterruption()
+                except Exception:
+                    pass
+                try:
+                    thread.quit()
+                except Exception:
+                    pass
+
+            try:
+                if thread.wait(cooperative_ms):
+                    setattr(self, attr_name, None)
+                    return
+            except Exception:
+                pass
+
+            logger.warning(f"WARNING: {attr_name} did not stop in {cooperative_ms}ms, forcing terminate")
+            try:
+                if cancel_method and hasattr(thread, cancel_method):
+                    getattr(thread, cancel_method)()
+            except Exception:
+                pass
+            try:
+                thread.terminate()
+            except Exception:
+                pass
+            try:
+                if not thread.wait(force_ms):
+                    logger.error(f"ERROR: {attr_name} still running after forced shutdown window")
+            except Exception:
+                pass
+            setattr(self, attr_name, None)
+
+        # Always stop installer thread first; this is the most likely source of QThread teardown aborts.
+        _stop_thread('install_thread', cancel_method='cancel', cooperative_ms=15000, force_ms=10000)
+
+        # Stop remaining worker threads.
+        for thread_name in ('prefix_thread', 'config_thread', 'fetch_thread', '_gallery_cache_preload_thread'):
+            _stop_thread(thread_name)
     
     def cancel_installation(self):
         """Cancel the currently running installation"""
         reply = MessageService.question(
             self, "Cancel Installation", 
             "Are you sure you want to cancel the installation?",
-            critical=False  # Non-critical, won't steal focus
+            critical=False,  # Non-critical, won't steal focus
+            safety_level="medium",
         )
         
         if reply == QMessageBox.Yes:
@@ -463,19 +493,20 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
             self._cancellation_requested = True
 
             try:
-                # Clear Active Files window and reset progress indicator
+                # Clear Active Files window and update progress indicator
                 if hasattr(self, 'file_progress_list'):
                     self.file_progress_list.clear()
                 if hasattr(self, 'progress_indicator'):
-                    self.progress_indicator.reset()
+                    self.progress_indicator.set_status("Cancelled", None)
 
                 # Cancel the installation thread if it exists
                 if hasattr(self, 'install_thread') and self.install_thread and self.install_thread.isRunning():
                     self.install_thread.cancel()
-                    self.install_thread.wait(3000)  # Wait up to 3 seconds for graceful shutdown
+                    self.install_thread.wait(12000)  # Allow time for child processes (7zz) to die; no terminate() - pthread_cancel corrupts Python
                     if self.install_thread.isRunning():
-                        self.install_thread.terminate()  # Force terminate if needed
-                        self.install_thread.wait(1000)
+                        logger.warning("WARNING: InstallationThread still running after 12s cancel wait; retrying")
+                        self.install_thread.cancel()
+                        self.install_thread.wait(5000)
 
                 # Cancel the automated prefix thread if it exists
                 if hasattr(self, 'prefix_thread') and self.prefix_thread and self.prefix_thread.isRunning():
@@ -509,7 +540,7 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
                     self.show_details_checkbox.blockSignals(False)
 
             except Exception as e:
-                debug_print(f"ERROR: Exception during cancellation cleanup: {e}")
+                logger.debug(f"ERROR: Exception during cancellation cleanup: {e}")
                 import traceback
                 traceback.print_exc()
 

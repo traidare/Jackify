@@ -358,7 +358,6 @@ class TTWUISetupMixin:
         self.top_timer.start(2000)
         # --- Start Installation button ---
         self.start_btn.clicked.connect(self.validate_and_start_install)
-        self.steam_restart_finished.connect(self._on_steam_restart_finished)
 
         # Initialize process tracking
         self.process = None

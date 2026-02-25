@@ -11,15 +11,6 @@ from .automated_prefix_shortcuts_cleanup import AutomatedPrefixShortcutsCleanupM
 
 logger = logging.getLogger(__name__)
 
-
-def debug_print(message):
-    """Log debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        logger.debug(message)
-
-
 class ShortcutOperationsMixin(AutomatedPrefixShortcutsCleanupMixin):
     """Mixin providing shortcut operation methods for AutomatedPrefixService."""
 
@@ -148,10 +139,10 @@ class ShortcutOperationsMixin(AutomatedPrefixShortcutsCleanupMixin):
             True if successful, False otherwise
         """
         try:
-            debug_print(f"[DEBUG] create_shortcut_directly called for '{shortcut_name}' - this is the fallback method")
+            logger.debug(f"[DEBUG] create_shortcut_directly called for '{shortcut_name}' - this is the fallback method")
             shortcuts_path = self._get_shortcuts_path()
             if not shortcuts_path:
-                debug_print("[DEBUG] No shortcuts path found")
+                logger.debug("[DEBUG] No shortcuts path found")
                 return False
             
             # Read current shortcuts
@@ -205,191 +196,6 @@ class ShortcutOperationsMixin(AutomatedPrefixShortcutsCleanupMixin):
             
         except Exception as e:
             logger.error(f"Error creating shortcut directly: {e}")
-            return False
-
-    def create_shortcut_directly_with_proton(self, shortcut_name: str, exe_path: str, modlist_install_dir: str) -> bool:
-        """
-        Create a Steam shortcut with temporary batch file for invisible prefix creation.
-        This uses the CRC32-based AppID calculation for predictable results.
-        
-        Args:
-            shortcut_name: Name for the shortcut
-            exe_path: Path to the final ModOrganizer.exe executable
-            modlist_install_dir: Directory where the modlist is installed
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            debug_print(f"[DEBUG] create_shortcut_directly_with_proton called for '{shortcut_name}' - using temporary batch file approach")
-            shortcuts_path = self._get_shortcuts_path()
-            if not shortcuts_path:
-                debug_print("[DEBUG] No shortcuts path found")
-                return False
-            
-            # Calculate predictable AppID using CRC32 (based on FINAL exe_path)
-            from zlib import crc32
-            combined_string = exe_path + shortcut_name
-            crc = crc32(combined_string.encode('utf-8'))
-            appid = -(crc & 0x7FFFFFFF)  # Make it negative and within 32-bit range (like other shortcuts)
-            
-            debug_print(f"[DEBUG] Calculated AppID: {appid} from '{combined_string}'")
-            
-            # Create temporary batch file for invisible prefix creation
-            batch_content = """@echo off
-echo Creating Proton prefix...
-timeout /t 3 /nobreak >nul
-echo Prefix creation complete.
-"""
-            from jackify.shared.paths import get_jackify_data_dir
-            batch_path = get_jackify_data_dir() / "temp_prefix_creation.bat"
-            batch_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(batch_path, 'w') as f:
-                f.write(batch_content)
-            
-            debug_print(f"[DEBUG] Created temporary batch file: {batch_path}")
-            
-            # Read current shortcuts
-            with open(shortcuts_path, 'rb') as f:
-                shortcuts_data = vdf.binary_load(f)
-            
-            shortcuts = shortcuts_data.get('shortcuts', {})
-            
-            # Check if shortcut already exists (idempotent)
-            found = False
-            new_shortcuts_list = []
-            shortcuts_list = list(shortcuts.values())
-            
-            for shortcut in shortcuts_list:
-                if shortcut.get('AppName') == shortcut_name:
-                    debug_print(f"[DEBUG] Updating existing shortcut for '{shortcut_name}'")
-                    # Update existing shortcut with temporary batch file
-                    shortcut.update({
-                        'Exe': f'"{batch_path}"',  # Point to temporary batch file
-                        'StartDir': f'"{batch_path.parent}"',  # Batch file directory
-                        'appid': appid,
-                        'LaunchOptions': '',  # Empty like working shortcuts
-                        'tags': {},  # Empty tags like working shortcuts
-                        'CompatTool': 'proton_experimental'  # Set Proton version directly in shortcut
-                    })
-                    new_shortcuts_list.append(shortcut)
-                    found = True
-                else:
-                    new_shortcuts_list.append(shortcut)
-            
-            if not found:
-                debug_print(f"[DEBUG] Creating new shortcut for '{shortcut_name}'")
-                # Create new shortcut entry pointing to temporary batch file
-                new_shortcut = {
-                    'AppName': shortcut_name,
-                    'Exe': f'"{batch_path}"',  # Point to temporary batch file
-                    'StartDir': f'"{batch_path.parent}"',  # Batch file directory
-                    'appid': appid,
-                    'icon': '',
-                    'ShortcutPath': '',
-                    'LaunchOptions': '',  # Empty like working shortcuts
-                    'IsHidden': 0,
-                    'AllowDesktopConfig': 1,
-                    'AllowOverlay': 1,
-                    'OpenVR': 0,
-                    'Devkit': 0,
-                    'DevkitGameID': '',
-                    'LastPlayTime': 0,
-                    'FlatpakAppID': '',
-                    'tags': {},  # Empty tags like working shortcuts
-                    'sortas': '',
-                    'CompatTool': 'proton_experimental'  # Set Proton version directly in shortcut
-                }
-                new_shortcuts_list.append(new_shortcut)
-            
-            # Rebuild shortcuts dict with new order
-            shortcuts_data['shortcuts'] = {str(i): s for i, s in enumerate(new_shortcuts_list)}
-            
-            # Write back to file
-            with open(shortcuts_path, 'wb') as f:
-                vdf.binary_dump(shortcuts_data, f)
-            
-            logger.info(f"Created/updated shortcut with temporary batch file: {shortcut_name} with AppID {appid}")
-            debug_print(f"[DEBUG] Shortcut created/updated with temporary batch file, AppID {appid}")
-            
-            # Set Proton version in config.vdf BEFORE creating shortcut
-            if self.set_proton_version_for_shortcut(appid, 'proton_experimental'):
-                logger.info(f"Set Proton Experimental for shortcut {shortcut_name}")
-                return True
-            else:
-                logger.warning(f"Failed to set Proton version for shortcut {shortcut_name}")
-                return False
-            
-        except Exception as e:
-            logger.error(f"Error creating shortcut with temporary batch file: {e}")
-            return False
-
-    def replace_shortcut_with_final_exe(self, shortcut_name: str, final_exe_path: str, modlist_install_dir: str) -> bool:
-        """
-        Replace the temporary batch file shortcut with the final ModOrganizer.exe.
-        This should be called after the prefix has been created.
-        
-        Args:
-            shortcut_name: Name of the shortcut to update
-            final_exe_path: Path to the final ModOrganizer.exe executable
-            modlist_install_dir: Directory where the modlist is installed
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            debug_print(f"[DEBUG] replace_shortcut_with_final_exe called for '{shortcut_name}'")
-            shortcuts_path = self._get_shortcuts_path()
-            if not shortcuts_path:
-                debug_print("[DEBUG] No shortcuts path found")
-                return False
-            
-            # Read current shortcuts
-            with open(shortcuts_path, 'rb') as f:
-                shortcuts_data = vdf.binary_load(f)
-            
-            shortcuts = shortcuts_data.get('shortcuts', {})
-            
-            # Find and update the shortcut
-            found = False
-            new_shortcuts_list = []
-            shortcuts_list = list(shortcuts.values())
-            
-            for shortcut in shortcuts_list:
-                if shortcut.get('AppName') == shortcut_name:
-                    debug_print(f"[DEBUG] Replacing temporary batch file with final exe for '{shortcut_name}'")
-                    # Update shortcut to point to final ModOrganizer.exe
-                    shortcut.update({
-                        'Exe': f'"{final_exe_path}"',  # Point to final ModOrganizer.exe
-                        'StartDir': modlist_install_dir,  # ModOrganizer directory
-                        'LaunchOptions': '',  # Empty like working shortcuts
-                        'tags': {},  # Empty tags like working shortcuts
-                        # Keep existing appid and CompatibilityTool
-                    })
-                    new_shortcuts_list.append(shortcut)
-                    found = True
-                else:
-                    new_shortcuts_list.append(shortcut)
-            
-            if not found:
-                logger.error(f"Shortcut '{shortcut_name}' not found for replacement")
-                return False
-            
-            # Rebuild shortcuts dict with new order
-            shortcuts_data['shortcuts'] = {str(i): s for i, s in enumerate(new_shortcuts_list)}
-            
-            # Write back to file
-            with open(shortcuts_path, 'wb') as f:
-                vdf.binary_dump(shortcuts_data, f)
-            
-            logger.info(f"Replaced shortcut with final exe: {shortcut_name}")
-            debug_print(f"[DEBUG] Shortcut replaced with final ModOrganizer.exe")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error replacing shortcut with final exe: {e}")
             return False
 
     def modify_shortcut_to_final_exe(self, shortcut_name: str, final_exe_path: str, 

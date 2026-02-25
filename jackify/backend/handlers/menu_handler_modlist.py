@@ -82,22 +82,6 @@ class ModlistMenuHandler:
                 print("\nInvalid selection. Please try again.")
                 input("\nPress Enter to continue...")
 
-    def _display_manual_proton_steps(self, modlist_name):
-        """Displays the detailed manual steps required for Proton setup."""
-        # Keep these as print for clear user instructions
-        print(f"\n{COLOR_PROMPT}--- Manual Proton Setup Required ---{COLOR_RESET}") 
-        print("Please complete the following steps in Steam:")
-        print(f"  1. Locate the '{COLOR_INFO}{modlist_name}{COLOR_RESET}' entry in your Steam Library")
-        print("  2. Right-click and select 'Properties'")
-        print("  3. Switch to the 'Compatibility' tab")
-        print("  4. Check the box labeled 'Force the use of a specific Steam Play compatibility tool'")
-        print("  5. Select 'Proton - Experimental' from the dropdown menu")
-        print("  6. Close the Properties window")
-        print(f"  7. Launch '{COLOR_INFO}{modlist_name}{COLOR_RESET}' from your Steam Library")
-        print("  8. If Mod Organizer opens or produces any error message, that's normal")
-        print("  9. No matter what,CLOSE Mod Organizer completely and return here")
-        print(f"{COLOR_PROMPT}------------------------------------{COLOR_RESET}")
-
     def _get_mo2_path(self) -> Optional[str]:
         """
         Get the path to ModOrganizer.exe from user input.
@@ -269,6 +253,16 @@ class ModlistMenuHandler:
                 
                 # Use automated prefix service for modern workflow
                 print(f"\n{COLOR_INFO}Using automated Steam setup workflow...{COLOR_RESET}")
+
+                # CLI safety warning: this workflow will restart Steam as part of shortcut/prefix setup.
+                print("\n" + "-" * 28)
+                print(
+                    f"{COLOR_PROMPT}Configure New Modlist will restart Steam and close any running game.{COLOR_RESET}"
+                )
+                continue_choice = input(f"{COLOR_PROMPT}Continue with Configure New now? (Y/n): {COLOR_RESET}").strip().lower()
+                if continue_choice == 'n':
+                    print(f"{COLOR_INFO}Configuration cancelled before Steam restart.{COLOR_RESET}")
+                    return True
                 
                 from ..services.automated_prefix_service import AutomatedPrefixService
                 prefix_service = AutomatedPrefixService()
@@ -441,7 +435,15 @@ class ModlistMenuHandler:
         Shared configuration phase for both new and existing modlists.
         Expects context dict with keys: name, appid, path (at minimum).
         """
+        import os
         self.logger.debug(f"[DEBUG] Entering run_modlist_configuration_phase with context: {context}")
+        # Write nxmhandler.ini to suppress MO2's NXM Handling popup on first launch.
+        # This must happen before MO2 runs for the first time, so do it here rather than
+        # relying on callers to remember.
+        _mo2_exe = context.get('mo2_exe_path') or os.path.join(context.get('path', ''), 'ModOrganizer.exe')
+        _mo2_dir = os.path.dirname(_mo2_exe)
+        if _mo2_dir and os.path.isdir(_mo2_dir):
+            self.shortcut_handler.write_nxmhandler_ini(_mo2_dir, _mo2_exe)
         # Robust AppID lookup for GUI/CLI: if appid missing but mo2_exe_path present, look it up
         if 'appid' not in context or not context.get('appid'):
             if 'mo2_exe_path' in context and context['mo2_exe_path']:
@@ -454,7 +456,6 @@ class ModlistMenuHandler:
         self.logger.debug(f"[DEBUG] set_modlist returned: {set_modlist_result}")
 
         # Check GUI mode early to avoid input() calls in GUI context
-        import os
         gui_mode = os.environ.get('JACKIFY_GUI_MODE') == '1'
 
         if not set_modlist_result:
@@ -501,10 +502,22 @@ class ModlistMenuHandler:
         self.logger.info(f"Starting configuration steps for {context.get('name')}")
         print()  # Add padding before status line
         status_line = ""
-        import os
         gui_mode = os.environ.get('JACKIFY_GUI_MODE') == '1'
         def update_status(msg):
             nonlocal status_line
+            filtered_prefixes = (
+                "Using bundled tools directory (after system PATH):",
+                "Bundled tools available:",
+            )
+            msg_lc = msg.lower().strip()
+            if msg.startswith(filtered_prefixes):
+                return
+            # Suppress per-tool dependency detail lines like:
+            # "  wget: /usr/bin/wget (system)" / "  7z: ... (bundled)".
+            if msg.startswith("  ") and (
+                "(system)" in msg_lc or "(bundled)" in msg_lc or "not found" in msg_lc
+            ):
+                return
             if status_line:
                 print("\r" + " " * len(status_line), end="\r")
             if gui_mode:
@@ -526,28 +539,29 @@ class ModlistMenuHandler:
         if status_line:
             print()
         
-        # Configure ENB for Linux compatibility (non-blocking, same as GUI)
+        # Configure ENB for Linux compatibility (non-blocking).
+        # In GUI mode, modlist_service.py handles ENB after this function returns,
+        # so skip here to avoid running it twice.
         enb_detected = False
-        try:
-            from ..handlers.enb_handler import ENBHandler
-            from pathlib import Path
-            
-            enb_handler = ENBHandler()
-            install_dir = Path(context.get('path', ''))
-            
-            if install_dir.exists():
-                enb_success, enb_message, enb_detected = enb_handler.configure_enb_for_linux(install_dir)
-                
-                if enb_message:
-                    if enb_success:
-                        self.logger.info(enb_message)
-                        update_status(enb_message)
-                    else:
-                        self.logger.warning(enb_message)
-                        # Non-blocking: continue workflow even if ENB config fails
-        except Exception as e:
-            self.logger.warning(f"ENB configuration skipped due to error: {e}")
-            # Continue workflow - ENB config is optional
+        if not gui_mode:
+            try:
+                from ..handlers.enb_handler import ENBHandler
+                from pathlib import Path
+
+                enb_handler = ENBHandler()
+                install_dir = Path(context.get('path', ''))
+
+                if install_dir.exists():
+                    enb_success, enb_message, enb_detected = enb_handler.configure_enb_for_linux(install_dir)
+
+                    if enb_message:
+                        if enb_success:
+                            self.logger.info(enb_message)
+                            update_status(enb_message)
+                        else:
+                            self.logger.warning(enb_message)
+            except Exception as e:
+                self.logger.warning(f"ENB configuration skipped due to error: {e}")
 
         # Run modlist-specific post-install automation (e.g., VNV) before showing completion
         # Only in CLI mode - GUI handles this in install_modlist.py
@@ -560,23 +574,59 @@ class ModlistMenuHandler:
             modlist_path = Path(context.get('path', ''))
 
             try:
-                print("")
-                print("Running VNV post-install automation...")
+                def _confirm_vnv(description: str) -> bool:
+                    print(f"\n{description}\n")
+                    try:
+                        user_input = input(f"{COLOR_PROMPT}Run VNV post-install automation now? (Y/n): {COLOR_RESET}").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        return False
+                    return user_input in ("", "y", "yes")
+
+                def _manual_vnv_file(title: str, instructions: str):
+                    print(f"\n{COLOR_WARNING}{title}{COLOR_RESET}")
+                    print(instructions)
+                    try:
+                        file_input = input(f"{COLOR_PROMPT}Path to downloaded file: {COLOR_RESET}").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        return None
+                    if not file_input:
+                        return None
+                    selected = Path(file_input).expanduser().resolve()
+                    return selected if selected.exists() else None
+
                 automation_ran, error = run_vnv_automation_if_applicable(
                     modlist_name=modlist_name,
                     modlist_install_location=modlist_path,
                     game_root=None,  # Will be auto-detected
                     ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
                     progress_callback=lambda msg: print(msg),
-                    manual_file_callback=None,  # CLI doesn't support manual file callback yet
-                    confirmation_callback=None  # Will use default confirmation in CLI
+                    manual_file_callback=_manual_vnv_file,
+                    confirmation_callback=_confirm_vnv
                 )
+                if automation_ran and not error:
+                    print(f"{COLOR_INFO}VNV post-install automation completed.{COLOR_RESET}")
                 if error:
                     print(f"{COLOR_WARNING}VNV automation encountered an error: {error}{COLOR_RESET}")
                     print(f"{COLOR_INFO}You can complete these steps manually by following: https://vivanewvegas.moddinglinked.com/wabbajack.html{COLOR_RESET}")
             except Exception as e:
                 self.logger.debug(f"VNV automation check skipped: {e}")
                 # Not an error - just means VNV automation wasn't applicable
+
+        if not gui_mode:
+            try:
+                from jackify.backend.handlers.modlist_install_cli_ttw import prompt_ttw_if_eligible
+
+                prompt_ttw_if_eligible(
+                    context.get('path', ''),
+                    context.get('name', '') or '',
+                )
+            except Exception as ttw_err:
+                self.logger.error("TTW post-config prompt failed: %s", ttw_err, exc_info=True)
+                print(f"{COLOR_WARNING}TTW integration prompt failed. Check logs for details.{COLOR_RESET}")
+
+        is_existing_flow = context.get("modlist_source") == "existing"
+        completion_title = "Modlist Configuration complete!" if is_existing_flow else "Modlist Install and Configuration complete!"
+        completion_log_file = "Configure_Existing_Modlist_workflow.log" if is_existing_flow else "Configure_New_Modlist_workflow.log"
 
         print("")
         print("")
@@ -585,7 +635,7 @@ class ModlistMenuHandler:
         print("= Configuration phase complete =")
         print("=" * 35)
         print("")
-        print("Modlist Install and Configuration complete!")
+        print(completion_title)
         print(f"• You should now be able to Launch '{context.get('name')}' through Steam")
         print("• Congratulations and enjoy the game!")
         print("")
@@ -608,7 +658,7 @@ class ModlistMenuHandler:
             # No ENB detected - no warning needed
             pass
         from jackify.shared.paths import get_jackify_logs_dir
-        print(f"Detailed log available at: {get_jackify_logs_dir()}/Configure_New_Modlist_workflow.log")
+        print(f"Detailed log available at: {get_jackify_logs_dir()}/{completion_log_file}")
         # Only wait for input in CLI mode, not GUI mode
         if not gui_mode:
             input(f"{COLOR_PROMPT}Press Enter to return to the menu...{COLOR_RESET}")

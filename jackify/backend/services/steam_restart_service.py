@@ -200,6 +200,52 @@ def is_flatpak_steam() -> bool:
     return False
 
 
+def ensure_flatpak_steam_filesystem_access(path: "Path") -> bool:
+    """Grant Flatpak Steam filesystem access to the parent of the given path.
+
+    Safe to call on non-Flatpak systems — returns True immediately.
+    Skips if the path is already covered by an existing override.
+    Returns True if access was already present or successfully granted, False on error.
+    """
+    from pathlib import Path as _Path
+    if not is_flatpak_steam():
+        return True
+    flatpak_cmd = _get_flatpak_command()
+    if not flatpak_cmd:
+        logger.warning("Flatpak Steam detected but flatpak command not found — cannot grant filesystem access")
+        return False
+    grant_path = str(_Path(path).parent)
+    env = _get_clean_subprocess_env()
+    try:
+        # Check existing overrides to avoid redundant changes
+        result = subprocess.run(
+            [flatpak_cmd, "override", "--user", "--show", "com.valvesoftware.Steam"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=10, env=env,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if "filesystems" in line.lower() and grant_path in line:
+                    logger.debug(f"Flatpak Steam already has access to {grant_path}")
+                    return True
+    except Exception as e:
+        logger.debug(f"Could not check existing Flatpak overrides: {e}")
+    try:
+        result = subprocess.run(
+            [flatpak_cmd, "override", "--user", f"--filesystem={grant_path}", "com.valvesoftware.Steam"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            text=True, timeout=15, env=env,
+        )
+        if result.returncode == 0:
+            logger.info(f"Granted Flatpak Steam filesystem access to {grant_path}")
+            return True
+        logger.warning(f"flatpak override failed (exit {result.returncode}): {result.stderr.strip()}")
+        return False
+    except Exception as e:
+        logger.warning(f"Failed to grant Flatpak Steam filesystem access: {e}")
+        return False
+
+
 def _get_steam_executable(env=None):
     """Resolve steam executable path for native Steam. Prefer PATH, then common locations."""
     env = env or os.environ

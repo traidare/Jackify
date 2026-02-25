@@ -25,11 +25,13 @@ logger = logging.getLogger(__name__)
 class AdditionalTasksScreen(QWidget):
     """Simple Additional Tasks screen for TTW only"""
 
-    def __init__(self, stacked_widget=None, main_menu_index=0, system_info: Optional[SystemInfo] = None):
+    def __init__(self, stacked_widget=None, main_menu_index=0, system_info: Optional[SystemInfo] = None,
+                 install_mo2_screen_index: int = 9):
         super().__init__()
         self.stacked_widget = stacked_widget
         self.main_menu_index = main_menu_index
         self.system_info = system_info or SystemInfo(is_steamdeck=False)
+        self.install_mo2_screen_index = install_mo2_screen_index
         
         self._setup_ui()
 
@@ -93,6 +95,7 @@ class AdditionalTasksScreen(QWidget):
         MENU_ITEMS = [
             ("Install TTW", "ttw_install", "Install Tale of Two Wastelands using TTW_Linux_Installer"),
             ("Install Wabbajack", "wabbajack_install", "Install Wabbajack.exe via Proton (automated setup)"),
+            ("Setup Mod Organizer 2", "setup_mo2", "Download and configure a standalone MO2 instance"),
             ("Return to Main Menu", "return_main_menu", "Go back to the main menu"),
         ]
         
@@ -148,6 +151,8 @@ class AdditionalTasksScreen(QWidget):
             self._show_ttw_info()
         elif action_id == "wabbajack_install":
             self._show_wabbajack_installer()
+        elif action_id == "setup_mo2":
+            self._show_mo2_setup()
         elif action_id == "coming_soon":
             self._show_coming_soon_info()
         elif action_id == "return_main_menu":
@@ -164,6 +169,11 @@ class AdditionalTasksScreen(QWidget):
         if self.stacked_widget:
             # Navigate to Wabbajack installer screen (index 7)
             self.stacked_widget.setCurrentIndex(7)
+
+    def _show_mo2_setup(self):
+        """Navigate to standalone MO2 setup screen"""
+        if self.stacked_widget:
+            self.stacked_widget.setCurrentIndex(self.install_mo2_screen_index)
 
     def _show_coming_soon_info(self):
         """Show coming soon info"""

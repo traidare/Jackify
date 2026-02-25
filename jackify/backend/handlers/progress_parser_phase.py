@@ -20,8 +20,13 @@ class ProgressParserPhaseMixin:
             phase = self._map_section_to_phase(section_name)
             return (phase, section_match.group(1).strip())
 
+        # [FILE_PROGRESS] lines drive file activity only — skip phase extraction for them
+        if '[FILE_PROGRESS]' in line:
+            return None
+
+        # Make the [timestamp] prefix optional — engine no longer emits it.
         action_match = re.search(
-            r'\[.*?\]\s*(Installing|Downloading|Extracting|Validating|Processing|Checking existing)',
+            r'(?:\[.*?\]\s*)?(Installing|Downloading|Extracting|Validating|Processing|Checking existing)',
             line,
             re.IGNORECASE
         )
@@ -51,13 +56,18 @@ class ProgressParserPhaseMixin:
             return InstallationPhase.DOWNLOAD
         elif 'extract' in section_lower:
             return InstallationPhase.EXTRACT
-        elif 'validate' in section_lower or 'verif' in section_lower:
+        elif 'hash' in section_lower or 'validate' in section_lower or 'verif' in section_lower:
             return InstallationPhase.VALIDATE
         elif 'install' in section_lower:
             return InstallationPhase.INSTALL
+        elif 'bsa' in section_lower or 'building' in section_lower:
+            return InstallationPhase.INSTALL
         elif 'finaliz' in section_lower or 'complet' in section_lower:
             return InstallationPhase.FINALIZE
-        elif 'configur' in section_lower or 'initializ' in section_lower:
+        elif ('configur' in section_lower or 'initializ' in section_lower
+              or 'looking' in section_lower or 'cleaning' in section_lower
+              or 'unmodified' in section_lower or 'updating' in section_lower
+              or 'folder' in section_lower or 'delete' in section_lower):
             return InstallationPhase.INITIALIZATION
         else:
             return InstallationPhase.UNKNOWN

@@ -33,15 +33,13 @@ class TTWIntegrationMixin:
 
             # Check 3: TTW must not already be installed
             if self._detect_existing_ttw(install_dir):
-                from .install_modlist import debug_print
-                debug_print("DEBUG: TTW already installed, skipping prompt")
+                logger.debug("DEBUG: TTW already installed, skipping prompt")
                 return False
 
             return True
 
         except Exception as e:
-            from .install_modlist import debug_print
-            debug_print(f"DEBUG: Error checking TTW eligibility: {e}")
+            logger.debug(f"DEBUG: Error checking TTW eligibility: {e}")
             return False
 
     def _detect_existing_ttw(self, install_dir: str) -> bool:
@@ -75,18 +73,15 @@ class TTWIntegrationMixin:
                     # Verify it has actual TTW content by checking for the main ESM
                     ttw_esm = folder / "TaleOfTwoWastelands.esm"
                     if ttw_esm.exists():
-                        from .install_modlist import debug_print
-                        debug_print(f"DEBUG: Found existing TTW installation: {folder.name}")
+                        logger.debug(f"DEBUG: Found existing TTW installation: {folder.name}")
                         return True
                     else:
-                        from .install_modlist import debug_print
-                        debug_print(f"DEBUG: Found TTW folder but no ESM, skipping: {folder.name}")
+                        logger.debug(f"DEBUG: Found TTW folder but no ESM, skipping: {folder.name}")
 
             return False
 
         except Exception as e:
-            from .install_modlist import debug_print
-            debug_print(f"DEBUG: Error detecting existing TTW: {e}")
+            logger.debug(f"DEBUG: Error detecting existing TTW: {e}")
             return False  # Assume not installed on error
 
     def _initiate_ttw_workflow(self, modlist_name: str, install_dir: str):
@@ -103,9 +98,16 @@ class TTWIntegrationMixin:
 
             # Get reference to TTW screen BEFORE navigation
             if self.stacked_widget:
+                # Remember which screen to return to after TTW completes
+                self._ttw_return_screen_index = self.stacked_widget.currentIndex()
+
+                # Navigate first — triggers lazy init and reset_screen_to_defaults.
+                # set_modlist_integration_mode must be called AFTER so it overwrites
+                # the default dir that reset_screen_to_defaults populates.
+                self.stacked_widget.setCurrentIndex(5)
+
                 ttw_screen = self.stacked_widget.widget(5)
 
-                # Set integration mode BEFORE navigating to avoid showEvent race condition
                 if hasattr(ttw_screen, 'set_modlist_integration_mode'):
                     ttw_screen.set_modlist_integration_mode(modlist_name, install_dir)
 
@@ -113,11 +115,7 @@ class TTWIntegrationMixin:
                     if hasattr(ttw_screen, 'integration_complete'):
                         ttw_screen.integration_complete.connect(self._on_ttw_integration_complete)
                 else:
-                    from .install_modlist import debug_print
-                    debug_print("WARNING: TTW screen does not support modlist integration mode yet")
-
-                # Navigate to TTW screen AFTER setting integration mode
-                self.stacked_widget.setCurrentIndex(5)
+                    logger.debug("WARNING: TTW screen does not support modlist integration mode yet")
 
                 # Force collapsed state shortly after navigation to avoid any
                 # showEvent/layout timing races that may leave it expanded
@@ -127,8 +125,7 @@ class TTWIntegrationMixin:
                     pass
 
         except Exception as e:
-            from .install_modlist import debug_print
-            debug_print(f"ERROR: Failed to initiate TTW workflow: {e}")
+            logger.debug(f"ERROR: Failed to initiate TTW workflow: {e}")
             from jackify.frontends.gui.services.message_service import MessageService
             MessageService.critical(
                 self,
@@ -153,9 +150,9 @@ class TTWIntegrationMixin:
                 )
                 return
 
-            # Navigate back to this screen to show success dialog
+            # Navigate back to the screen that initiated TTW
             if self.stacked_widget:
-                self.stacked_widget.setCurrentIndex(4)
+                self.stacked_widget.setCurrentIndex(getattr(self, '_ttw_return_screen_index', 4))
 
             # Calculate elapsed time from workflow start
             import time
@@ -211,8 +208,7 @@ class TTWIntegrationMixin:
             success_dialog.show()
 
         except Exception as e:
-            from .install_modlist import debug_print
-            debug_print(f"ERROR: Failed to show final success dialog: {e}")
+            logger.debug(f"ERROR: Failed to show final success dialog: {e}")
             from jackify.frontends.gui.services.message_service import MessageService
             MessageService.critical(
                 self,

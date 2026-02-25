@@ -8,16 +8,9 @@ import os
 import json
 import shutil
 import re
+import logging
 
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class TTWIntegrationMixin:
     """Mixin providing modlist integration workflow for InstallTTWScreen."""
 
@@ -36,13 +29,17 @@ class TTWIntegrationMixin:
         self._integration_modlist_name = modlist_name
         self._integration_install_dir = install_dir
 
+        # Pre-populate output dir to install TTW directly into the modlist mods folder,
+        # avoiding the wasteful copy step during integration.
+        ttw_target = Path(install_dir) / "mods" / "[NoDelete] Tale of Two Wastelands"
+        self.install_dir_edit.setText(str(ttw_target))
+
         # Reset saved geometry so showEvent can properly collapse from current window size
         self._saved_geometry = None
         self._saved_min_size = None
 
-        # Update UI to show integration mode
-        debug_print(f"TTW screen set to integration mode for modlist: {modlist_name}")
-        debug_print(f"Installation directory: {install_dir}")
+        logger.debug(f"TTW screen set to integration mode for modlist: {modlist_name}")
+        logger.debug(f"TTW output pre-populated to: {ttw_target}")
 
     def _perform_modlist_integration(self):
         """Integrate TTW into the modlist automatically
@@ -75,16 +72,31 @@ class TTWIntegrationMixin:
                 if version_match:
                     ttw_version = version_match.group(1)
 
+            # If TTW was installed directly into the modlist mods dir (integration mode
+            # pre-populate), rename to the versioned folder name and skip the copy step.
+            skip_copy = False
+            mods_dir = Path(self._integration_install_dir) / "mods"
+            if ttw_output_dir.parent == mods_dir:
+                versioned_name = f"[NoDelete] Tale of Two Wastelands {ttw_version}".strip() if ttw_version else "[NoDelete] Tale of Two Wastelands"
+                versioned_path = mods_dir / versioned_name
+                if ttw_output_dir != versioned_path and ttw_output_dir.exists():
+                    logger.debug(f"Renaming TTW output: {ttw_output_dir.name} -> {versioned_name}")
+                    ttw_output_dir.rename(versioned_path)
+                    ttw_output_dir = versioned_path
+                skip_copy = True
+                logger.debug("TTW already in mods dir — skipping copy step")
+
             # Create background thread for integration
             class IntegrationThread(QThread):
                 finished = Signal(bool, str)  # success, ttw_version
                 progress = Signal(str)  # progress message
 
-                def __init__(self, ttw_output_path, modlist_install_dir, ttw_version):
+                def __init__(self, ttw_output_path, modlist_install_dir, ttw_version, skip_copy):
                     super().__init__()
                     self.ttw_output_path = ttw_output_path
                     self.modlist_install_dir = modlist_install_dir
                     self.ttw_version = ttw_version
+                    self.skip_copy = skip_copy
 
                 def run(self):
                     try:
@@ -94,11 +106,12 @@ class TTWIntegrationMixin:
                         success = TTWInstallerHandler.integrate_ttw_into_modlist(
                             ttw_output_path=self.ttw_output_path,
                             modlist_install_dir=self.modlist_install_dir,
-                            ttw_version=self.ttw_version
+                            ttw_version=self.ttw_version,
+                            skip_copy=self.skip_copy,
                         )
                         self.finished.emit(success, self.ttw_version)
                     except Exception as e:
-                        debug_print(f"ERROR: Integration thread failed: {e}")
+                        logger.debug(f"ERROR: Integration thread failed: {e}")
                         import traceback
                         traceback.print_exc()
                         self.finished.emit(False, self.ttw_version)
@@ -142,7 +155,8 @@ class TTWIntegrationMixin:
             self.integration_thread = IntegrationThread(
                 ttw_output_dir,
                 Path(self._integration_install_dir),
-                ttw_version
+                ttw_version,
+                skip_copy,
             )
             self.integration_thread.progress.connect(self._safe_append_text)
             self.integration_thread.finished.connect(self._on_integration_thread_finished)
@@ -156,7 +170,7 @@ class TTWIntegrationMixin:
 
             error_msg = f"Integration error: {str(e)}"
             self._safe_append_text(f"\nError: {error_msg}")
-            debug_print(f"ERROR: {error_msg}")
+            logger.debug(f"ERROR: {error_msg}")
             import traceback
             traceback.print_exc()
             self.integration_complete.emit(False, "")
@@ -213,7 +227,7 @@ class TTWIntegrationMixin:
                 )
                 self.integration_complete.emit(False, ttw_version)
         except Exception as e:
-            debug_print(f"ERROR: Failed to handle integration completion: {e}")
+            logger.debug(f"ERROR: Failed to handle integration completion: {e}")
             self.integration_complete.emit(False, ttw_version)
 
     def _create_ttw_mod_archive(self, automated=False):

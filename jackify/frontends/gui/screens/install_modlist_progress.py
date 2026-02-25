@@ -3,19 +3,13 @@ from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import QMessageBox
 from PySide6.QtGui import QTextCursor
 from jackify.frontends.gui.services.message_service import MessageService
+from jackify.shared.errors import wabbajack_install_failed
 from jackify.shared.progress_models import InstallationPhase, OperationType, InstallationProgress, FileProgress
 from jackify.backend.utils.nexus_premium_detector import is_non_premium_indicator
 import time
+import logging
 
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class ProgressHandlersMixin:
     """Mixin providing progress tracking and installation event handlers for InstallModlistScreen."""
 
@@ -44,7 +38,9 @@ class ProgressHandlersMixin:
         )
 
         if engine_line:
+            logger.warning(f"Nexus Premium required, engine message: {engine_line}")
             self._safe_append_text(f"[Jackify] Engine message: {engine_line}")
+        logger.warning("Nexus Premium required for this modlist install")
         self._safe_append_text("[Jackify] Jackify detected that Nexus Premium is required for this modlist install.")
 
         MessageService.critical(
@@ -87,11 +83,17 @@ class ProgressHandlersMixin:
             if is_stalled and has_active_downloads:
                 if self._stalled_download_start_time is None:
                     self._stalled_download_start_time = time.time()
+                    self._stalled_data_snapshot = progress_state.data_processed
+                elif progress_state.data_processed > self._stalled_data_snapshot:
+                    # Bytes are advancing despite 0 speed readout — engine reporting lag, not a real stall
+                    self._stalled_download_start_time = time.time()
+                    self._stalled_data_snapshot = progress_state.data_processed
                 else:
                     stalled_duration = time.time() - self._stalled_download_start_time
                     # Warn after 2 minutes of stalled downloads
                     if stalled_duration > 120 and not self._stalled_download_notified:
                         self._stalled_download_notified = True
+                        logger.warning("Downloads stalled (0.0MB/s for 2+ minutes)")
                         MessageService.warning(
                             self,
                             "Download Stalled",
@@ -119,6 +121,7 @@ class ProgressHandlersMixin:
                 # Downloads are active - reset stall timer
                 self._stalled_download_start_time = None
                 self._stalled_download_notified = False
+                self._stalled_data_snapshot = 0
 
         # Update progress indicator widget
         self.progress_indicator.update_progress(progress_state)
@@ -259,9 +262,9 @@ class ProgressHandlersMixin:
             return
         elif progress_state.active_files:
             if self.debug:
-                debug_print(f"DEBUG: Updating file progress list with {len(progress_state.active_files)} files")
+                logger.debug(f"DEBUG: Updating file progress list with {len(progress_state.active_files)} files")
                 for fp in progress_state.active_files:
-                    debug_print(f"DEBUG:   - {fp.filename}: {fp.percent:.1f}% ({fp.operation.value})")
+                    logger.debug(f"DEBUG:   - {fp.filename}: {fp.percent:.1f}% ({fp.operation.value})")
             # Pass phase label to update header (e.g., "[Activity - Downloading]")
             # Explicitly clear summary_info when showing file list
             try:
@@ -270,13 +273,13 @@ class ProgressHandlersMixin:
                 # Widget was deleted - ignore to prevent coredump
                 if "already deleted" in str(e):
                     if self.debug:
-                        debug_print(f"DEBUG: Ignoring widget deletion error: {e}")
+                        logger.debug(f"DEBUG: Ignoring widget deletion error: {e}")
                     return
                 raise
             except Exception as e:
                 # Catch any other exceptions to prevent coredump
                 if self.debug:
-                    debug_print(f"DEBUG: Error updating file progress list: {e}")
+                    logger.debug(f"DEBUG: Error updating file progress list: {e}")
                 import logging
                 logging.getLogger(__name__).error(f"Error updating file progress list: {e}", exc_info=True)
         else:
@@ -295,7 +298,7 @@ class ProgressHandlersMixin:
 
     def on_installation_finished(self, success, message):
         """Handle installation completion"""
-        debug_print(f"DEBUG: on_installation_finished called with success={success}, message={message}")
+        logger.debug(f"DEBUG: on_installation_finished called with success={success}, message={message}")
         # R&D: Clear all progress displays when installation completes
         self.progress_state_manager.reset()
         # Clear file list but keep CPU tracking running for configuration phase
@@ -313,7 +316,21 @@ class ProgressHandlersMixin:
                 overall_percent=100.0
             )
             self.progress_indicator.update_progress(final_state)
-            
+
+            try:
+                from jackify.backend.utils.modlist_meta import write_modlist_meta
+                thread = getattr(self, 'install_thread', None)
+                if thread and getattr(thread, 'install_dir', None) and getattr(thread, 'modlist_name', None):
+                    write_modlist_meta(
+                        thread.install_dir,
+                        thread.modlist_name,
+                        getattr(self, '_current_game_type', None),
+                        install_mode=getattr(thread, 'install_mode', 'online'),
+                    )
+            except Exception as _meta_err:
+                logger.debug(f"Modlist meta write skipped: {_meta_err}")
+
+            logger.info(f"Installation succeeded: {message}")
             if self.show_details_checkbox.isChecked():
                 self._safe_append_text(f"\nSuccess: {message}")
             self.process_finished(0, QProcess.NormalExit)  # Simulate successful completion
@@ -323,18 +340,25 @@ class ProgressHandlersMixin:
 
             if self._premium_failure_active:
                 message = "Installation stopped because Nexus Premium is required for automated downloads."
-            
+
+            if not self._premium_failure_active:
+                engine_error = getattr(self.install_thread, 'last_error', None)
+                if engine_error:
+                    self._engine_error = engine_error
+                self._failure_message = message
+
+            logger.error(f"Installation failed: {message}")
             if self.show_details_checkbox.isChecked():
                 self._safe_append_text(f"\nError: {message}")
             self.process_finished(1, QProcess.CrashExit)  # Simulate error
 
     def process_finished(self, exit_code, exit_status):
-        debug_print(f"DEBUG: process_finished called with exit_code={exit_code}, exit_status={exit_status}")
+        logger.debug(f"DEBUG: process_finished called with exit_code={exit_code}, exit_status={exit_status}")
         # Reset button states
         self.start_btn.setEnabled(True)
         self.cancel_btn.setVisible(True)
         self.cancel_install_btn.setVisible(False)
-        debug_print("DEBUG: Button states reset in process_finished")
+        logger.debug("DEBUG: Button states reset in process_finished")
         
 
         if exit_code == 0:
@@ -350,6 +374,7 @@ class ProgressHandlersMixin:
                     f"Note: Post-install configuration was skipped for unsupported game type: {game_name or game_type}\n\n"
                     f"You will need to manually configure Steam shortcuts and other post-install steps."
                 )
+                logger.warning(f"Post-install configuration skipped for unsupported game: {game_name or game_type}")
                 self._safe_append_text(f"\nModlist installation completed successfully.")
                 self._safe_append_text(f"\nWarning: Post-install configuration skipped for unsupported game: {game_name or game_type}")
             else:
@@ -358,14 +383,15 @@ class ProgressHandlersMixin:
                 
                 if auto_restart_enabled:
                     # Auto-accept Steam restart - proceed without dialog
-                    self._safe_append_text("\nAuto-accepting Steam restart (unattended mode enabled)")
+                    logger.info("Auto-accepting Steam restart (unattended mode enabled)")
                     reply = QMessageBox.Yes  # Simulate user clicking Yes
                 else:
                     # Show the normal install complete dialog for supported games
                     reply = MessageService.question(
                         self, "Modlist Install Complete!",
                         "Modlist install complete!\n\nWould you like to add this modlist to Steam and configure it now? Steam will restart, closing any game you have open!",
-                        critical=False  # Non-critical, won't steal focus
+                        critical=False,  # Non-critical, won't steal focus
+                        safety_level="medium",
                     )
                 
                 if reply == QMessageBox.Yes:
@@ -395,6 +421,7 @@ class ProgressHandlersMixin:
                     "Automatic installs currently require Nexus Premium. Non-premium support is planned.",
                     safety_level="medium"
                 )
+                logger.warning("Install stopped: Nexus Premium required")
                 self._safe_append_text("\nInstall stopped: Nexus Premium required.")
                 self._premium_failure_active = False
             elif hasattr(self, '_cancellation_requested') and self._cancellation_requested:
@@ -407,7 +434,14 @@ class ProgressHandlersMixin:
                 if "cancelled by user" in last_output.lower():
                     MessageService.information(self, "Installation Cancelled", "The installation was cancelled by the user.", safety_level="low")
                 else:
-                    MessageService.critical(self, "Install Failed", "The modlist install failed. Please check the console output for details.")
+                    logger.error(f"Install failed (exit code {exit_code})")
+                    engine_error = getattr(self, '_engine_error', None)
+                    if engine_error:
+                        self._engine_error = None
+                        MessageService.show_error(self, engine_error)
+                    else:
+                        failure_msg = getattr(self, '_failure_message', None) or f"Exit code {exit_code}."
+                        self._failure_message = None
+                        MessageService.show_error(self, wabbajack_install_failed(failure_msg))
                     self._safe_append_text(f"\nInstall failed (exit code {exit_code}).")
         self.console.moveCursor(QTextCursor.End)
-

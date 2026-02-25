@@ -83,7 +83,7 @@ class WinetricksEnvMixin:
                     self.logger.warning(f"User-selected Proton no longer exists: {user_proton_path}")
 
             if not wine_binary:
-                if user_proton_path == 'auto':
+                if not user_proton_path or user_proton_path == 'auto':
                     self.logger.info("Auto-detecting Proton (user selected 'auto')")
                     best_proton = WineUtils.select_best_proton()
                     if best_proton:

@@ -32,7 +32,6 @@ from .resolution_handler import ResolutionHandler
 from .protontricks_handler import ProtontricksHandler
 from .path_handler import PathHandler
 from .vdf_handler import VDFHandler
-from .mo2_handler import MO2Handler
 from jackify.shared.ui_utils import print_section_header
 from .completers import path_completer
 
@@ -72,7 +71,6 @@ class MenuHandler:
             steamdeck=self.config_handler.settings.get('steamdeck', False),
             verbose=False
         )
-        self.mo2_handler = MO2Handler(self)
     
     def display_banner(self):
         """Display the application banner - DEPRECATED: Banner display should be handled by frontend"""

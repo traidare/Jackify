@@ -171,8 +171,7 @@ class ModlistInstallCLI(
         self.shortcut_handler = ShortcutHandler(steamdeck=self.steamdeck)
         self.context = {}
         # Use standard logging (no file handler)
-        self.logger = logging.getLogger(__name__)
-        self.logger.propagate = False # Prevent duplicate logs if root logger is also configured
+        self.logger = logging.getLogger('jackify-cli')
         
         # Initialize Wabbajack parser for game detection
         self.wabbajack_parser = WabbajackParser()
@@ -238,4 +237,3 @@ class ModlistInstallCLI(
 
         print(auth_display)
         print(f"{COLOR_INFO}----------------------------------------{COLOR_RESET}")
-

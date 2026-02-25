@@ -5,10 +5,17 @@ Signals are defined at class level (required for Qt signal/slot).
 
 import os
 import re
+import threading
+from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
+import logging
+
+from jackify.backend.utils.engine_error_parser import parse_engine_error_line, error_from_exit_code
+from jackify.shared.errors import JackifyError
 
 
+logger = logging.getLogger(__name__)
 class InstallerThread(QThread):
     """Runs jackify-engine install in a background thread. Signals at class level."""
 
@@ -35,28 +42,46 @@ class InstallerThread(QThread):
         self._premium_signal_sent = False
         self._engine_output_buffer = []
         self._buffer_size = 10
+        self.last_error: Optional[JackifyError] = None
+        self._raw_stderr_lines: list = []  # bounded ring buffer for non-JSON stderr
 
     def cancel(self):
         self.cancelled = True
         if self.process_manager:
             self.process_manager.cancel()
 
+    def _read_stderr(self):
+        try:
+            for raw in self.process_manager.proc.stderr:
+                line = raw.decode('utf-8', errors='replace').strip()
+                if not line:
+                    continue
+                logger.debug(f"Engine stderr: {line}")
+                error = parse_engine_error_line(line)
+                if error and self.last_error is None:
+                    self.last_error = error
+                else:
+                    self._raw_stderr_lines.append(line)
+                    if len(self._raw_stderr_lines) > 20:
+                        self._raw_stderr_lines.pop(0)
+        except Exception as e:
+            logger.debug(f"Stderr reader error: {e}")
+
     def run(self):
-        from .install_modlist import debug_print
         try:
             from jackify.backend.core.modlist_operations import get_jackify_engine_path
             engine_path = get_jackify_engine_path()
             if not os.path.exists(engine_path):
                 error_msg = f"Engine not found at: {engine_path}"
-                debug_print(f"DEBUG: {error_msg}")
+                logger.debug(f"DEBUG: {error_msg}")
                 self.installation_finished.emit(False, error_msg)
                 return
             if not os.access(engine_path, os.X_OK):
                 error_msg = f"Engine is not executable: {engine_path}"
-                debug_print(f"DEBUG: {error_msg}")
+                logger.debug(f"DEBUG: {error_msg}")
                 self.installation_finished.emit(False, error_msg)
                 return
-            debug_print(f"DEBUG: Using engine at: {engine_path}")
+            logger.debug(f"DEBUG: Using engine at: {engine_path}")
             if self.install_mode == 'file':
                 cmd = [engine_path, "install", "--show-file-progress", "-w", self.modlist, "-o", self.install_dir, "-d", self.downloads_dir]
             else:
@@ -66,9 +91,9 @@ class InstallerThread(QThread):
             debug_mode = config_handler.get('debug_mode', False)
             if debug_mode:
                 cmd.append('--debug')
-                debug_print("DEBUG: Added --debug flag to jackify-engine command")
-            debug_print(f"DEBUG: FULL Engine command: {' '.join(cmd)}")
-            debug_print(f"DEBUG: modlist value being passed: '{self.modlist}'")
+                logger.debug("DEBUG: Added --debug flag to jackify-engine command")
+            logger.debug(f"DEBUG: FULL Engine command: {' '.join(cmd)}")
+            logger.debug(f"DEBUG: modlist value being passed: '{self.modlist}'")
             from jackify.backend.handlers.subprocess_utils import get_clean_subprocess_env
             env_vars = {'NEXUS_API_KEY': self.api_key}
             if self.oauth_info:
@@ -77,7 +102,9 @@ class InstallerThread(QThread):
                 env_vars['NEXUS_OAUTH_CLIENT_ID'] = NexusOAuthService.CLIENT_ID
             env = get_clean_subprocess_env(env_vars)
             from jackify.backend.handlers.subprocess_utils import ProcessManager
-            self.process_manager = ProcessManager(cmd, env=env, text=False)
+            self.process_manager = ProcessManager(cmd, env=env, text=False, separate_stderr=True)
+            stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
+            stderr_thread.start()
             ansi_escape = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
             buffer = b''
             last_was_blank = False
@@ -100,8 +127,6 @@ class InstallerThread(QThread):
                         is_premium_error, matched_pattern = is_non_premium_indicator(decoded)
                         if not self._premium_signal_sent and is_premium_error:
                             self._premium_signal_sent = True
-                            import logging
-                            logger = logging.getLogger(__name__)
                             logger.warning("=" * 80)
                             logger.warning("PREMIUM DETECTION TRIGGERED - DIAGNOSTIC DUMP (Issue #111)")
                             logger.warning("=" * 80)
@@ -141,7 +166,7 @@ class InstallerThread(QThread):
                             if updated:
                                 progress_state = self.progress_state_manager.get_state()
                                 if progress_state.active_files and debug_mode:
-                                    debug_print(f"DEBUG: Parser detected {len(progress_state.active_files)} active files from line: {decoded[:80]}")
+                                    logger.debug(f"DEBUG: Parser detected {len(progress_state.active_files)} active files from line: {decoded[:80]}")
                                 self.progress_updated.emit(progress_state)
                         if '[FILE_PROGRESS]' in decoded:
                             parts = decoded.split('[FILE_PROGRESS]', 1)
@@ -157,8 +182,6 @@ class InstallerThread(QThread):
                         is_premium_error, matched_pattern = is_non_premium_indicator(decoded)
                         if not self._premium_signal_sent and is_premium_error:
                             self._premium_signal_sent = True
-                            import logging
-                            logger = logging.getLogger(__name__)
                             logger.warning("=" * 80)
                             logger.warning("PREMIUM DETECTION TRIGGERED - DIAGNOSTIC DUMP (Issue #111)")
                             logger.warning("=" * 80)
@@ -200,7 +223,7 @@ class InstallerThread(QThread):
                             if updated:
                                 progress_state = self.progress_state_manager.get_state()
                                 if progress_state.active_files and debug_mode:
-                                    debug_print(f"DEBUG: Parser detected {len(progress_state.active_files)} active files from line: {decoded[:80]}")
+                                    logger.debug(f"DEBUG: Parser detected {len(progress_state.active_files)} active files from line: {decoded[:80]}")
                                 self.progress_updated.emit(progress_state)
                         if '[FILE_PROGRESS]' in decoded:
                             parts = decoded.split('[FILE_PROGRESS]', 1)
@@ -224,6 +247,7 @@ class InstallerThread(QThread):
                         self.output_received.emit(parts[0].rstrip())
                 else:
                     self.output_received.emit(decoded)
+            stderr_thread.join(timeout=5)
             returncode = self.process_manager.wait()
             if self.process_manager.proc and self.process_manager.proc.stdout:
                 try:
@@ -231,7 +255,7 @@ class InstallerThread(QThread):
                     if remaining:
                         decoded_remaining = remaining.decode('utf-8', errors='replace')
                         if decoded_remaining.strip():
-                            debug_print(f"DEBUG: Remaining output after process exit: {decoded_remaining[:500]}")
+                            logger.debug(f"DEBUG: Remaining output after process exit: {decoded_remaining[:500]}")
                             if '[FILE_PROGRESS]' in decoded_remaining:
                                 parts = decoded_remaining.split('[FILE_PROGRESS]', 1)
                                 if parts[0].strip():
@@ -239,16 +263,28 @@ class InstallerThread(QThread):
                             else:
                                 self.output_received.emit(decoded_remaining)
                 except Exception as e:
-                    debug_print(f"DEBUG: Error reading remaining output: {e}")
+                    logger.debug(f"DEBUG: Error reading remaining output: {e}")
+            if returncode != 0 and not self.cancelled and self.last_error is None:
+                stderr_detail = "\n".join(self._raw_stderr_lines[-10:]) if self._raw_stderr_lines else ""
+                detail = f"Exit code {returncode}.\n\nEngine output:\n{stderr_detail}" if stderr_detail else f"Exit code {returncode}."
+                fallback = error_from_exit_code(
+                    returncode,
+                    detail,
+                    context={
+                        "exit_code": returncode,
+                        "stderr_tail_lines": len(self._raw_stderr_lines[-10:]),
+                    },
+                )
+                if fallback:
+                    self.last_error = fallback
+
             if self.cancelled:
                 self.installation_finished.emit(False, "Installation cancelled by user")
             elif returncode == 0:
                 self.installation_finished.emit(True, "Installation completed successfully")
             else:
                 error_msg = f"Installation failed (exit code {returncode})"
-                debug_print(f"DEBUG: Engine exited with code {returncode}")
-                if self.process_manager.proc:
-                    debug_print("DEBUG: Process stderr/stdout may contain error details")
+                logger.debug(f"DEBUG: Engine exited with code {returncode}")
                 self.installation_finished.emit(False, error_msg)
         except Exception as e:
             self.installation_finished.emit(False, f"Installation error: {str(e)}")

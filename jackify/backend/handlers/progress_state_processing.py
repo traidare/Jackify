@@ -94,9 +94,6 @@ class ProgressStateProcessingMixin:
             updated = True
 
         if parsed.file_progress:
-            if hasattr(parsed.file_progress, '_hidden') and parsed.file_progress._hidden:
-                return updated
-
             if hasattr(parsed.file_progress, '_texture_counter'):
                 tex_current, tex_total = parsed.file_progress._texture_counter
                 self.state.texture_conversion_current = tex_current
@@ -108,6 +105,9 @@ class ProgressStateProcessingMixin:
                 self.state.bsa_building_current = bsa_current
                 self.state.bsa_building_total = bsa_total
                 updated = True
+
+            if hasattr(parsed.file_progress, '_hidden') and parsed.file_progress._hidden:
+                return updated
 
             if parsed.file_progress.filename.lower().endswith('.wabbajack'):
                 self._wabbajack_entry_name = parsed.file_progress.filename

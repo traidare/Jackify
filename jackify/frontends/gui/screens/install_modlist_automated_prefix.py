@@ -9,182 +9,11 @@ import threading
 import subprocess
 import time
 import os
+import logging
 
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class AutomatedPrefixHandlersMixin:
     """Mixin providing automated prefix workflow event handlers for InstallModlistScreen."""
-
-    def restart_steam_and_configure(self):
-        """Restart Steam using backend service directly - DECOUPLED FROM CLI"""
-        debug_print("DEBUG: restart_steam_and_configure called - using direct backend service")
-        progress = QProgressDialog("Restarting Steam...", None, 0, 0, self)
-        progress.setWindowTitle("Restarting Steam")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        progress.show()
-        
-        def do_restart():
-            debug_print("DEBUG: do_restart thread started - using direct backend service")
-            try:
-                from jackify.backend.handlers.shortcut_handler import ShortcutHandler
-                
-                # Use backend service directly instead of CLI subprocess
-                # Get system_info from parent screen
-                system_info = getattr(self, 'system_info', None)
-                is_steamdeck = system_info.is_steamdeck if system_info else False
-                shortcut_handler = ShortcutHandler(steamdeck=is_steamdeck)
-                
-                debug_print("DEBUG: About to call secure_steam_restart()")
-                success = shortcut_handler.secure_steam_restart()
-                debug_print(f"DEBUG: secure_steam_restart() returned: {success}")
-                
-                out = "Steam restart completed successfully." if success else "Steam restart failed."
-                
-            except Exception as e:
-                debug_print(f"DEBUG: Exception in do_restart: {e}")
-                success = False
-                out = str(e)
-                
-            self.steam_restart_finished.emit(success, out)
-            
-        threading.Thread(target=do_restart, daemon=True).start()
-        self._steam_restart_progress = progress  # Store to close later
-
-    def _on_steam_restart_finished(self, success, out):
-        debug_print("DEBUG: _on_steam_restart_finished called")
-        # Safely cleanup progress dialog on main thread
-        if hasattr(self, '_steam_restart_progress') and self._steam_restart_progress:
-            try:
-                self._steam_restart_progress.close()
-                self._steam_restart_progress.deleteLater()  # Use deleteLater() for safer cleanup
-            except Exception as e:
-                debug_print(f"DEBUG: Error closing progress dialog: {e}")
-            finally:
-                self._steam_restart_progress = None
-        
-        # Controls are managed by the proper control management system
-        if success:
-            self._safe_append_text("Steam restarted successfully.")
-
-            # Force Steam GUI to start after restart
-            # Ensure Steam GUI is visible after restart
-            # start_steam() now uses -foreground, but we'll also try to bring GUI to front
-            debug_print("DEBUG: Ensuring Steam GUI is visible after restart")
-            try:
-                # Wait a moment for Steam processes to stabilize
-                time.sleep(3)
-                # Try multiple methods to ensure GUI opens
-                # Method 1: steam:// protocol (works if Steam is running)
-                try:
-                    subprocess.Popen(['xdg-open', 'steam://open/main'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    debug_print("DEBUG: Issued steam://open/main command")
-                    time.sleep(1)
-                except Exception as e:
-                    debug_print(f"DEBUG: steam://open/main failed: {e}")
-                
-                # Method 2: Direct steam -foreground command (redundant but ensures GUI)
-                try:
-                    subprocess.Popen(['steam', '-foreground'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    debug_print("DEBUG: Issued steam -foreground command")
-                except Exception as e2:
-                    debug_print(f"DEBUG: steam -foreground failed: {e2}")
-            except Exception as e:
-                debug_print(f"DEBUG: Error ensuring Steam GUI visibility: {e}")
-            
-            # CRITICAL: Bring Jackify window back to focus after Steam restart
-            # Let user continue with installation
-            debug_print("DEBUG: Bringing Jackify window back to focus")
-            try:
-                from PySide6.QtWidgets import QApplication
-                # Get the main window - use window() to get top-level widget, then find QMainWindow
-                top_level = self.window()
-                main_window = None
-                
-                # Try to find QMainWindow in the widget hierarchy
-                if isinstance(top_level, QMainWindow):
-                    main_window = top_level
-                else:
-                    # Walk up the parent chain
-                    current = self
-                    while current:
-                        if isinstance(current, QMainWindow):
-                            main_window = current
-                            break
-                        current = current.parent()
-                    
-                    # Last resort: use top-level widget
-                    if not main_window and top_level:
-                        main_window = top_level
-                
-                if main_window:
-                    # Restore window if minimized
-                    if hasattr(main_window, 'isMinimized') and main_window.isMinimized():
-                        main_window.showNormal()
-                    
-                    # Bring to front and activate - use multiple methods for reliability
-                    main_window.raise_()
-                    main_window.activateWindow()
-                    main_window.show()
-                    
-                    # Aggressive focus restoration with multiple attempts
-                    # Steam may steal focus, so we retry multiple times over several seconds
-                    def restore_focus():
-                        if main_window:
-                            try:
-                                main_window.raise_()
-                                main_window.activateWindow()
-                                app = QApplication.instance()
-                                if app and app.activeWindow() != main_window:
-                                    debug_print("DEBUG: Window not active, retrying focus restoration")
-                            except Exception:
-                                pass
-                    
-                    # Immediate attempts
-                    QTimer.singleShot(50, restore_focus)
-                    QTimer.singleShot(200, restore_focus)
-                    QTimer.singleShot(500, restore_focus)
-                    # Delayed attempts in case Steam steals focus after initial restoration
-                    QTimer.singleShot(1000, restore_focus)
-                    QTimer.singleShot(2000, restore_focus)
-                    QTimer.singleShot(3000, restore_focus)
-                    
-                    debug_print(f"DEBUG: Jackify window focus restoration scheduled (type: {type(main_window).__name__})")
-                else:
-                    debug_print("DEBUG: Could not find main window to bring to focus")
-            except Exception as e:
-                debug_print(f"DEBUG: Error bringing Jackify to focus: {e}")
-
-            # Save context for later use in configuration
-            self._manual_steps_retry_count = 0
-            self._current_modlist_name = self.modlist_name_edit.text().strip()
-
-            # Save resolution for later use in configuration
-            resolution = self.resolution_combo.currentText()
-            # Extract resolution properly (e.g., "1280x800" from "1280x800 (Steam Deck)")
-            if resolution != "Leave unchanged":
-                if " (" in resolution:
-                    self._current_resolution = resolution.split(" (")[0]
-                else:
-                    self._current_resolution = resolution
-            else:
-                self._current_resolution = None
-
-            # Use automated prefix creation instead of manual steps
-            debug_print("DEBUG: Starting automated prefix creation workflow")
-            self._safe_append_text("Starting automated prefix creation workflow...")
-            self.start_automated_prefix_workflow()
-        else:
-            self._safe_append_text("Failed to restart Steam.\n" + out)
-            MessageService.critical(self, "Steam Restart Failed", "Failed to restart Steam automatically. Please restart Steam manually, then try again.")
 
     def start_automated_prefix_workflow(self):
         """Start the automated prefix creation workflow"""
@@ -208,7 +37,7 @@ class AutomatedPrefixHandlersMixin:
             # Disable controls during installation
             self._disable_controls_during_operation()
             modlist_name = self.modlist_name_edit.text().strip()
-            install_dir = self.install_dir_edit.text().strip()
+            install_dir = os.path.realpath(self.install_dir_edit.text().strip())
             final_exe_path = os.path.join(install_dir, "ModOrganizer.exe")
             
             if not os.path.exists(final_exe_path):
@@ -239,7 +68,7 @@ class AutomatedPrefixHandlersMixin:
             class AutomatedPrefixThread(QThread):
                 finished = Signal(bool, str, str, str)  # success, prefix_path, appid (as string), last_timestamp
                 progress = Signal(str)  # progress messages
-                error = Signal(str)  # error messages
+                error = Signal(object)  # error (JackifyError or str)
                 show_progress_dialog = Signal(str)  # show progress dialog with message
                 hide_progress_dialog = Signal()  # hide progress dialog
                 conflict_detected = Signal(list)  # conflicts list
@@ -313,10 +142,14 @@ class AutomatedPrefixHandlersMixin:
                     except Exception as e:
                         # Ensure progress dialog is hidden on error
                         self.hide_progress_dialog.emit()
-                        self.error.emit(str(e))
+                        from jackify.shared.errors import JackifyError, prefix_creation_failed
+                        if not isinstance(e, JackifyError):
+                            e = prefix_creation_failed(str(e))
+                        self.error.emit(e)
             
             # Create and start thread (pass downloads_dir for STEAM_COMPAT_MOUNTS)
-            downloads_dir = self.downloads_dir_edit.text().strip() if getattr(self, 'downloads_dir_edit', None) else None
+            _dl_raw = self.downloads_dir_edit.text().strip() if getattr(self, 'downloads_dir_edit', None) else None
+            downloads_dir = os.path.realpath(_dl_raw) if _dl_raw else None
             self.prefix_thread = AutomatedPrefixThread(modlist_name, install_dir, final_exe_path, downloads_dir)
             self.prefix_thread.finished.connect(self.on_automated_prefix_finished)
             self.prefix_thread.error.connect(self.on_automated_prefix_error)
@@ -327,8 +160,8 @@ class AutomatedPrefixHandlersMixin:
             self.prefix_thread.start()
             
         except Exception as e:
-            debug_print(f"DEBUG: Exception in start_automated_prefix_workflow: {e}")
-            debug_print(f"DEBUG: Traceback: {traceback.format_exc()}")
+            logger.debug(f"DEBUG: Exception in start_automated_prefix_workflow: {e}")
+            logger.debug(f"DEBUG: Traceback: {traceback.format_exc()}")
             self._safe_append_text(f"ERROR: Failed to start automated workflow: {e}")
             # Re-enable controls on exception
             self._enable_controls_after_operation()
@@ -337,23 +170,23 @@ class AutomatedPrefixHandlersMixin:
         """Handle completion of automated prefix creation"""
         try:
             if success:
-                debug_print(f"SUCCESS: Automated prefix creation completed!")
-                debug_print(f"Prefix created at: {prefix_path}")
+                logger.debug(f"SUCCESS: Automated prefix creation completed!")
+                logger.debug(f"Prefix created at: {prefix_path}")
                 if new_appid_str and new_appid_str != "0":
-                    debug_print(f"AppID: {new_appid_str}")
+                    logger.debug(f"AppID: {new_appid_str}")
                 
                 # Convert string AppID back to integer for configuration
                 new_appid = int(new_appid_str) if new_appid_str and new_appid_str != "0" else None
                 
                 # Continue with configuration using the new AppID and timestamp
                 modlist_name = self.modlist_name_edit.text().strip()
-                install_dir = self.install_dir_edit.text().strip()
+                install_dir = os.path.realpath(self.install_dir_edit.text().strip())
                 self.continue_configuration_after_automated_prefix(new_appid, modlist_name, install_dir, last_timestamp)
             else:
-                self._safe_append_text(f"ERROR: Automated prefix creation failed")
-                self._safe_append_text("Please check the logs for details")
-                MessageService.critical(self, "Automated Setup Failed", 
-                    "Automated prefix creation failed. Please check the console output for details.")
+                error_reason = last_timestamp or "Unknown error"
+                self._safe_append_text(f"ERROR: Automated prefix creation failed: {error_reason}")
+                from jackify.shared.errors import prefix_creation_failed
+                MessageService.show_error(self, prefix_creation_failed(str(error_reason)))
                 # Re-enable controls on failure
                 self._enable_controls_after_operation()
                 self._end_post_install_feedback(success=False)
@@ -361,12 +194,14 @@ class AutomatedPrefixHandlersMixin:
             # Always ensure controls are re-enabled when workflow truly completes
             pass
 
-    def on_automated_prefix_error(self, error_msg):
+    def on_automated_prefix_error(self, error):
         """Handle error in automated prefix creation"""
-        self._safe_append_text(f"ERROR: Error during automated prefix creation: {error_msg}")
-        MessageService.critical(self, "Automated Setup Error", 
-            f"Error during automated prefix creation: {error_msg}")
-        # Re-enable controls on error
+        from jackify.shared.errors import JackifyError, classify_exception
+        if not isinstance(error, JackifyError):
+            error = classify_exception(str(error))
+        logger.error(f"Automated prefix error: {error.message}")
+        self._safe_append_text(f"[FAILED] {error.message}")
+        MessageService.show_error(self, error)
         self._enable_controls_after_operation()
         self._end_post_install_feedback(success=False)
 

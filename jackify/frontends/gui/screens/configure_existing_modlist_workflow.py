@@ -6,16 +6,9 @@ import logging
 from pathlib import Path
 from typing import Optional
 from jackify.shared.resolution_utils import get_resolution_fallback
+from jackify.shared.errors import configuration_failed
 
 logger = logging.getLogger(__name__)
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
 
 class ConfigureExistingModlistWorkflowMixin:
     """Mixin providing workflow management for ConfigureExistingModlistScreen."""
@@ -37,6 +30,8 @@ class ConfigureExistingModlistWorkflowMixin:
                 return 'fallout4'
             elif 'nvse_loader.exe' in content or 'fallout new vegas' in content:
                 return 'falloutnv'
+            elif 'fose_loader.exe' in content or 'fallout 3' in content:
+                return 'fallout3'
             elif 'obse_loader.exe' in content or 'oblivion' in content:
                 return 'oblivion'
             elif 'starfield' in content:
@@ -48,7 +43,6 @@ class ConfigureExistingModlistWorkflowMixin:
         except Exception as e:
             logger.warning(f"Error detecting game type from ModOrganizer.ini: {e}")
             return 'skyrim'
-
 
     def validate_and_start_configure(self):
         # Reload config to pick up any settings changes made in Settings dialog
@@ -88,17 +82,16 @@ class ConfigureExistingModlistWorkflowMixin:
         if resolution and resolution != "Leave unchanged":
             success = self.resolution_service.save_resolution(resolution)
             if success:
-                debug_print(f"DEBUG: Resolution saved successfully: {resolution}")
+                logger.debug(f"DEBUG: Resolution saved successfully: {resolution}")
             else:
-                debug_print("DEBUG: Failed to save resolution")
+                logger.debug("DEBUG: Failed to save resolution")
         else:
             # Clear saved resolution if "Leave unchanged" is selected
             if self.resolution_service.has_saved_resolution():
                 self.resolution_service.clear_saved_resolution()
-                debug_print("DEBUG: Saved resolution cleared")
+                logger.debug("DEBUG: Saved resolution cleared")
         # Start the workflow (no shortcut creation needed)
         self.start_workflow(modlist_name, install_dir, resolution)
-
 
     def start_workflow(self, modlist_name, install_dir, resolution):
         """Start the configuration workflow using backend service directly"""
@@ -211,8 +204,7 @@ class ConfigureExistingModlistWorkflowMixin:
             
         except Exception as e:
             self._safe_append_text(f"[ERROR] Failed to start configuration: {e}")
-            MessageService.critical(self, "Configuration Error", f"Failed to start configuration: {e}", safety_level="medium")
-
+            MessageService.show_error(self, configuration_failed(str(e)))
 
     def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str):
         """Check if VNV automation should run and execute if applicable
@@ -237,7 +229,7 @@ class ConfigureExistingModlistWorkflowMixin:
             game_root = game_paths.get('Fallout New Vegas')
 
             if not game_root:
-                debug_print("DEBUG: VNV automation skipped - FNV game root not found")
+                logger.debug("DEBUG: VNV automation skipped - FNV game root not found")
                 return
 
             # Confirmation callback - show dialog to user
@@ -269,7 +261,7 @@ class ConfigureExistingModlistWorkflowMixin:
                 )
 
                 if file_path:
-                    return Path(file_path)
+                    return Path(file_path).resolve()
                 return None
 
             # Run automation
@@ -294,10 +286,9 @@ class ConfigureExistingModlistWorkflowMixin:
                 )
 
         except Exception as e:
-            debug_print(f"ERROR: Failed to run VNV automation: {e}")
+            logger.debug(f"ERROR: Failed to run VNV automation: {e}")
             import traceback
-            debug_print(f"Traceback: {traceback.format_exc()}")
-
+            logger.debug(f"Traceback: {traceback.format_exc()}")
 
     def show_manual_steps_dialog(self, extra_warning=""):
         modlist_name = self.shortcut_combo.currentText().split('(')[0].strip() or "your modlist"
@@ -334,7 +325,6 @@ class ConfigureExistingModlistWorkflowMixin:
             self._enable_controls_after_operation()
             self.cancel_btn.setVisible(True)
 
-
     def show_next_steps_dialog(self, message):
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QApplication
         dlg = QDialog(self)
@@ -360,17 +350,11 @@ class ConfigureExistingModlistWorkflowMixin:
         btn_exit.clicked.connect(on_exit)
         dlg.exec()
 
-
-    def _on_steam_restart_finished(self, success, message):
-        pass 
-
-
     def refresh_modlist_list(self):
         """Refresh the modlist dropdown by re-detecting ModOrganizer.exe shortcuts (async)"""
         # Use async loading to avoid blocking UI
         self._shortcuts_loaded = False  # Allow reload
         self._load_shortcuts_async() 
-
 
     def _calculate_time_taken(self) -> str:
         """Calculate and format the time taken for the workflow"""
@@ -388,5 +372,4 @@ class ConfigureExistingModlistWorkflowMixin:
                 return f"{elapsed_minutes} minutes {elapsed_seconds_remainder} seconds"
         else:
             return f"{elapsed_seconds_remainder} seconds"
-
 

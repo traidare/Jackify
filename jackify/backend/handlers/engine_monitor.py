@@ -92,7 +92,7 @@ class EnginePerformanceMonitor:
             # Also monitor the parent Python process for comparison
             try:
                 self._parent_process = psutil.Process(os.getpid())
-            except:
+            except Exception:
                 self._parent_process = None
                 
             self._monitoring = True
@@ -220,7 +220,7 @@ class EnginePerformanceMonitor:
                 parent_cpu_percent = self._parent_process.cpu_percent()
                 parent_memory_info = self._parent_process.memory_info()
                 parent_memory_mb = parent_memory_info.rss / (1024 * 1024)
-            except:
+            except Exception:
                 pass
         
         # Get I/O info

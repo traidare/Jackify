@@ -151,6 +151,7 @@ class GameUtilsMixin:
         game_dir_names = {
             "skyrim": "Skyrim Special Edition",
             "fnv": "FalloutNV",
+            "fo3": "Fallout3",
             "fo4": "Fallout4",
             "oblivion": "Oblivion",
             "oblivion_remastered": "Oblivion Remastered",

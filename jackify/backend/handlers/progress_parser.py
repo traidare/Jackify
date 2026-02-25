@@ -87,10 +87,12 @@ class ProgressParser(ProgressParserPhaseMixin, ProgressParserFilesMixin, Progres
             re.IGNORECASE
         )
         
-        # Alternative format: "[timestamp] StatusText (current/total) - speed"
+        # Alternative format: "[timestamp] StatusText (current/total) - speed [- Xunit remaining]"
         # Example: "[00:00:10] Downloading Mod Archives (17/214) - 6.8MB/s"
+        # Example (engine 0.4.8+): "[00:00:10] Downloading Mod Archives (17/214) - 6.8MB/s - 23.1GB remaining"
+        # Timestamp prefix is now optional — engine no longer emits [HH:MM:SS].
         self.timestamp_status_pattern = re.compile(
-            r'\[[^\]]+\]\s+(.+?)\s+\((\d+)/(\d+)\)\s*-\s*([^\s]+)',
+            r'(?:\[[^\]]+\]\s+)?(.+?)\s+\((\d+)/(\d+)\)\s*-\s*([^\s]+)(?:\s*-\s*([\d.]+)\s*(B|KB|MB|GB|TB)\s+remaining)?',
             re.IGNORECASE
         )
         
@@ -230,18 +232,33 @@ class ProgressParser(ProgressParserPhaseMixin, ProgressParserFilesMixin, Progres
             if speed_info:
                 operation = self._detect_operation_from_line(status_text)
                 result.speed_info = (operation.value, speed_info)
-            
+
+            # Extract remaining size if present (engine 0.4.8+: "- 23.1GB remaining")
+            remaining_val = timestamp_match.group(5)
+            remaining_unit = timestamp_match.group(6)
+            if remaining_val and remaining_unit:
+                remaining_bytes = self._convert_to_bytes(float(remaining_val), remaining_unit)
+                if remaining_bytes > 0 and max_steps > 0 and current_step < max_steps:
+                    fraction_done = current_step / max_steps
+                    # Estimate total from remaining and fraction; clamp denominator to avoid div/0 near completion
+                    estimated_total = remaining_bytes / max(1.0 - fraction_done, 0.01)
+                    data_processed = int(estimated_total - remaining_bytes)
+                    result.data_info = (max(0, data_processed), int(estimated_total))
+                elif remaining_bytes > 0:
+                    result.data_info = (0, int(remaining_bytes))
+
             # Calculate overall percentage from step progress
             if max_steps > 0:
                 result.overall_percent = (current_step / max_steps) * 100.0
-            
+
             result.has_progress = True
         
         # Try .wabbajack download format: "[timestamp] Downloading .wabbajack (size/size) - speed"
         # Example: "[00:02:08] Downloading .wabbajack (739.2/1947.2MB) - 6.0MB/s"
         # Also handles: "[00:02:08] Downloading modlist.wabbajack (739.2/1947.2MB) - 6.0MB/s"
+        # Timestamp prefix is optional in newer engine output.
         wabbajack_download_pattern = re.compile(
-            r'\[[^\]]+\]\s+Downloading\s+([^\s]+\.wabbajack|\.wabbajack)\s+\(([^)]+)\)\s*-\s*([^\s]+)',
+            r'(?:\[[^\]]+\]\s+)?Downloading\s+([^\s]+\.wabbajack|\.wabbajack)\s+\(([^)]+)\)\s*-\s*([^\s]+)',
             re.IGNORECASE
         )
         wabbajack_match = wabbajack_download_pattern.search(line)
@@ -294,13 +311,15 @@ class ProgressParser(ProgressParserPhaseMixin, ProgressParserFilesMixin, Progres
             
             # Set phase
             result.phase = InstallationPhase.DOWNLOAD
-            result.phase_name = f"Downloading {filename}"
+            phase_target = filename
+            if phase_target.lower().startswith("downloading "):
+                phase_target = phase_target[len("downloading "):].strip()
+            result.phase_name = f"Downloading {phase_target}"
             
             # Create FileProgress entry for .wabbajack file
             if data_info:
                 current_bytes, total_bytes = data_info
                 percent = (current_bytes / total_bytes) * 100.0 if total_bytes > 0 else 0.0
-                from jackify.shared.progress_models import FileProgress, OperationType
                 file_progress = FileProgress(
                     filename=filename,
                     operation=OperationType.DOWNLOAD,
@@ -313,6 +332,50 @@ class ProgressParser(ProgressParserPhaseMixin, ProgressParserFilesMixin, Progres
             
             result.has_progress = True
         
+        # Try to extract install progress format:
+        # "Installing files X/Y (GB/GB) - Converting textures: N/M"
+        install_match = re.match(
+            r'Installing files\s+(\d+)/(\d+)\s+\(([^)]+)\)(?:\s*-\s*Converting textures:\s*(\d+)/(\d+))?',
+            line.strip(), re.IGNORECASE)
+        if install_match:
+            result.phase = InstallationPhase.INSTALL
+            result.step_info = (int(install_match.group(1)), int(install_match.group(2)))
+            data_info = self._parse_data_string(install_match.group(3))
+            if data_info:
+                result.data_info = data_info
+                current_bytes, total_bytes = data_info
+                if total_bytes > 0:
+                    result.overall_percent = (current_bytes / total_bytes) * 100.0
+            if install_match.group(4) and install_match.group(5):
+                fp = FileProgress(
+                    filename='_tex',
+                    operation=OperationType.INSTALL,
+                    percent=0.0,
+                    speed=-1.0
+                )
+                fp._texture_counter = (int(install_match.group(4)), int(install_match.group(5)))
+                fp._hidden = True
+                result.file_progress = fp
+            result.has_progress = True
+
+        # Conversion-only status line (without "Installing files ...")
+        conversion_match = re.search(r'Converting textures:\s*(\d+)/(\d+)', line, re.IGNORECASE)
+        if conversion_match and not install_match:
+            if not result.phase:
+                result.phase = InstallationPhase.INSTALL
+            if not result.phase_name:
+                result.phase_name = "Converting textures"
+            fp = FileProgress(
+                filename='_tex',
+                operation=OperationType.INSTALL,
+                percent=0.0,
+                speed=-1.0
+            )
+            fp._texture_counter = (int(conversion_match.group(1)), int(conversion_match.group(2)))
+            fp._hidden = True
+            result.file_progress = fp
+            result.has_progress = True
+
         # Try to extract step information (fallback)
         if not result.step_info:
             step_info = self._extract_step_info(line)

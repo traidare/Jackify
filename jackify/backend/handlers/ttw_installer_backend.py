@@ -229,7 +229,7 @@ class TTWInstallerBackendMixin:
             return False, f"Error executing TTW_Linux_Installer: {e}"
 
     @staticmethod
-    def integrate_ttw_into_modlist(ttw_output_path: Path, modlist_install_dir: Path, ttw_version: str) -> bool:
+    def integrate_ttw_into_modlist(ttw_output_path: Path, modlist_install_dir: Path, ttw_version: str, skip_copy: bool = False) -> bool:
         """Integrate TTW output into a modlist's MO2 structure."""
         import shutil
         logging_handler = LoggingHandler()
@@ -246,12 +246,16 @@ class TTWInstallerBackendMixin:
                 return False
             mod_folder_name = f"[NoDelete] Tale of Two Wastelands {ttw_version}" if ttw_version else "[NoDelete] Tale of Two Wastelands"
             target_mod_dir = mods_dir / mod_folder_name
-            logger.info("Copying TTW output to %s", target_mod_dir)
-            if target_mod_dir.exists():
-                logger.info("Removing existing TTW mod at %s", target_mod_dir)
-                shutil.rmtree(target_mod_dir)
-            shutil.copytree(ttw_output_path, target_mod_dir)
-            logger.info("TTW output copied successfully")
+            if skip_copy:
+                # TTW was installed directly to target_mod_dir — no copy needed
+                logger.info("TTW already at target location, skipping copy: %s", target_mod_dir)
+            else:
+                logger.info("Copying TTW output to %s", target_mod_dir)
+                if target_mod_dir.exists():
+                    logger.info("Removing existing TTW mod at %s", target_mod_dir)
+                    shutil.rmtree(target_mod_dir)
+                shutil.copytree(ttw_output_path, target_mod_dir)
+                logger.info("TTW output copied successfully")
             ttw_esms = [
                 "Fallout3.esm", "Anchorage.esm", "ThePitt.esm", "BrokenSteel.esm",
                 "PointLookout.esm", "Zeta.esm", "TaleOfTwoWastelands.esm", "YUPTTW.esm"

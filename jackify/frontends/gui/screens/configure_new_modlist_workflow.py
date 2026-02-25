@@ -1,19 +1,14 @@
 """Workflow management for ConfigureNewModlistScreen (Mixin)."""
+from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 import os
 import time
 import logging
 from jackify.shared.resolution_utils import get_resolution_fallback
+from jackify.shared.errors import configuration_failed
+from jackify.backend.services.steam_restart_service import ensure_flatpak_steam_filesystem_access
 
 logger = logging.getLogger(__name__)
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
 
 class ConfigureNewModlistWorkflowMixin:
     """Mixin providing workflow management for ConfigureNewModlistScreen."""
@@ -35,6 +30,8 @@ class ConfigureNewModlistWorkflowMixin:
                 return 'fallout4'
             elif 'nvse_loader.exe' in content or 'fallout new vegas' in content:
                 return 'falloutnv'
+            elif 'fose_loader.exe' in content or 'fallout 3' in content:
+                return 'fallout3'
             elif 'obse_loader.exe' in content or 'oblivion' in content:
                 return 'oblivion'
             elif 'starfield' in content:
@@ -46,7 +43,6 @@ class ConfigureNewModlistWorkflowMixin:
         except Exception as e:
             logger.warning(f"Error detecting game type from ModOrganizer.ini: {e}")
             return 'skyrim'
-
 
     def validate_and_start_configure(self):
         # Reload config to pick up any settings changes made in Settings dialog
@@ -99,27 +95,27 @@ class ConfigureNewModlistWorkflowMixin:
         if resolution and resolution != "Leave unchanged":
             success = self.resolution_service.save_resolution(resolution)
             if success:
-                debug_print(f"DEBUG: Resolution saved successfully: {resolution}")
+                logger.debug(f"DEBUG: Resolution saved successfully: {resolution}")
             else:
-                debug_print("DEBUG: Failed to save resolution")
+                logger.debug("DEBUG: Failed to save resolution")
         else:
             # Clear saved resolution if "Leave unchanged" is selected
             if self.resolution_service.has_saved_resolution():
                 self.resolution_service.clear_saved_resolution()
-                debug_print("DEBUG: Saved resolution cleared")
+                logger.debug("DEBUG: Saved resolution cleared")
         
         # Start configuration - automated workflow handles Steam restart internally
         self.configure_modlist()
-
 
     def configure_modlist(self):
         # CRITICAL: Reload config from disk to pick up any settings changes from Settings dialog
         # Refresh Proton version and winetricks settings
         self.config_handler._load_config()
 
-        install_dir = os.path.dirname(self.install_dir_edit.text().strip()) if self.install_dir_edit.text().strip().endswith('ModOrganizer.exe') else self.install_dir_edit.text().strip()
+        _raw_mo2_path = os.path.realpath(self.install_dir_edit.text().strip())
+        install_dir = os.path.dirname(_raw_mo2_path) if _raw_mo2_path.endswith('ModOrganizer.exe') else _raw_mo2_path
         modlist_name = self.modlist_name_edit.text().strip()
-        mo2_exe_path = self.install_dir_edit.text().strip()
+        mo2_exe_path = _raw_mo2_path
         resolution = self.resolution_combo.currentText()
         if not install_dir or not modlist_name:
             MessageService.warning(self, "Missing Info", "Install directory or modlist name is missing.", safety_level="low")
@@ -128,18 +124,18 @@ class ConfigureNewModlistWorkflowMixin:
         # Use automated prefix service instead of manual steps
         self._safe_append_text("")
         self._safe_append_text("=== Steam Integration Phase ===")
-        self._safe_append_text("Starting automated Steam setup workflow...")
+        logger.info("Starting automated Steam setup workflow...")
 
         # Start automated prefix workflow
         self._start_automated_prefix_workflow(modlist_name, install_dir, mo2_exe_path, resolution)
 
-
     def _start_automated_prefix_workflow(self, modlist_name, install_dir, mo2_exe_path, resolution):
         """Start the automated prefix workflow using AutomatedPrefixService in a background thread"""
+        ensure_flatpak_steam_filesystem_access(Path(install_dir))
         from jackify import __version__ as jackify_version
-        self._safe_append_text(f"Jackify v{jackify_version}")
-        self._safe_append_text(f"Initializing automated Steam setup for '{modlist_name}'...")
-        self._safe_append_text("Starting automated Steam shortcut creation and configuration...")
+        logger.info("Jackify v%s", jackify_version)
+        logger.info("Initializing automated Steam setup for '%s'...", modlist_name)
+        logger.info("Starting automated Steam shortcut creation and configuration...")
         
         # Disable the start button to prevent multiple workflows
         self.start_btn.setEnabled(False)
@@ -148,7 +144,7 @@ class ConfigureNewModlistWorkflowMixin:
         class AutomatedPrefixThread(QThread):
             progress_update = Signal(str)
             workflow_complete = Signal(object)  # Will emit the result tuple
-            error_occurred = Signal(str)
+            error_occurred = Signal(object)  # error (JackifyError or str)
             
             def __init__(self, modlist_name, install_dir, mo2_exe_path, steamdeck, auto_restart):
                 super().__init__()
@@ -179,7 +175,10 @@ class ConfigureNewModlistWorkflowMixin:
                     self.workflow_complete.emit(result)
                     
                 except Exception as e:
-                    self.error_occurred.emit(str(e))
+                    from jackify.shared.errors import JackifyError, prefix_creation_failed
+                    if not isinstance(e, JackifyError):
+                        e = prefix_creation_failed(str(e))
+                    self.error_occurred.emit(e)
         
         # Detect Steam Deck once using centralized service
         from jackify.backend.services.platform_detection_service import PlatformDetectionService
@@ -210,7 +209,6 @@ class ConfigureNewModlistWorkflowMixin:
         self.automated_prefix_thread.error_occurred.connect(self._on_automated_prefix_error)
         self.automated_prefix_thread.start()
 
-
     def _on_automated_prefix_complete(self, result):
         """Handle completion of the automated prefix workflow"""
         try:
@@ -233,8 +231,8 @@ class ConfigureNewModlistWorkflowMixin:
                                                                          os.path.dirname(self.install_dir_edit.text().strip()) if self.install_dir_edit.text().strip().endswith('ModOrganizer.exe') else self.install_dir_edit.text().strip(), 
                                                                          last_timestamp)
                     else:
-                        self._safe_append_text(f"Automated Steam setup failed")
-                        self._safe_append_text("Please check the logs for details.")
+                        error_reason = last_timestamp or "Unknown error"
+                        self._safe_append_text(f"Automated Steam setup failed: {error_reason}")
                         self.start_btn.setEnabled(True)
             elif isinstance(result, tuple) and len(result) == 3:
                 # Fallback for old format (backward compatibility)
@@ -242,49 +240,42 @@ class ConfigureNewModlistWorkflowMixin:
                 if success:
                     self._safe_append_text(f"Automated Steam setup completed successfully!")
                     self._safe_append_text(f"New AppID assigned: {new_appid}")
-                    
+
                     # Continue with post-Steam configuration
-                    self.continue_configuration_after_automated_prefix(new_appid, self.modlist_name_edit.text().strip(), 
+                    self.continue_configuration_after_automated_prefix(new_appid, self.modlist_name_edit.text().strip(),
                                                                      os.path.dirname(self.install_dir_edit.text().strip()) if self.install_dir_edit.text().strip().endswith('ModOrganizer.exe') else self.install_dir_edit.text().strip())
                 else:
                     self._safe_append_text(f"Automated Steam setup failed")
-                    self._safe_append_text("Please check the logs for details.")
                     self.start_btn.setEnabled(True)
             else:
                 # Handle unexpected result format
                 self._safe_append_text(f"Automated Steam setup failed - unexpected result format")
-                self._safe_append_text("Please check the logs for details.")
                 self.start_btn.setEnabled(True)
                 
         except Exception as e:
+            logger.error("Error handling automated prefix result: %s", e)
             self._safe_append_text(f"Error handling automated prefix result: {str(e)}")
             self.start_btn.setEnabled(True)
 
-
-    def _on_automated_prefix_error(self, error_message):
+    def _on_automated_prefix_error(self, error):
         """Handle error from the automated prefix workflow"""
-        self._safe_append_text(f"Error during automated Steam setup: {error_message}")
-        self._safe_append_text("Please check the logs for details.")
-        
-        # Show critical error dialog to user (don't silently fail)
-        from jackify.backend.services.message_service import MessageService
-        MessageService.critical(
-            self,
-            "Steam Setup Error",
-            f"Error during automated Steam setup:\n\n{error_message}\n\nPlease check the console output for details.",
-            safety_level="medium"
-        )
+        from jackify.shared.errors import JackifyError, classify_exception
+        from jackify.frontends.gui.services.message_service import MessageService
+        if not isinstance(error, JackifyError):
+            error = classify_exception(str(error))
+        logger.error(f"Automated prefix error: {error.message}")
+        self._safe_append_text(f"[FAILED] {error.message}")
+        MessageService.show_error(self, error)
         
         self._enable_controls_after_operation()
-
 
     def continue_configuration_after_automated_prefix(self, new_appid, modlist_name, install_dir, last_timestamp=None):
         """Continue the configuration process with the new AppID after automated prefix creation"""
         # Headers are now shown at start of Steam Integration
         # No need to show them again here
-        debug_print("Configuration phase continues after Steam Integration")
+        logger.debug("Configuration phase continues after Steam Integration")
         
-        debug_print(f"continue_configuration_after_automated_prefix called with appid: {new_appid}")
+        logger.debug(f"continue_configuration_after_automated_prefix called with appid: {new_appid}")
         try:
             # Get resolution from UI
             resolution = self.resolution_combo.currentText()
@@ -305,7 +296,7 @@ class ConfigureNewModlistWorkflowMixin:
                 'game_name': 'Skyrim Special Edition'  # Default for new modlist
             }
             self.context = updated_context  # Ensure context is always set
-            debug_print(f"Updated context with new AppID: {new_appid}")
+            logger.debug(f"Updated context with new AppID: {new_appid}")
             
             # Create new config thread with updated context
             from PySide6.QtCore import QThread, Signal
@@ -391,11 +382,9 @@ class ConfigureNewModlistWorkflowMixin:
             self.config_thread.start()
             
         except Exception as e:
+            logger.error("Error continuing configuration: %s", e, exc_info=True)
             self._safe_append_text(f"Error continuing configuration: {e}")
-            import traceback
-            self._safe_append_text(f"Full traceback: {traceback.format_exc()}")
             self.on_configuration_error(str(e))
-
 
     def continue_configuration_after_manual_steps(self, new_appid, modlist_name, install_dir):
         """Continue the configuration process with the corrected AppID after manual steps validation"""
@@ -414,7 +403,7 @@ class ConfigureNewModlistWorkflowMixin:
                 'appid': new_appid,  # Use the NEW AppID from Steam
                 'game_name': 'Skyrim Special Edition'  # Default for new modlist
             }
-            debug_print(f"Updated context with new AppID: {new_appid}")
+            logger.debug(f"Updated context with new AppID: {new_appid}")
             
             # Create new config thread with updated context (same as Tuxborn)
             from PySide6.QtCore import QThread, Signal
@@ -500,9 +489,9 @@ class ConfigureNewModlistWorkflowMixin:
             self.config_thread.start()
             
         except Exception as e:
+            logger.error("Error continuing configuration: %s", e, exc_info=True)
             self._safe_append_text(f"Error continuing configuration: {e}")
-            MessageService.critical(self, "Configuration Error", f"Failed to continue configuration: {e}", safety_level="medium")
-
+            MessageService.show_error(self, configuration_failed(str(e)))
 
     def _calculate_time_taken(self) -> str:
         """Calculate and format the time taken for the workflow"""
@@ -520,5 +509,4 @@ class ConfigureNewModlistWorkflowMixin:
                 return f"{elapsed_minutes} minutes {elapsed_seconds_remainder} seconds"
         else:
             return f"{elapsed_seconds_remainder} seconds"
-
 

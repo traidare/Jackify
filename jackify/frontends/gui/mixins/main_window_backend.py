@@ -7,14 +7,9 @@ import os
 
 from jackify.backend.models.configuration import SystemInfo
 from jackify.backend.services.modlist_service import ModlistService
+import logging
 
-
-def _debug_print(message):
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    ch = ConfigHandler()
-    if ch.get('debug_mode', False):
-        print(message)
-
+logger = logging.getLogger(__name__)
 
 class MainWindowBackendMixin:
     """Mixin for backend service initialization."""
@@ -37,7 +32,7 @@ class MainWindowBackendMixin:
         from jackify.backend.services.update_service import UpdateService
         from jackify import __version__
         self.update_service = UpdateService(__version__)
-        _debug_print(f"GUI Backend initialized - Steam Deck: {self.system_info.is_steamdeck}")
+        logger.debug(f"GUI Backend initialized - Steam Deck: {self.system_info.is_steamdeck}")
 
     def _is_steamdeck(self):
         try:
@@ -58,7 +53,7 @@ class MainWindowBackendMixin:
             if success:
                 status = resource_manager.get_limit_status()
                 if status['target_achieved']:
-                    _debug_print(f"Resource limits optimized: file descriptors set to {status['current_soft']}")
+                    logger.debug(f"Resource limits optimized: file descriptors set to {status['current_soft']}")
                 else:
                     print(f"Resource limits improved: file descriptors increased to {status['current_soft']} (target: {status['target_limit']})")
             else:

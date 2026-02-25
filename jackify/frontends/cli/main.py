@@ -33,10 +33,8 @@ from jackify.backend.handlers.filesystem_handler import FileSystemHandler
 from jackify.backend.handlers.path_handler import PathHandler
 from jackify.backend.handlers.shortcut_handler import ShortcutHandler
 from jackify.backend.handlers.menu_handler import MenuHandler
-from jackify.backend.handlers.mo2_handler import MO2Handler
 
 logger = logging.getLogger(__name__)
-
 
 class JackifyCLI:
     """Main application class for Jackify CLI Frontend"""
@@ -92,10 +90,6 @@ class JackifyCLI:
         self.selected_modlist = None
         self.setup_complete = False
     
-    def _debug_print(self, message):
-        """Print debug message only if debug mode is enabled"""
-        if hasattr(self, '_debug_mode') and self._debug_mode:
-            logger.debug(message)
     
     def _configure_logging_early(self):
         """Configure logging to be quiet during initialization, will be adjusted after arg parsing"""
@@ -113,22 +107,40 @@ class JackifyCLI:
         """Configure final logging level based on parsed arguments"""
         # Use the existing LoggingHandler for proper log rotation
         from jackify.backend.handlers.logging_handler import LoggingHandler
+        from jackify.shared.paths import get_jackify_logs_dir
         
         # Set up CLI-specific logging with rotation
         logging_handler = LoggingHandler()
-        logging_handler.rotate_log_for_logger('jackify-cli', 'Modlist_Install_workflow_cli.log')
-        cli_logger = logging_handler.setup_logger('jackify-cli', 'Modlist_Install_workflow_cli.log')
+        # Keep CLI logging in the canonical modlist workflow log file.
+        logging_handler.rotate_log_for_logger('jackify-cli', 'Modlist_Install_workflow.log')
+        cli_logger = logging_handler.setup_logger('jackify-cli', 'Modlist_Install_workflow.log')
+
+        # Remove legacy CLI log artifact if present (old naming path no longer used).
+        try:
+            legacy_cli_log = get_jackify_logs_dir() / "Modlist_Install_workflow_cli.log"
+            if legacy_cli_log.exists():
+                legacy_cli_log.unlink()
+        except Exception:
+            pass
         
         # Configure logging level
         if self.args.debug:
             cli_logger.setLevel(logging.DEBUG)
+            root_level = logging.DEBUG
             print("Debug logging enabled for console and file")
         elif self.args.verbose:
             cli_logger.setLevel(logging.INFO)
+            root_level = logging.INFO
             print("Verbose logging enabled for console and file")
         else:
-            # Keep it at WARNING level for clean startup
+            # Keep console clean in normal mode; details remain in workflow log.
             cli_logger.setLevel(logging.WARNING)
+            root_level = logging.ERROR
+
+        root_logger = logging.getLogger()
+        root_logger.setLevel(root_level)
+        for handler in root_logger.handlers:
+            handler.setLevel(root_level)
     
     def _is_steamdeck(self):
         """Check if running on Steam Deck"""
@@ -192,7 +204,7 @@ class JackifyCLI:
     def _check_for_updates_on_startup(self):
         """Check for updates on startup in background thread"""
         try:
-            self._debug_print("Checking for updates on startup...")
+            logger.debug("Checking for updates on startup...")
             
             def update_check_callback(update_info):
                 """Handle update check results"""
@@ -207,15 +219,15 @@ class JackifyCLI:
                         print(f"\nTo update, run: jackify --update")
                         print("Or visit: https://github.com/Omni-guides/Jackify/releases")
                     else:
-                        self._debug_print("No updates available")
+                        logger.debug("No updates available")
                 except Exception as e:
-                    self._debug_print(f"Error showing update info: {e}")
+                    logger.debug(f"Error showing update info: {e}")
             
             # Check for updates in background
             self.backend_services['update_service'].check_for_updates_async(update_check_callback)
             
         except Exception as e:
-            self._debug_print(f"Error checking for updates on startup: {e}")
+            logger.debug(f"Error checking for updates on startup: {e}")
             # Continue anyway - don't block startup on update check errors
     
     def _handle_update(self):
@@ -326,7 +338,6 @@ class JackifyCLI:
             self.menu_handler = self.menu  # Alias for backend compatibility
             
             # Add MO2 handler to the menu handler for additional tasks menu
-            self.menu.mo2_handler = MO2Handler(self.menu)
             
             # Set steamdeck attribute that menus expect
             self.steamdeck = self.system_info.is_steamdeck
@@ -359,24 +370,24 @@ class JackifyCLI:
         # Now that we have args, configure logging properly
         self._configure_logging_final()
         
-        self._debug_print('Initializing Jackify CLI Frontend')
-        self._debug_print('JackifyCLI.run() called')
-        self._debug_print(f'Parsed args: {self.args}')
+        logger.debug('Initializing Jackify CLI Frontend')
+        logger.debug('JackifyCLI.run() called')
+        logger.debug(f'Parsed args: {self.args}')
         
         # Handle update functionality
         if getattr(self.args, 'update', False):
-            self._debug_print('Entering update workflow')
+            logger.debug('Entering update workflow')
             return self._handle_update()
         
         # Handle legacy restart-steam functionality (temporary)
         if getattr(self.args, 'restart_steam', False):
-            self._debug_print('Entering restart_steam workflow')
+            logger.debug('Entering restart_steam workflow')
             return self._handle_restart_steam()
         
         
         # Handle install-modlist top-level functionality
         if getattr(self.args, 'install_modlist', False):
-            self._debug_print('Entering install_modlist workflow')
+            logger.debug('Entering install_modlist workflow')
             return self.commands['install_modlist'].execute_top_level(self.args)
         
         # Handle subcommands
@@ -514,11 +525,9 @@ class JackifyCLI:
         command_instance.run()
         return 0
 
-
 def main():
     """Legacy main function (not used in new structure)"""
     pass
-
 
 if __name__ == "__main__":
     # Do not call directly -- use __main__.py

@@ -39,8 +39,7 @@ class VNVAutomationMixin:
             game_root = game_paths.get('Fallout New Vegas')
 
             if not game_root:
-                from .install_modlist import debug_print
-                debug_print("DEBUG: VNV automation skipped - FNV game root not found")
+                logger.debug("DEBUG: VNV automation skipped - FNV game root not found")
                 return False
 
             # Initialize service to check completion status
@@ -91,10 +90,9 @@ class VNVAutomationMixin:
             return True  # VNV automation is running, defer success dialog
 
         except Exception as e:
-            from .install_modlist import debug_print
-            debug_print(f"ERROR: Failed to start VNV automation: {e}")
+            logger.debug(f"ERROR: Failed to start VNV automation: {e}")
             import traceback
-            debug_print(f"Traceback: {traceback.format_exc()}")
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return False  # Error - show success dialog anyway
 
     def _run_vnv_automation_threaded(self, modlist_name, install_path, game_root):

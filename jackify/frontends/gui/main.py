@@ -93,7 +93,6 @@ if '-v' in sys.argv or '--version' in sys.argv or '-V' in sys.argv:
     print(f"Jackify version {jackify_version}")
     sys.exit(0)
 
-
 from jackify import __version__
 
 # Add src directory to Python path
@@ -125,13 +124,6 @@ from jackify.frontends.gui.widgets.feature_placeholder import FeaturePlaceholder
 
 ENABLE_WINDOW_HEIGHT_ANIMATION = False
 
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
 # Constants for styling and disclaimer
 DISCLAIMER_TEXT = (
     "Disclaimer: Jackify is currently in an alpha state. This software is provided as-is, "
@@ -146,7 +138,6 @@ MENU_ITEMS = [
     ("Additional Tasks", "additional_tasks"),
     ("Exit Jackify", "exit_jackify"),
 ]
-
 
 class JackifyMainWindow(
     MainWindowGeometryMixin,
@@ -201,8 +192,6 @@ class JackifyMainWindow(
     def showEvent(self, event):
         self._geometry_show_event(event)
 
-
-
 def resource_path(relative_path):
     """Get path to resource file, handling both AppImage and dev modes."""
     # AppImage mode - use APPDIR if available
@@ -220,7 +209,6 @@ def resource_path(relative_path):
     # Go up from frontends/gui to jackify
     jackify_dir = os.path.dirname(os.path.dirname(current_dir))
     return os.path.join(jackify_dir, relative_path)
-
 
 def main():
     """Main entry point for the GUI application"""
@@ -265,8 +253,8 @@ def main():
     logging_handler = LoggingHandler()
     # Only rotate log file when debug mode is enabled
     if debug_mode:
-        logging_handler.rotate_log_for_logger('jackify_gui', 'jackify-gui.log')
-    root_logger = logging_handler.setup_logger('', 'jackify-gui.log', is_general=True, debug_mode=debug_mode)  # Empty name = root logger
+        logging_handler.rotate_log_for_logger('jackify_gui', 'jackify-debug.log')
+    root_logger = logging_handler.setup_logger('', 'jackify-debug.log', is_general=True, debug_mode=debug_mode)  # Empty name = root logger
     
     # CRITICAL: Set root logger level BEFORE any child loggers are used
     # DEBUG messages from child loggers must propagate
@@ -294,7 +282,7 @@ def main():
 
     # Global cleanup function for signal handling
     def emergency_cleanup():
-        debug_print("Cleanup: terminating jackify-engine processes")
+        logger.debug("Cleanup: terminating jackify-engine processes")
         try:
             import subprocess
             subprocess.run(['pkill', '-f', 'jackify-engine'], timeout=5, capture_output=True)
@@ -378,7 +366,6 @@ def main():
     atexit.register(emergency_cleanup)
     
     return app.exec()
-
 
 if __name__ == "__main__":
     sys.exit(main()) 

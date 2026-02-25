@@ -3,20 +3,9 @@ from pathlib import Path
 from typing import Optional, Union, List, Dict, Tuple
 import logging
 import os
-import time
-import subprocess
 import vdf
 
 logger = logging.getLogger(__name__)
-
-
-def debug_print(message):
-    """Log debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        logger.debug(message)
-
 
 class WorkflowMixin:
     """Mixin providing workflow methods for AutomatedPrefixService."""
@@ -110,166 +99,6 @@ class WorkflowMixin:
         
         return message
 
-    def run_complete_workflow(self, shortcut_name: str, modlist_install_dir: str, 
-                            final_exe_path: str, progress_callback=None) -> Tuple[bool, Optional[Path], Optional[int]]:
-        """
-        Run the simple automated prefix creation workflow.
-        
-        Args:
-            shortcut_name: Name for the Steam shortcut
-            modlist_install_dir: Directory where the modlist is installed
-            final_exe_path: Path to ModOrganizer.exe
-            
-        Returns:
-            Tuple of (success, prefix_path, appid)
-        """
-        debug_print(f"[DEBUG] run_complete_workflow called with shortcut_name={shortcut_name}, modlist_install_dir={modlist_install_dir}, final_exe_path={final_exe_path}")
-        logger.info("Starting simple automated prefix creation workflow")
-        
-        # Initialize shared timing to continue from jackify-engine
-        from jackify.shared.timing import initialize_from_console_output
-        # TODO: Pass console output if available to continue timeline
-        initialize_from_console_output()
-        
-        # Show immediate feedback to user
-        if progress_callback:
-            progress_callback("Starting automated Steam setup...")
-        
-        try:
-            # Step 1: Create shortcut directly (NO STL needed!)
-            logger.info("Step 1: Creating shortcut directly to ModOrganizer.exe")
-            if progress_callback:
-                progress_callback("Creating Steam shortcut...")
-            if not self.create_shortcut_directly_with_proton(shortcut_name, final_exe_path, modlist_install_dir):
-                logger.error("Failed to create shortcut directly")
-                return False, None, None, None
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Steam shortcut created successfully")
-            logger.info("Step 1 completed: Shortcut created directly")
-            
-            # Step 2: Calculate the predictable AppID and rungameid
-            logger.info("Step 2: Calculating predictable AppID")
-            if progress_callback:
-                progress_callback("Calculating AppID...")
-            
-            # Calculate AppID using the same method as create_shortcut_directly_with_proton
-            from zlib import crc32
-            combined_string = final_exe_path + shortcut_name
-            crc = crc32(combined_string.encode('utf-8'))
-            initial_appid = -(crc & 0x7FFFFFFF)  # Make it negative and within 32-bit range
-            
-            # Calculate rungameid for launching
-            rungameid = (initial_appid << 32) | 0x02000000
-            
-            # Convert AppID to positive prefix ID
-            expected_prefix_id = str(abs(initial_appid))
-            
-            if progress_callback:
-                progress_callback("AppID calculated")
-            logger.info(f"Step 2 completed: AppID = {initial_appid}, rungameid = {rungameid}, expected_prefix_id = {expected_prefix_id}")
-            
-            # Step 3: Restart Steam
-            logger.info("Step 3: Restarting Steam")
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Restarting Steam...")
-            if not self.restart_steam():
-                logger.error("Failed to restart Steam")
-                return False, None, None, None
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Steam restarted successfully")
-            logger.info("Step 3 completed: Steam restarted")
-            
-            # Step 4: Launch temporary batch file to create prefix invisibly
-            logger.info("Step 4: Launching temporary batch file to create prefix")
-            debug_print(f"[DEBUG] About to launch temporary batch file with rungameid={rungameid}")
-            
-            # Launch using rungameid (this will run the batch file invisibly)
-            try:
-                result = subprocess.run(['steam', f'steam://rungameid/{rungameid}'], 
-                                      capture_output=True, text=True, timeout=5)
-                debug_print(f"[DEBUG] Launch result: return_code={result.returncode}")
-                if result.returncode != 0:
-                    logger.error(f"Failed to launch temporary batch file: {result.stderr}")
-                    return False, None, None, None
-            except subprocess.TimeoutExpired:
-                debug_print("[DEBUG] Launch timed out (expected)")
-            except Exception as e:
-                logger.error(f"Error launching temporary batch file: {e}")
-                return False, None, None, None
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Temporary batch file launched")
-            logger.info("Step 4 completed: Temporary batch file launched")
-            
-            # Step 5: Wait for temporary batch file to complete (invisible)
-            logger.info("Step 5: Waiting for temporary batch file to complete")
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Creating Proton prefix (please wait)...")
-            
-            # Wait for batch file to complete (3 seconds + buffer)
-            time.sleep(5)
-            logger.info("Step 5 completed: Temporary batch file completed")
-            
-            # Step 6: Verify prefix was created
-            logger.info("Step 6: Verifying prefix creation")
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Verifying prefix creation...")
-            
-            compatdata_path = Path.home() / ".local/share/Steam/steamapps/compatdata" / expected_prefix_id
-            if not compatdata_path.exists():
-                logger.error(f"Prefix not found at {compatdata_path}")
-                return False, None, None, None
-            
-            logger.info(f"Step 6 completed: Prefix verified at {compatdata_path}")
-            
-            # Step 7: Replace temporary batch file with final ModOrganizer.exe
-            logger.info("Step 7: Replacing temporary batch file with final ModOrganizer.exe")
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Updating shortcut...")
-            
-            if not self.replace_shortcut_with_final_exe(shortcut_name, final_exe_path, modlist_install_dir):
-                logger.error("Failed to replace shortcut with final exe")
-                return False, None, None, None
-            
-            logger.info("Step 7 completed: Shortcut updated with final ModOrganizer.exe")
-            
-            # Step 8: Detect actual AppID using protontricks -l
-            logger.info("Step 8: Detecting actual AppID")
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Detecting actual AppID...")
-            actual_appid = self.detect_actual_prefix_appid(initial_appid, shortcut_name)
-            if actual_appid is None:
-                logger.error("Failed to detect actual AppID")
-                return False, None, None, None
-            logger.info(f"Step 8 completed: Actual AppID = {actual_appid}")
-            
-            # Step 9: Verify prefix was created successfully
-            logger.info("Step 9: Verifying prefix creation")
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Verifying prefix creation...")
-            prefix_path = self._get_compatdata_path_for_appid(actual_appid)
-            if not prefix_path or not prefix_path.exists():
-                logger.error(f"Prefix path not found: {prefix_path}")
-                return False, None, None, None
-            
-            if not self.verify_prefix_creation(prefix_path):
-                logger.error("Prefix verification failed")
-                return False, None, None, None
-            logger.info(f"Step 9 completed: Prefix verified at {prefix_path}")
-            
-            if progress_callback:
-                progress_callback(f"{self._get_progress_timestamp()} Steam Configuration complete!")
-            # Show Proton override notification if applicable
-            self._show_proton_override_notification(progress_callback)
-
-            logger.info(" Simple automated prefix creation workflow completed successfully")
-            return True, prefix_path, actual_appid
-            
-        except Exception as e:
-            logger.error(f"Error in automated prefix creation workflow: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-            return False, None, None, None
-
     def run_working_workflow(self, shortcut_name: str, modlist_install_dir: str,
                             final_exe_path: str, progress_callback=None, steamdeck: Optional[bool] = None,
                             download_dir=None, auto_restart: bool = True) -> Tuple[bool, Optional[Path], Optional[int], Optional[str]]:
@@ -323,9 +152,9 @@ class WorkflowMixin:
         modlist_handler = ModlistHandler()
         special_game_type = modlist_handler.detect_special_game_type(modlist_install_dir)
 
-        # No launch options needed - both FNV and Enderal use registry injection
+        # No launch options needed - FNV, FO3 and Enderal use registry injection
         custom_launch_options = None
-        if special_game_type in ["fnv", "enderal"]:
+        if special_game_type in ["fnv", "fo3", "enderal"]:
             logger.info(f"Using registry injection approach for {special_game_type.upper()} modlist")
         else:
             logger.debug("Standard modlist - no special game handling needed")
@@ -372,7 +201,8 @@ class WorkflowMixin:
             )
             if not success:
                 logger.error("Failed to create shortcut with native Steam service")
-                return False, None, None, None
+                from jackify.shared.errors import shortcut_write_failed
+                raise shortcut_write_failed("create_shortcut_with_native_service returned failure")
             
             logger.info(f"Step 1 completed: Shortcut created with native service, AppID: {appid}")
             if progress_callback:
@@ -398,7 +228,8 @@ class WorkflowMixin:
                 logger.info("Step 2: restart_steam() returned %s", restart_ok)
                 if not restart_ok:
                     logger.error("Failed to start Steam")
-                    return False, None, None, None
+                    from jackify.shared.errors import steam_restart_failed
+                    raise steam_restart_failed("Steam did not come back within the expected time")
 
                 logger.info("Step 2 completed: Steam started")
                 if progress_callback:
@@ -415,7 +246,8 @@ class WorkflowMixin:
             
             if not self.create_prefix_with_proton_wrapper(appid):
                 logger.error("Failed to create Proton prefix")
-                return False, None, None, None
+                from jackify.shared.errors import prefix_creation_failed
+                raise prefix_creation_failed("create_prefix_with_proton_wrapper returned failure")
             
             logger.info("Step 3 completed: Proton prefix created")
             if progress_callback:
@@ -437,7 +269,7 @@ class WorkflowMixin:
             # Get prefix path (needed for logging regardless of game type)
             prefix_path = self.get_prefix_path(appid)
 
-            if special_game_type in ["fnv", "enderal"]:
+            if special_game_type in ["fnv", "fo3", "enderal"]:
                 logger.info(f"Step 5: Injecting {special_game_type.upper()} game registry entries")
                 if progress_callback:
                     progress_callback(f"{self._get_progress_timestamp()} Injecting {special_game_type.upper()} game registry entries...")
@@ -448,8 +280,6 @@ class WorkflowMixin:
                     logger.warning("Could not find prefix path for registry injection")
             else:
                 logger.info("Step 5: Skipping registry injection for standard modlist")
-                if progress_callback:
-                    progress_callback(f"{self._get_progress_timestamp()} No special game registry injection needed")
 
             # Step 5.5: Pre-create game-specific directories for all modlists
             logger.info(f"Step 5.5: Creating game-specific user directories")
@@ -477,10 +307,13 @@ class WorkflowMixin:
             return True, prefix_path, appid, last_timestamp
             
         except Exception as e:
-            logger.error(f"Error in working workflow: {e}")
+            logger.error(f"Error in working workflow: {e}", exc_info=True)
             if progress_callback:
                 progress_callback(f"Error: {str(e)}")
-            return False, None, None, None
+            from jackify.shared.errors import JackifyError, prefix_creation_failed
+            if isinstance(e, JackifyError):
+                raise
+            raise prefix_creation_failed(str(e)) from e
 
     def continue_workflow_after_conflict_resolution(self, shortcut_name: str, modlist_install_dir: str, 
                                                   final_exe_path: str, appid: int, progress_callback=None) -> Tuple[bool, Optional[Path], Optional[int]]:
@@ -520,7 +353,8 @@ class WorkflowMixin:
             
             if not self.create_prefix_with_proton_wrapper(appid):
                 logger.error("Failed to create Proton prefix")
-                return False, None, None, None
+                from jackify.shared.errors import prefix_creation_failed
+                raise prefix_creation_failed("create_prefix_with_proton_wrapper returned failure")
             
             logger.info("Step 3 completed: Proton prefix created")
             if progress_callback:

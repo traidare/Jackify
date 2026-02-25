@@ -66,12 +66,12 @@ class OAuthTokenHandler:
                 # Linux machine-id
                 with open('/etc/machine-id', 'r') as f:
                     machine_id = f.read().strip()
-            except:
+            except (OSError, IOError):
                 try:
                     # Alternative locations
                     with open('/var/lib/dbus/machine-id', 'r') as f:
                         machine_id = f.read().strip()
-                except:
+                except (OSError, IOError):
                     pass
 
             # Combine multiple sources of machine-specific data
@@ -221,7 +221,7 @@ class OAuthTokenHandler:
                 # Clean up temp file on error
                 try:
                     os.unlink(temp_path)
-                except:
+                except (OSError, IOError):
                     pass
                 raise e
 

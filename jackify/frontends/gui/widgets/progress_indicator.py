@@ -103,11 +103,22 @@ class OverallProgressIndicator(QWidget):
         """
         # Update status text
         display_text = progress.display_text
-        if not display_text or display_text == "Processing...":
-            display_text = progress.phase_name or progress.phase.value.title() or "Processing..."
-        
-        # Add total download size, remaining size (MB/GB), and ETA for download phase
         from jackify.shared.progress_models import InstallationPhase, FileProgress
+        if not display_text or display_text == "Processing...":
+            if progress.phase == InstallationPhase.UNKNOWN:
+                # Don't overwrite the banner with "Unknown" for unrecognized section headers;
+                # preserve whatever was showing before.
+                current = self.status_label.text()
+                if current and current not in ("Ready to install", "Unknown", "Processing...", ""):
+                    display_text = current
+                else:
+                    display_text = "Processing..."
+            else:
+                display_text = progress.phase_name or progress.phase.value.title() or "Processing..."
+        if progress.phase == InstallationPhase.DOWNLOAD and progress.phase_max_steps > 0 and progress.phase_step <= 0:
+            display_text = display_text.replace(f"[{progress.phase_step}/{progress.phase_max_steps}]", "").replace("  ", " ").strip()
+
+        # Add total download size, remaining size (MB/GB), and ETA for download phase
         if progress.phase == InstallationPhase.DOWNLOAD:
             # Try to get overall download totals - either from data_total or aggregate from active_files
             total_bytes = progress.data_total
@@ -188,20 +199,30 @@ class OverallProgressIndicator(QWidget):
             from jackify.shared.progress_models import InstallationPhase
             is_bsa_building = progress.get_phase_label() == "Building BSAs"
             
-            # For install/extract/download/BSA building phases, prefer step-based progress (more accurate)
-            # Prevent carrying over 100% from previous phases
-            if progress.phase in (InstallationPhase.INSTALL, InstallationPhase.EXTRACT, InstallationPhase.DOWNLOAD) or is_bsa_building:
+            # Download phase often has byte-level progress before step counters move.
+            # Prefer byte progress first to avoid misleading 0% while downloading.
+            if progress.phase == InstallationPhase.DOWNLOAD:
+                if progress.data_total > 0:
+                    display_percent = (progress.data_processed / progress.data_total) * 100.0
+                elif progress.active_files:
+                    aggregate_total = sum(f.total_size for f in progress.active_files if f.total_size > 0)
+                    aggregate_current = sum(f.current_size for f in progress.active_files if f.current_size > 0)
+                    if aggregate_total > 0:
+                        display_percent = (aggregate_current / aggregate_total) * 100.0
+                if display_percent <= 0 and progress.phase_max_steps > 0 and progress.phase_step > 0:
+                    display_percent = (progress.phase_step / progress.phase_max_steps) * 100.0
+                elif display_percent <= 0 and progress.overall_percent > 0 and progress.overall_percent < 100.0:
+                    display_percent = progress.overall_percent
+            # For install/extract/BSA phases, prefer step progress, then bytes.
+            elif progress.phase in (InstallationPhase.INSTALL, InstallationPhase.EXTRACT) or is_bsa_building:
                 if progress.phase_max_steps > 0:
                     display_percent = (progress.phase_step / progress.phase_max_steps) * 100.0
                 elif progress.data_total > 0 and progress.data_processed > 0:
                     display_percent = (progress.data_processed / progress.data_total) * 100.0
+                elif progress.overall_percent > 0 and progress.overall_percent < 100.0:
+                    display_percent = progress.overall_percent
                 else:
-                    # If no step/data info, use overall_percent but only if it's reasonable
-                    # Don't carry over 100% from previous phase
-                    if progress.overall_percent > 0 and progress.overall_percent < 100.0:
-                        display_percent = progress.overall_percent
-                    else:
-                        display_percent = 0.0  # Reset if we don't have valid progress
+                    display_percent = 0.0  # Reset if we don't have valid progress
             else:
                 # For other phases, prefer data progress, then overall_percent, then step progress
                 if progress.data_total > 0 and progress.data_processed > 0:
@@ -211,6 +232,8 @@ class OverallProgressIndicator(QWidget):
                 elif progress.phase_max_steps > 0:
                     display_percent = (progress.phase_step / progress.phase_max_steps) * 100.0
             
+            # Clamp to avoid transient parser values creating invalid percentages.
+            display_percent = max(0.0, min(100.0, display_percent))
             self.progress_bar.setValue(int(display_percent))
             
             # Update tooltip with detailed information
@@ -264,4 +287,3 @@ class OverallProgressIndicator(QWidget):
             self.progress_bar.setValue(0)
             self.progress_bar.setToolTip("")
             self.status_label.setToolTip("")
-

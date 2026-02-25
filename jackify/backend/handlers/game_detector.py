@@ -15,6 +15,7 @@ class GameDetector:
             'skyrim': ['Skyrim Special Edition', 'Skyrim'],
             'fallout4': ['Fallout 4'],
             'falloutnv': ['Fallout New Vegas'],
+            'fallout3': ['Fallout 3'],
             'oblivion': ['Oblivion'],
             'starfield': ['Starfield'],
             'oblivion_remastered': ['Oblivion Remastered']
@@ -34,6 +35,8 @@ class GameDetector:
             return 'fallout4'
         elif any(keyword in modlist_lower for keyword in ['fallout new vegas', 'fonv', 'fnv', 'new vegas', 'nvse']):
             return 'falloutnv'
+        elif any(keyword in modlist_lower for keyword in ['fallout 3', 'fo3', 'fallout3', 'fose']):
+            return 'fallout3'
         elif any(keyword in modlist_lower for keyword in ['oblivion', 'obse', 'shivering isles']):
             return 'oblivion'
         elif any(keyword in modlist_lower for keyword in ['starfield', 'sf', 'starfieldse']):
@@ -108,6 +111,12 @@ class GameDetector:
                 'required_dlc': [],
                 'compatibility_tools': ['protontricks', 'winetricks']
             },
+            'fallout3': {
+                'launcher': 'FOSE',
+                'min_proton_version': '5.0',
+                'required_dlc': [],
+                'compatibility_tools': ['protontricks', 'winetricks']
+            },
             'oblivion': {
                 'launcher': 'OBSE',
                 'min_proton_version': '5.0',
@@ -173,6 +182,7 @@ class GameDetector:
             'skyrim': 'SKSE',
             'fallout4': 'F4SE', 
             'falloutnv': 'NVSE',
+            'fallout3': 'FOSE',
             'oblivion': 'OBSE',
             'starfield': 'SFSE',
             'oblivion_remastered': 'OBSE'
@@ -205,6 +215,7 @@ class GameDetector:
             'skyrim': ['vcrun2019', 'dotnet48', 'dxvk'],
             'fallout4': ['vcrun2019', 'dotnet48', 'dxvk'],
             'falloutnv': ['vcrun2019', 'dotnet48'],
+            'fallout3': ['vcrun2019', 'dotnet48'],
             'oblivion': ['vcrun2019', 'dotnet48'],
             'starfield': ['vcrun2022', 'dotnet6', 'dotnet7', 'dxvk'],
             'oblivion_remastered': ['vcrun2022', 'dotnet6', 'dotnet7', 'dxvk']
@@ -222,6 +233,7 @@ class GameDetector:
             'skyrim': ['SkyrimSE.exe', 'Skyrim.exe'],
             'fallout4': ['Fallout4.exe'],
             'falloutnv': ['FalloutNV.exe'],
+            'fallout3': ['Fallout3.exe'],
             'oblivion': ['Oblivion.exe']
         }
         
@@ -249,6 +261,11 @@ class GameDetector:
                 'ini_files': ['Fallout.ini', 'FalloutPrefs.ini'],
                 'config_dirs': ['Data', 'Saves'],
                 'registry_keys': ['HKEY_LOCAL_MACHINE\\SOFTWARE\\Bethesda Softworks\\FalloutNV']
+            },
+            'fallout3': {
+                'ini_files': ['Fallout.ini', 'FalloutPrefs.ini'],
+                'config_dirs': ['Data', 'Saves'],
+                'registry_keys': ['HKEY_LOCAL_MACHINE\\SOFTWARE\\Bethesda Softworks\\Fallout3']
             },
             'oblivion': {
                 'ini_files': ['Oblivion.ini'],

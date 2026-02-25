@@ -258,6 +258,7 @@ class ModlistInstallCLIConfigurationMixin:
                 try:
                     # Read output in binary mode to properly handle carriage returns
                     buffer = b''
+                    inline_progress_active = False
                     last_progress_time = time.time()
                     
                     while True:
@@ -282,7 +283,16 @@ class ModlistInstallCLIConfigurationMixin:
                                     continue
                             # Enhance Nexus download errors with modlist context
                             enhanced_line = self._enhance_nexus_error(line)
-                            print(enhanced_line, end='')
+                            clean_line = enhanced_line.rstrip('\r\n')
+                            if clean_line.startswith("Installing files "):
+                                print(f"\r{clean_line}", end='')
+                                sys.stdout.flush()
+                                inline_progress_active = True
+                            else:
+                                if inline_progress_active:
+                                    print()
+                                    inline_progress_active = False
+                                print(enhanced_line, end='')
                             buffer = b''
                             last_progress_time = time.time()
                         elif chunk == b'\r':
@@ -300,7 +310,15 @@ class ModlistInstallCLIConfigurationMixin:
                                     continue
                             # Enhance Nexus download errors with modlist context
                             enhanced_line = self._enhance_nexus_error(line)
-                            print(enhanced_line, end='')
+                            clean_line = enhanced_line.rstrip('\r\n')
+                            if clean_line.startswith("Installing files "):
+                                print(f"\r{clean_line}", end='')
+                                inline_progress_active = True
+                            else:
+                                if inline_progress_active:
+                                    print()
+                                    inline_progress_active = False
+                                print(enhanced_line, end='')
                             sys.stdout.flush()
                             buffer = b''
                             last_progress_time = time.time()
@@ -314,7 +332,13 @@ class ModlistInstallCLIConfigurationMixin:
                     # Print any remaining buffer content
                     if buffer:
                         line = buffer.decode('utf-8', errors='replace')
+                        if inline_progress_active:
+                            print()
+                            inline_progress_active = False
                         print(line, end='')
+
+                    if inline_progress_active:
+                        print()
                     
                     proc.wait()
                     
@@ -415,7 +439,10 @@ class ModlistInstallCLIConfigurationMixin:
             if not is_gui_mode:
                 # Prompt user if they want to configure Steam shortcut now
                 print("\n" + "-" * 28)
-                print(f"{COLOR_PROMPT}Would you like to add '{shortcut_name}' to Steam and configure it now?{COLOR_RESET}")
+                print(
+                    f"{COLOR_PROMPT}Would you like to add '{shortcut_name}' to Steam and configure it now? "
+                    f"Steam will restart and close any running game.{COLOR_RESET}"
+                )
                 configure_choice = input(f"{COLOR_PROMPT}Configure now? (Y/n): {COLOR_RESET}").strip().lower()
                 
                 if configure_choice == 'n':
@@ -424,71 +451,61 @@ class ModlistInstallCLIConfigurationMixin:
             
             # Proceed with Steam configuration
             self.logger.info(f"Starting Steam configuration for '{shortcut_name}'")
-            
-            # Step 1: Create Steam shortcut first
+
             mo2_exe_path = os.path.join(install_dir_str, 'ModOrganizer.exe')
-            
-            # Use the working shortcut creation process from legacy code
+
             from .shortcut_handler import ShortcutHandler
             shortcut_handler = ShortcutHandler(steamdeck=self.steamdeck, verbose=False)
-            
-            # Create nxmhandler.ini to suppress NXM popup
             shortcut_handler.write_nxmhandler_ini(install_dir_str, mo2_exe_path)
-            
-            # Create shortcut with working NativeSteamService
-            from ..services.native_steam_service import NativeSteamService
-            steam_service = NativeSteamService()
-            
-            success, app_id = steam_service.create_shortcut_with_proton(
-                app_name=shortcut_name,
-                exe_path=mo2_exe_path,
-                start_dir=os.path.dirname(mo2_exe_path),
-                launch_options="%command%",
-                tags=["Jackify"],
-                proton_version="proton_experimental"
-            )
-            
-            if not success or not app_id:
-                self.logger.error("Failed to create Steam shortcut")
-                print(f"{COLOR_ERROR}Failed to create Steam shortcut. Check logs for details.{COLOR_RESET}")
-                return
-            
-            # Step 2: Handle Steam restart and manual steps (if not in GUI mode)
-            if not is_gui_mode:
-                print(f"\n{COLOR_INFO}Steam shortcut created successfully!{COLOR_RESET}")
-                print("Steam needs to restart to detect the new shortcut.")
-                
-                restart_choice = input("\nRestart Steam automatically now? (Y/n): ").strip().lower()
-                if restart_choice == 'n':
-                    print("\nPlease restart Steam manually and complete the Proton setup steps.")
-                    print("You can configure this modlist later using 'Configure Existing Modlist'.")
+
+            from ..services.automated_prefix_service import AutomatedPrefixService
+            prefix_service = AutomatedPrefixService()
+
+            def _cli_progress(message):
+                noisy_patterns = (
+                    "using bundled tools directory",
+                    "bundled tools available",
+                    "checking winetricks dependencies",
+                    "(bundled)",
+                    "(system)",
+                    "wget",
+                    "curl",
+                    "aria2c",
+                    "sha256sum",
+                    "cabextract",
+                )
+                message_lc = message.lower()
+                if any(pattern in message_lc for pattern in noisy_patterns):
+                    self.logger.debug("Automated prefix detail: %s", message)
                     return
-                
-                # Restart Steam
-                print("\nRestarting Steam...")
-                if shortcut_handler.secure_steam_restart():
-                    print(f"{COLOR_INFO}Steam restarted successfully.{COLOR_RESET}")
-                    
-                    # Display manual Proton steps
-                    from .menu_handler import ModlistMenuHandler
-                    from .config_handler import ConfigHandler
-                    config_handler = ConfigHandler()
-                    menu_handler = ModlistMenuHandler(config_handler)
-                    menu_handler._display_manual_proton_steps(shortcut_name)
-                    
-                    input(f"\n{COLOR_PROMPT}Once you have completed ALL the steps above, press Enter to continue...{COLOR_RESET}")
-                    
-                    # Get the updated AppID after launch
-                    new_app_id = shortcut_handler.get_appid_for_shortcut(shortcut_name, mo2_exe_path)
-                    if new_app_id and new_app_id.isdigit() and int(new_app_id) > 0:
-                        app_id = new_app_id
-                    else:
-                        print(f"{COLOR_ERROR}Could not find valid AppID after launch. Configuration may not work properly.{COLOR_RESET}")
+                print(f"{COLOR_INFO}{message}{COLOR_RESET}")
+
+            try:
+                _result = prefix_service.run_working_workflow(
+                    shortcut_name, install_dir_str, mo2_exe_path, _cli_progress, steamdeck=self.steamdeck
+                )
+            except Exception as _wf_err:
+                from jackify.shared.errors import JackifyError
+                if isinstance(_wf_err, JackifyError):
+                    self.logger.error(f"Automated prefix setup failed: {_wf_err.message}")
+                    print(f"{COLOR_ERROR}{_wf_err.message}{COLOR_RESET}")
+                    if _wf_err.suggestion:
+                        print(f"{COLOR_INFO}What to do: {_wf_err.suggestion}{COLOR_RESET}")
                 else:
-                    print(f"{COLOR_ERROR}Steam restart failed. Please restart manually and configure later.{COLOR_RESET}")
-                    return
-            
-            # Step 3: Build configuration context with the AppID
+                    self.logger.error(f"Automated prefix setup failed: {_wf_err}")
+                    print(f"{COLOR_ERROR}Automated prefix setup failed. Check logs for details.{COLOR_RESET}")
+                return
+
+            if isinstance(_result, tuple) and len(_result) == 4:
+                success, _prefix_path, app_id, _last_ts = _result
+            else:
+                success, app_id = False, None
+
+            if not success:
+                self.logger.error("Automated prefix setup failed")
+                print(f"{COLOR_ERROR}Automated prefix setup failed. Check logs for details.{COLOR_RESET}")
+                return
+
             config_context = {
                 'name': shortcut_name,
                 'appid': app_id,
@@ -496,17 +513,14 @@ class ModlistInstallCLIConfigurationMixin:
                 'mo2_exe_path': mo2_exe_path,
                 'resolution': self.context.get('resolution'),
                 'skip_confirmation': is_gui_mode,
-                'manual_steps_completed': not is_gui_mode  # True if we did manual steps above
+                'manual_steps_completed': True
             }
-            
-            # Step 4: Use ModlistMenuHandler to run the complete configuration
+
             from .menu_handler import ModlistMenuHandler
             from .config_handler import ConfigHandler
-            
+
             config_handler = ConfigHandler()
             modlist_menu = ModlistMenuHandler(config_handler)
-            
-            self.logger.info("Running post-installation configuration phase")
             configuration_success = modlist_menu.run_modlist_configuration_phase(config_context)
             
             if configuration_success:
@@ -524,4 +538,3 @@ class ModlistInstallCLIConfigurationMixin:
             else:
                 print(f"{COLOR_WARNING}Could not detect game type from ModOrganizer.ini for automated configuration.{COLOR_RESET}")
             print(f"{COLOR_INFO}You may need to manually configure the modlist for Steam/Proton.{COLOR_RESET}")
-

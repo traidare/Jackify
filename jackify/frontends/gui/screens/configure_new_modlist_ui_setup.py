@@ -10,22 +10,15 @@ from ..shared_theme import JACKIFY_COLOR_BLUE, DEBUG_BORDERS
 from ..utils import set_responsive_minimum
 from jackify.frontends.gui.widgets.progress_indicator import OverallProgressIndicator
 from jackify.frontends.gui.widgets.file_progress_list import FileProgressList
+import logging
 
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class ConfigureNewModlistUISetupMixin:
     """Mixin providing UI setup and control management for ConfigureNewModlistScreen."""
 
-
     def __init__(self, stacked_widget=None, main_menu_index=0, dev_mode=False, system_info=None):
         super().__init__()
-        debug_print("DEBUG: ConfigureNewModlistScreen __init__ called")
+        logger.debug("DEBUG: ConfigureNewModlistScreen __init__ called")
         self.stacked_widget = stacked_widget
         self.main_menu_index = main_menu_index
         self.dev_mode = dev_mode
@@ -179,7 +172,7 @@ class ConfigureNewModlistUISetupMixin:
             combo_items = [self.resolution_combo.itemText(i) for i in range(self.resolution_combo.count())]
             resolution_index = self.resolution_service.get_resolution_index(saved_resolution, combo_items)
             self.resolution_combo.setCurrentIndex(resolution_index)
-            debug_print(f"DEBUG: Loaded saved resolution: {saved_resolution} (index: {resolution_index})")
+            logger.debug(f"DEBUG: Loaded saved resolution: {saved_resolution} (index: {resolution_index})")
         elif is_steam_deck:
             # Set default to 1280x800 (Steam Deck)
             combo_items = [self.resolution_combo.itemText(i) for i in range(self.resolution_combo.count())]
@@ -363,11 +356,6 @@ class ConfigureNewModlistUISetupMixin:
         # Now collect all actionable controls after UI is fully built
         self._collect_actionable_controls()
 
-
-
-
-
-
     def _collect_actionable_controls(self):
         """Collect all actionable controls that should be disabled during operations (except Cancel)"""
         self._actionable_controls = [
@@ -382,13 +370,11 @@ class ConfigureNewModlistUISetupMixin:
             self.auto_restart_checkbox,
         ]
 
-
     def _disable_controls_during_operation(self):
         """Disable all actionable controls during configure operations (except Cancel)"""
         for control in self._actionable_controls:
             if control:
                 control.setEnabled(False)
-
 
     def _enable_controls_after_operation(self):
         """Re-enable all actionable controls after configure operations complete"""
@@ -396,19 +382,16 @@ class ConfigureNewModlistUISetupMixin:
             if control:
                 control.setEnabled(True)
 
-
     def refresh_paths(self):
         """Refresh cached paths when config changes."""
         from jackify.shared.paths import get_jackify_logs_dir
         self.modlist_log_path = get_jackify_logs_dir() / 'Configure_New_Modlist_workflow.log'
         os.makedirs(os.path.dirname(self.modlist_log_path), exist_ok=True)
 
-
     def resizeEvent(self, event):
         """Handle window resize to prioritize form over console"""
         super().resizeEvent(event)
         self._adjust_console_for_form_priority()
-
 
     def _adjust_console_for_form_priority(self):
         """Console now dynamically fills available space with stretch=1, no manual calculation needed"""
@@ -417,7 +400,6 @@ class ConfigureNewModlistUISetupMixin:
         self.console.setMaximumHeight(16777215)  # Reset to default maximum
         self.console.setMinimumHeight(50)  # Keep minimum height for usability
 
-
     def _setup_scroll_tracking(self):
         """Set up scroll tracking for professional auto-scroll behavior"""
         scrollbar = self.console.verticalScrollBar()
@@ -425,16 +407,13 @@ class ConfigureNewModlistUISetupMixin:
         scrollbar.sliderReleased.connect(self._on_scrollbar_released)
         scrollbar.valueChanged.connect(self._on_scrollbar_value_changed)
 
-
     def _on_scrollbar_pressed(self):
         """User started manually scrolling"""
         self._user_manually_scrolled = True
 
-
     def _on_scrollbar_released(self):
         """User finished manually scrolling"""
         self._user_manually_scrolled = False
-
 
     def _on_scrollbar_value_changed(self):
         """Track if user is at bottom of scroll area"""
@@ -448,18 +427,15 @@ class ConfigureNewModlistUISetupMixin:
             from PySide6.QtCore import QTimer
             QTimer.singleShot(100, self._reset_manual_scroll_if_at_bottom)
 
-
     def _reset_manual_scroll_if_at_bottom(self):
         """Reset manual scroll flag if user is still at bottom after delay"""
         scrollbar = self.console.verticalScrollBar()
         if scrollbar.value() >= scrollbar.maximum() - 1:
             self._user_manually_scrolled = False
 
-
     def _on_show_details_toggled(self, checked):
         """Handle Show Details checkbox toggle"""
         self._toggle_console_visibility(checked)
-
 
     def _toggle_console_visibility(self, is_checked):
         """Toggle console visibility and window size - matches pattern from other screens"""
@@ -553,7 +529,6 @@ class ConfigureNewModlistUISetupMixin:
             # Notify parent to collapse
             self.resize_request.emit("compact")
 
-
     def update_top_panel(self):
         try:
             result = subprocess.run([
@@ -596,7 +571,6 @@ class ConfigureNewModlistUISetupMixin:
         except Exception as e:
             self.process_monitor.setPlainText(f"[process info unavailable: {e}]")
 
-
     def _check_protontricks(self):
         """Check if protontricks is available before critical operations"""
         try:
@@ -627,5 +601,4 @@ class ConfigureNewModlistUISetupMixin:
                                  f"Unable to verify protontricks installation: {e}\n\n"
                                  "Continuing anyway, but some features may not work correctly.")
             return True  # Continue anyway
-
 

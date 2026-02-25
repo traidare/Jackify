@@ -72,7 +72,12 @@ class RegistryOperationsMixin:
             return False
 
     def _apply_universal_dotnet_fixes(self, modlist_compatdata_path: str):
-        """Apply universal dotnet4.x compatibility registry fixes to ALL modlists"""
+        """Apply universal dotnet4.x compatibility registry fixes to ALL modlists.
+
+        Direct file editing is preferred over `wine reg add` — faster, no Wine
+        process overhead, and works even when Proton isn't on PATH.  Falls back
+        to subprocess wine reg add when the reg files haven't been created yet.
+        """
         try:
             prefix_path = os.path.join(modlist_compatdata_path, "pfx")
             if not os.path.exists(prefix_path):
@@ -81,57 +86,97 @@ class RegistryOperationsMixin:
 
             logger.info("Applying universal dotnet4.x compatibility registry fixes...")
 
-            # Find the appropriate Wine binary to use for registry operations
+            user_reg = os.path.join(prefix_path, "user.reg")
+            system_reg = os.path.join(prefix_path, "system.reg")
+
+            fix1 = fix2 = False
+
+            if os.path.exists(user_reg):
+                fix1 = self._reg_set_value(
+                    user_reg,
+                    "[Software\\\\Wine\\\\DllOverrides]",
+                    '"*mscoree"',
+                    '"native"',
+                )
+            if os.path.exists(system_reg):
+                fix2 = self._reg_set_value(
+                    system_reg,
+                    "[Software\\\\Microsoft\\\\.NETFramework]",
+                    '"OnlyUseLatestCLR"',
+                    "dword:00000001",
+                )
+
+            if fix1 and fix2:
+                logger.info("Universal dotnet4.x compatibility fixes applied via direct reg file editing")
+                return True
+
+            # Fall back to wine reg add when reg files are not present yet
+            logger.debug("Reg files not ready; falling back to wine reg add")
             wine_binary = self._find_wine_binary_for_registry(modlist_compatdata_path)
             if not wine_binary:
-                logger.error("Could not find Wine binary for registry operations")
+                logger.error("Could not find Wine binary for registry fallback")
                 return False
 
-            # Set environment for Wine registry operations
             env = os.environ.copy()
             env['WINEPREFIX'] = prefix_path
-            env['WINEDEBUG'] = '-all'  # Suppress Wine debug output
+            env['WINEDEBUG'] = '-all'
 
-            # Registry fix 1: Set *mscoree=native DLL override (asterisk for full override)
-            # Use native .NET runtime instead of Wine's
-            logger.debug("Setting *mscoree=native DLL override...")
-            cmd1 = [
-                wine_binary, 'reg', 'add',
-                'HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides',
-                '/v', '*mscoree', '/t', 'REG_SZ', '/d', 'native', '/f'
-            ]
+            r1 = subprocess.run(
+                [wine_binary, 'reg', 'add',
+                 'HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides',
+                 '/v', '*mscoree', '/t', 'REG_SZ', '/d', 'native', '/f'],
+                env=env, capture_output=True, text=True, errors='replace',
+            )
+            r2 = subprocess.run(
+                [wine_binary, 'reg', 'add',
+                 'HKEY_LOCAL_MACHINE\\Software\\Microsoft\\.NETFramework',
+                 '/v', 'OnlyUseLatestCLR', '/t', 'REG_DWORD', '/d', '1', '/f'],
+                env=env, capture_output=True, text=True, errors='replace',
+            )
 
-            result1 = subprocess.run(cmd1, env=env, capture_output=True, text=True, errors='replace')
-            if result1.returncode == 0:
-                logger.info("Successfully applied *mscoree=native DLL override")
+            ok = r1.returncode == 0 and r2.returncode == 0
+            if ok:
+                logger.info("Universal dotnet4.x fixes applied via wine reg add fallback")
             else:
-                logger.warning(f"Failed to set *mscoree DLL override: {result1.stderr}")
-
-            # Registry fix 2: Set OnlyUseLatestCLR=1
-            # Use latest CLR to avoid .NET version conflicts
-            logger.debug("Setting OnlyUseLatestCLR=1 registry entry...")
-            cmd2 = [
-                wine_binary, 'reg', 'add',
-                'HKEY_LOCAL_MACHINE\\Software\\Microsoft\\.NETFramework',
-                '/v', 'OnlyUseLatestCLR', '/t', 'REG_DWORD', '/d', '1', '/f'
-            ]
-
-            result2 = subprocess.run(cmd2, env=env, capture_output=True, text=True, errors='replace')
-            if result2.returncode == 0:
-                logger.info("Successfully applied OnlyUseLatestCLR=1 registry entry")
-            else:
-                logger.warning(f"Failed to set OnlyUseLatestCLR: {result2.stderr}")
-
-            # Both fixes applied - this should eliminate dotnet4.x installation requirements
-            if result1.returncode == 0 and result2.returncode == 0:
-                logger.info("Universal dotnet4.x compatibility fixes applied successfully")
-                return True
-            else:
-                logger.warning("Some dotnet4.x registry fixes failed, but continuing...")
-                return False
+                logger.warning("Some dotnet4.x registry fixes failed")
+            return ok
 
         except Exception as e:
             logger.error(f"Failed to apply universal dotnet4.x fixes: {e}")
+            return False
+
+    def _reg_set_value(self, reg_path: str, section: str, key: str, value: str) -> bool:
+        """Set or add a key=value pair in a Wine .reg text file."""
+        try:
+            with open(reg_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+
+            in_section = False
+            updated = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.lower() == section.lower():
+                    in_section = True
+                elif stripped.startswith('[') and in_section:
+                    # Reached next section without finding key; insert before it
+                    lines.insert(i, f'{key}={value}\n')
+                    updated = True
+                    break
+                elif in_section and stripped.startswith(key.lower()) or (in_section and stripped.lower().startswith(key.lower())):
+                    lines[i] = f'{key}={value}\n'
+                    updated = True
+                    break
+
+            if not updated:
+                if not in_section:
+                    lines.append(f'\n{section}\n')
+                lines.append(f'{key}={value}\n')
+
+            with open(reg_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            return True
+        except Exception as e:
+            logger.debug(f"_reg_set_value failed for {reg_path}: {e}")
             return False
 
     def _find_wine_binary_for_registry(self, modlist_compatdata_path: str) -> Optional[str]:
@@ -227,8 +272,41 @@ class RegistryOperationsMixin:
             logger.debug(f"Error during recursive wine search in {proton_path}: {e}")
             return None
 
+    def _create_canonical_game_symlink(self, pfx_path: Path, real_game_path: str) -> bool:
+        """Symlink the real game dir into the prefix at the canonical Windows Steam path.
+
+        The Bethesda launcher validates that Installed Path looks like a proper
+        Windows Steam path (C:\\Program Files...).  A raw Z:\\ or D:\\ path passes
+        the existence check on the user's own machine but fails for other users
+        whose Wine path translation differs.  By symlinking the real directory into
+        drive_c/Program Files (x86)/Steam/steamapps/common/, we write a canonical
+        C:\\ path to the registry that satisfies the launcher, while NVSE follows
+        the symlink to reach the actual executable.
+        """
+        try:
+            real_path = Path(real_game_path)
+            game_dir_name = real_path.name
+
+            symlink_parent = pfx_path / "drive_c" / "Program Files (x86)" / "Steam" / "steamapps" / "common"
+            symlink_parent.mkdir(parents=True, exist_ok=True)
+
+            symlink_path = symlink_parent / game_dir_name
+
+            if symlink_path.is_symlink():
+                symlink_path.unlink()
+            elif symlink_path.exists():
+                logger.warning(f"Real directory already exists at symlink target {symlink_path}, skipping")
+                return False
+
+            symlink_path.symlink_to(real_path)
+            logger.info(f"Created game symlink: {symlink_path} -> {real_path}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to create canonical game symlink: {e}")
+            return False
+
     def _inject_game_registry_entries(self, modlist_compatdata_path: str, special_game_type: str):
-        """Detect and inject FNV/Enderal game paths and apply universal dotnet4.x compatibility fixes"""
+        """Detect and inject FNV/FO3/Enderal game paths into the modlist prefix registry."""
         system_reg_path = os.path.join(modlist_compatdata_path, "pfx", "system.reg")
         if not os.path.exists(system_reg_path):
             logger.warning("system.reg not found, skipping game path injection")
@@ -236,41 +314,74 @@ class RegistryOperationsMixin:
 
         logger.info("Detecting game registry entries...")
 
-        # Universal dotnet4.x registry fixes applied in modlist_handler.py after .reg downloads
-        
-        # Game configurations
         games_config = {
             "22380": {  # Fallout New Vegas AppID
                 "name": "Fallout New Vegas",
                 "common_names": ["Fallout New Vegas", "FalloutNV"],
                 "registry_section": "[Software\\\\Wow6432Node\\\\bethesda softworks\\\\falloutnv]",
-                "path_key": "Installed Path"
+                "path_key": "Installed Path",
+            },
+            "22300": {  # Fallout 3 AppID
+                "name": "Fallout 3",
+                "common_names": ["Fallout 3", "Fallout3", "Fallout 3 GOTY"],
+                "registry_section": "[Software\\\\Wow6432Node\\\\bethesda softworks\\\\fallout3]",
+                "path_key": "Installed Path",
+            },
+            "22370": {  # Fallout 3 GOTY AppID alias
+                "name": "Fallout 3",
+                "common_names": ["Fallout 3 GOTY", "Fallout 3"],
+                "registry_section": "[Software\\\\Wow6432Node\\\\bethesda softworks\\\\fallout3]",
+                "path_key": "Installed Path",
             },
             "976620": {  # Enderal Special Edition AppID
                 "name": "Enderal",
                 "common_names": ["Enderal: Forgotten Stories (Special Edition)", "Enderal Special Edition", "Enderal"],
-                "registry_section": "[Software\\\\Wow6432Node\\\\SureAI\\\\Enderal SE]", 
-                "path_key": "installed path"
-            }
+                "registry_section": "[Software\\\\Wow6432Node\\\\SureAI\\\\Enderal SE]",
+                "path_key": "installed path",
+            },
         }
-        
-        # Detect and inject each game
+
+        pfx_path = Path(modlist_compatdata_path) / "pfx"
+
         for app_id, config in games_config.items():
             game_path = self._find_steam_game(app_id, config["common_names"])
-            if game_path:
-                logger.info(f"Detected {config['name']} at: {game_path}")
+            if not game_path:
+                logger.debug(f"{config['name']} not found in Steam libraries")
+                continue
+
+            logger.info(f"Detected {config['name']} at: {game_path}")
+
+            # Create a symlink inside the prefix at the canonical Windows Steam path so the
+            # Bethesda launcher sees a proper C:\ path while NVSE can still resolve the exe.
+            symlink_ok = self._create_canonical_game_symlink(pfx_path, game_path)
+
+            if symlink_ok:
+                game_dir_name = Path(game_path).name
+                canonical_win_path = f"C:\\Program Files (x86)\\Steam\\steamapps\\common\\{game_dir_name}"
+                wine_val = canonical_win_path.replace("\\", "\\\\") + "\\\\"
+                success = self._reg_set_value(
+                    system_reg_path,
+                    config["registry_section"],
+                    f'"{config["path_key"]}"',
+                    f'"{wine_val}"',
+                )
+                if success:
+                    logger.info(f"Registry set to canonical path for {config['name']}: {canonical_win_path}")
+                else:
+                    logger.warning(f"Failed to set canonical registry path for {config['name']}")
+            else:
+                # Symlink failed — fall back to writing the real Z:/D: path
+                logger.warning(f"Symlink failed for {config['name']}, writing real path to registry")
                 success = self._update_registry_path(
                     system_reg_path,
-                    config["registry_section"], 
+                    config["registry_section"],
                     config["path_key"],
                     game_path
                 )
                 if success:
-                    logger.info(f"Updated registry entry for {config['name']}")
+                    logger.info(f"Updated registry entry for {config['name']} (real path fallback)")
                 else:
                     logger.warning(f"Failed to update registry entry for {config['name']}")
-            else:
-                logger.debug(f"{config['name']} not found in Steam libraries")
-                
+
         logger.info("Game registry injection completed")
 

@@ -6,15 +6,10 @@ from pathlib import Path
 from typing import Optional
 import subprocess
 from jackify.frontends.gui.services.message_service import MessageService
+from jackify.shared.errors import manual_steps_incomplete
+import logging
 
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class ModlistFetchThread(QThread):
     result = Signal(list, str)
     def __init__(self, cli_path, game_type, project_root, log_path, mode='list-modlists', modlist_name=None, install_dir=None, download_dir=None):
@@ -56,7 +51,6 @@ class ModlistFetchThread(QThread):
         except Exception as e:
             self.result.emit([], str(e))
 
-
 class SelectionDialog(QDialog):
     def __init__(self, title, items, parent=None):
         super().__init__(parent)
@@ -78,7 +72,6 @@ class SelectionDialog(QDialog):
         self.selected_item = item.text()
         self.accept()
 
-
 class ConfigureNewModlistDialogsMixin:
     """Mixin providing dialog management for ConfigureNewModlistScreen."""
 
@@ -97,7 +90,6 @@ class ConfigureNewModlistDialogsMixin:
         if hasattr(self, 'config_thread') and self.config_thread.isRunning():
             self.config_thread.terminate()
             self.config_thread.wait(1000)
-
 
     def show_shortcut_conflict_dialog(self, conflicts):
         """Show dialog to resolve shortcut name conflicts"""
@@ -209,7 +201,6 @@ class ConfigureNewModlistDialogsMixin:
         
         dialog.exec()
 
-
     def retry_automated_workflow_with_new_name(self, new_name):
         """Retry the automated workflow with a new shortcut name"""
         # Update the modlist name field temporarily
@@ -220,16 +211,13 @@ class ConfigureNewModlistDialogsMixin:
         self._safe_append_text(f"Retrying with new shortcut name: '{new_name}'")
         self._start_automated_prefix_workflow(new_name, os.path.dirname(self.install_dir_edit.text().strip()) if self.install_dir_edit.text().strip().endswith('ModOrganizer.exe') else self.install_dir_edit.text().strip(), self.install_dir_edit.text().strip(), self.resolution_combo.currentText())
 
-
     def handle_validation_failure(self, missing_text):
         """Handle manual steps validation failure with retry logic"""
         self._manual_steps_retry_count += 1
         
         if self._manual_steps_retry_count < 3:
             # Show retry dialog
-            MessageService.critical(self, "Manual Steps Incomplete", 
-                               f"Manual steps validation failed:\n\n{missing_text}\n\n"
-                               "Please complete the manual steps and try again.", safety_level="medium")
+            MessageService.show_error(self, manual_steps_incomplete())
             # Show manual steps dialog again
             extra_warning = ""
             if self._manual_steps_retry_count >= 2:
@@ -237,10 +225,8 @@ class ConfigureNewModlistDialogsMixin:
             self.show_manual_steps_dialog(extra_warning)
         else:
             # Max retries reached
-            MessageService.critical(self, "Manual Steps Failed", 
-                               "Manual steps validation failed after multiple attempts.", safety_level="medium")
+            MessageService.show_error(self, manual_steps_incomplete())
             self.on_configuration_complete(False, "Manual steps validation failed after multiple attempts", self.modlist_name_edit.text().strip())
-
 
     def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str):
         """Check if VNV automation should run and execute if applicable
@@ -265,7 +251,7 @@ class ConfigureNewModlistDialogsMixin:
             game_root = game_paths.get('Fallout New Vegas')
 
             if not game_root:
-                debug_print("DEBUG: VNV automation skipped - FNV game root not found")
+                logger.debug("DEBUG: VNV automation skipped - FNV game root not found")
                 return
 
             # Confirmation callback - show dialog to user
@@ -297,7 +283,7 @@ class ConfigureNewModlistDialogsMixin:
                 )
 
                 if file_path:
-                    return Path(file_path)
+                    return Path(file_path).resolve()
                 return None
 
             # Run automation
@@ -322,10 +308,9 @@ class ConfigureNewModlistDialogsMixin:
                 )
 
         except Exception as e:
-            debug_print(f"ERROR: Failed to run VNV automation: {e}")
+            logger.debug(f"ERROR: Failed to run VNV automation: {e}")
             import traceback
-            debug_print(f"Traceback: {traceback.format_exc()}")
-
+            logger.debug(f"Traceback: {traceback.format_exc()}")
 
     def show_next_steps_dialog(self, message):
         dlg = QDialog(self)
@@ -350,5 +335,4 @@ class ConfigureNewModlistDialogsMixin:
         btn_return.clicked.connect(on_return)
         btn_exit.clicked.connect(on_exit)
         dlg.exec()
-
 

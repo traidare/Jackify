@@ -218,7 +218,9 @@ class WineUtilsProtonMixin:
             Path.home() / ".steam/root/compatibilitytools.d",
             Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/compatibilitytools.d",
             Path.home() / ".var/app/com.valvesoftware.Steam.CompatibilityTool.Proton-GE/.local/share/Steam/compatibilitytools.d",
-            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/compatibilitytools.d/GE-Proton"
+            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/compatibilitytools.d/GE-Proton",
+            Path("/usr/share/steam/compatibilitytools.d"),
+            Path("/usr/lib/steam/compatibilitytools.d"),
         ]
         return [path for path in compat_paths if path.exists()]
 
@@ -357,7 +359,7 @@ class WineUtilsProtonMixin:
                     if version_match:
                         major_ver = int(version_match.group(1))
                         minor_ver = int(version_match.group(2))
-                        priority = 200 + (major_ver * 10) + minor_ver
+                        priority = 200 + (major_ver * 10) + minor_ver  # kept for backward compat; sort uses tuple key
                         compat_name = WineUtilsProtonMixin._parse_compat_tool_name(proton_dir) or dir_name
                         found_versions.append({
                             'name': dir_name,
@@ -374,7 +376,7 @@ class WineUtilsProtonMixin:
                         logger.debug(f"Skipping {dir_name} - unknown GE-Proton version format")
             except Exception as e:
                 logger.warning(f"Error scanning {compat_path}: {e}")
-        found_versions.sort(key=lambda x: x['priority'], reverse=True)
+        found_versions.sort(key=lambda x: (x['major_version'], x['minor_version']), reverse=True)
         logger.info(f"Found {len(found_versions)} GE-Proton version(s)")
         return found_versions
 
@@ -427,7 +429,16 @@ class WineUtilsProtonMixin:
         all_versions.extend(WineUtilsProtonMixin.scan_ge_proton_versions())
         all_versions.extend(WineUtilsProtonMixin.scan_thirdparty_proton_versions())
         all_versions.extend(WineUtilsProtonMixin.scan_valve_proton_versions())
-        all_versions.sort(key=lambda x: x['priority'], reverse=True)
+        _TYPE_RANK = {'GE-Proton': 2, 'ThirdParty-Proton': 1, 'Valve-Proton': 0}
+        all_versions.sort(
+            key=lambda x: (
+                _TYPE_RANK.get(x.get('type', ''), 0),
+                x.get('major_version', 0),
+                x.get('minor_version', 0),
+                x.get('priority', 0),
+            ),
+            reverse=True,
+        )
         unique_versions = []
         seen_names = set()
         for version in all_versions:
@@ -443,17 +454,16 @@ class WineUtilsProtonMixin:
 
     @staticmethod
     def select_best_proton() -> Optional[Dict[str, Any]]:
-        """Select the best available Proton (GE or Valve). Excludes third-party builds."""
+        """Select the best available Proton version. Prefers GE-Proton, then Valve, then any third-party build."""
         available_versions = WineUtilsProtonMixin.scan_all_proton_versions()
         if not available_versions:
-            logger.warning("No compatible Proton versions found")
+            logger.warning("No Proton versions found")
             return None
-        compatible_versions = [v for v in available_versions if v.get('type') in ('GE-Proton', 'Valve-Proton')]
-        if not compatible_versions:
-            logger.warning("No compatible Proton versions found (only third-party builds available)")
-            return None
-        best_version = compatible_versions[0]
-        logger.info(f"Selected best Proton version: {best_version['name']} ({best_version['type']})")
+        best_version = available_versions[0]
+        if best_version.get('type') == 'ThirdParty-Proton':
+            logger.debug(f"No GE/Valve Proton found; using third-party build: {best_version['name']}")
+        else:
+            logger.info(f"Selected Proton: {best_version['name']} ({best_version['type']})")
         return best_version
 
     @staticmethod

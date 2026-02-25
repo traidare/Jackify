@@ -170,6 +170,7 @@ class ModlistOperationsConfigurationCLIMixin:
                 proc = self._current_process
 
                 buffer = b''
+                inline_progress_active = False
                 while True:
                     chunk = proc.stdout.read(1)
                     if not chunk:
@@ -185,7 +186,16 @@ class ModlistOperationsConfigurationCLIMixin:
                             else:
                                 buffer = b''
                                 continue
-                        print(line, end='')
+                        clean_line = line.rstrip('\r\n')
+                        if clean_line.startswith("Installing files "):
+                            print(f"\r{clean_line}", end='')
+                            sys.stdout.flush()
+                            inline_progress_active = True
+                        else:
+                            if inline_progress_active:
+                                print()
+                                inline_progress_active = False
+                            print(line, end='')
                         buffer = b''
                     elif chunk == b'\r':
                         line = buffer.decode('utf-8', errors='replace')
@@ -196,7 +206,15 @@ class ModlistOperationsConfigurationCLIMixin:
                             else:
                                 buffer = b''
                                 continue
-                        print(line, end='')
+                        clean_line = line.rstrip('\r\n')
+                        if clean_line.startswith("Installing files "):
+                            print(f"\r{clean_line}", end='')
+                            inline_progress_active = True
+                        else:
+                            if inline_progress_active:
+                                print()
+                                inline_progress_active = False
+                            print(line, end='')
                         sys.stdout.flush()
                         buffer = b''
 
@@ -209,7 +227,13 @@ class ModlistOperationsConfigurationCLIMixin:
                         else:
                             line = ''
                     if line:
+                        if inline_progress_active:
+                            print()
+                            inline_progress_active = False
                         print(line, end='')
+
+                if inline_progress_active:
+                    print()
 
                 proc.wait()
                 self._current_process = None
@@ -343,7 +367,10 @@ class ModlistOperationsConfigurationCLIMixin:
             if not is_gui_mode:
                 self.logger.debug("configuration_phase: Not in GUI mode, prompting user for configuration...")
                 print("\n" + "-" * 28)
-                print(f"{COLOR_PROMPT}Would you like to add '{shortcut_name}' to Steam and configure it now?{COLOR_RESET}")
+                print(
+                    f"{COLOR_PROMPT}Would you like to add '{shortcut_name}' to Steam and configure it now? "
+                    f"Steam will restart and close any running game.{COLOR_RESET}"
+                )
                 configure_choice = input(f"{COLOR_PROMPT}Configure now? (Y/n): {COLOR_RESET}").strip().lower()
                 self.logger.debug(f"configuration_phase: User choice: '{configure_choice}'")
 
@@ -383,11 +410,30 @@ class ModlistOperationsConfigurationCLIMixin:
                 start_time = time.time()
 
                 def progress_callback(message):
+                    noisy_patterns = (
+                        "using bundled tools directory",
+                        "bundled tools available",
+                        "checking winetricks dependencies",
+                        "(bundled)",
+                        "(system)",
+                        "wget",
+                        "curl",
+                        "aria2c",
+                        "sha256sum",
+                        "cabextract",
+                    )
+                    message_lc = message.lower()
+                    if any(pattern in message_lc for pattern in noisy_patterns):
+                        # Keep dependency/tool chatter in logs only for CLI readability.
+                        self.logger.debug("Automated prefix detail: %s", message)
+                        return
+
                     elapsed = time.time() - start_time
                     hours = int(elapsed // 3600)
                     minutes = int((elapsed % 3600) // 60)
                     seconds = int(elapsed % 60)
                     timestamp = f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
+                    self.logger.info("Automated prefix progress: %s", message)
                     print(f"{COLOR_INFO}{timestamp} {message}{COLOR_RESET}")
 
                 try:
@@ -534,6 +580,58 @@ class ModlistOperationsConfigurationCLIMixin:
             if configuration_success:
                 print(f"{COLOR_SUCCESS}Configuration completed successfully!{COLOR_RESET}")
                 self.logger.info("Post-installation configuration completed successfully")
+                try:
+                    # Ensure CLI install flow gets the same VNV automation behavior as GUI.
+                    from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable
+                    from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
+
+                    modlist_name_for_automation = self.context.get('modlist_name') or shortcut_name or ""
+                    def _confirm_vnv(description: str) -> bool:
+                        print(f"\n{description}\n")
+                        try:
+                            user_input = input(f"{COLOR_PROMPT}Run VNV post-install automation now? (Y/n): {COLOR_RESET}").strip().lower()
+                        except (EOFError, KeyboardInterrupt):
+                            return False
+                        return user_input in ("", "y", "yes")
+                    def _manual_vnv_file(title: str, instructions: str):
+                        print(f"\n{COLOR_WARNING}{title}{COLOR_RESET}")
+                        print(instructions)
+                        try:
+                            file_input = input(f"{COLOR_PROMPT}Path to downloaded file: {COLOR_RESET}").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            return None
+                        if not file_input:
+                            return None
+                        selected = Path(file_input).expanduser().resolve()
+                        return selected if selected.exists() else None
+                    automation_ran, vnv_error = run_vnv_automation_if_applicable(
+                        modlist_name=modlist_name_for_automation,
+                        modlist_install_location=Path(install_dir_str),
+                        game_root=None,  # Auto-detect from modlist structure.
+                        ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
+                        progress_callback=lambda msg: print(msg),
+                        manual_file_callback=_manual_vnv_file,
+                        confirmation_callback=_confirm_vnv,
+                    )
+                    if automation_ran and not vnv_error:
+                        print(f"{COLOR_INFO}VNV post-install automation completed.{COLOR_RESET}")
+                    if vnv_error:
+                        print(f"{COLOR_WARNING}VNV automation encountered an error: {vnv_error}{COLOR_RESET}")
+                        print(f"{COLOR_INFO}You can complete these steps manually by following: https://vivanewvegas.moddinglinked.com/wabbajack.html{COLOR_RESET}")
+                except Exception as vnv_err:
+                    self.logger.error("VNV post-install automation failed: %s", vnv_err, exc_info=True)
+                    print(f"{COLOR_WARNING}VNV automation could not be completed. Check logs for details.{COLOR_RESET}")
+                try:
+                    # v0.4.0 contract: offer TTW flow for eligible FNV lists (e.g., Begin Again).
+                    from jackify.backend.handlers.modlist_install_cli_ttw import prompt_ttw_if_eligible
+
+                    prompt_ttw_if_eligible(
+                        install_dir_str,
+                        self.context.get('modlist_name') or shortcut_name or "",
+                    )
+                except Exception as ttw_err:
+                    self.logger.error("TTW post-install prompt failed: %s", ttw_err, exc_info=True)
+                    print(f"{COLOR_WARNING}TTW integration prompt failed. Check logs for details.{COLOR_RESET}")
             else:
                 print(f"{COLOR_WARNING}Configuration had some issues but completed.{COLOR_RESET}")
                 self.logger.warning("Post-installation configuration had issues")

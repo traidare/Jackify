@@ -28,7 +28,7 @@ class NextStepsDialog(QDialog):
     Displays the same information as the CLI completion message but in a proper GUI format.
     """
     
-    def __init__(self, modlist_name: str, parent=None):
+    def __init__(self, modlist_name: str, workflow_type: str = "configure_new", parent=None):
         """
         Initialize the Next Steps dialog.
         
@@ -38,6 +38,7 @@ class NextStepsDialog(QDialog):
         """
         super().__init__(parent)
         self.modlist_name = modlist_name
+        self.workflow_type = workflow_type
         self.setWindowTitle("Next Steps")
         self.setModal(True)
         self.setFixedSize(600, 400)
@@ -189,10 +190,13 @@ class NextStepsDialog(QDialog):
         Returns:
             Formatted completion text string
         """
-        # Match the CLI completion text from menu_handler.py lines 627-631
+        is_existing = self.workflow_type == "configure_existing"
+        completion_title = "Modlist Configuration complete!" if is_existing else "Modlist Install and Configuration complete!"
+        completion_log = "Configure_Existing_Modlist_workflow.log" if is_existing else "Configure_New_Modlist_workflow.log"
+
         completion_text = f"""✓ Configuration completed successfully!
 
-Modlist Install and Configuration complete!:
+{completion_title}
 
   • You should now be able to Launch '{self.modlist_name}' through Steam.
   • Congratulations and enjoy the game!
@@ -200,6 +204,6 @@ Modlist Install and Configuration complete!:
 NOTE: If you experience ENB issues, consider using GE-Proton 10-14 instead of
 Valve's Proton 10 (known ENB compatibility issues in Valve's Proton 10).
 
-Detailed log available at: {get_jackify_logs_dir()}/Configure_New_Modlist_workflow.log"""
+Detailed log available at: {get_jackify_logs_dir()}/{completion_log}"""
 
         return completion_text 

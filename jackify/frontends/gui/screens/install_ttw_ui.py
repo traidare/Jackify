@@ -9,15 +9,6 @@ from ..utils import set_responsive_minimum  # Runtime import
 
 logger = logging.getLogger(__name__)
 
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
 class TTWUIMixin:
     """Mixin providing UI helper methods for InstallTTWScreen."""
 
@@ -93,7 +84,7 @@ class TTWUIMixin:
 
             # On Steam Deck, skip window resizing - keep default Steam Deck window size
             if is_steamdeck:
-                debug_print("DEBUG: Steam Deck detected, skipping window resize in _toggle_console_visibility")
+                logger.debug("DEBUG: Steam Deck detected, skipping window resize in _toggle_console_visibility")
                 return
 
             # Restore main window to normal size (clear any compact constraints)
@@ -146,7 +137,7 @@ class TTWUIMixin:
 
             # On Steam Deck, skip window resizing to keep maximized state
             if is_steamdeck:
-                debug_print("DEBUG: Steam Deck detected, skipping window resize in collapse branch")
+                logger.debug("DEBUG: Steam Deck detected, skipping window resize in collapse branch")
                 return
 
             # Use fixed compact height for consistency across all workflow screens

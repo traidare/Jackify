@@ -1,9 +1,13 @@
 """
 Main window UI setup mixin.
 Stacked widget, screens, bottom bar, screen change handling.
+
+Screens 1-9 are lazy-initialised: placeholder QWidgets are inserted at startup
+and swapped for real screens on first navigation.  Only index 0 (MainMenu) is
+created eagerly because it is always visible first.
 """
 
-import sys
+import logging
 
 from PySide6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout,
@@ -15,81 +19,43 @@ from jackify import __version__
 from jackify.frontends.gui.shared_theme import DEBUG_BORDERS
 from jackify.frontends.gui.widgets.feature_placeholder import FeaturePlaceholder
 
+logger = logging.getLogger(__name__)
 
-def _debug_print(message):
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    ch = ConfigHandler()
-    if ch.get('debug_mode', False):
-        print(message)
+
+class _LazyPlaceholder(QWidget):
+    """Sentinel widget used in place of a not-yet-initialised screen."""
 
 
 class MainWindowUIMixin:
     """Mixin for main window UI: stacked widget, screens, bottom bar."""
 
     def _setup_ui(self, dev_mode=False):
+        self._dev_mode = dev_mode
         self.stacked_widget = QStackedWidget()
-        from jackify.frontends.gui.screens import (
-            MainMenu, ModlistTasksScreen, AdditionalTasksScreen,
-            InstallModlistScreen, ConfigureNewModlistScreen, ConfigureExistingModlistScreen,
-        )
-        from jackify.frontends.gui.screens.install_ttw import InstallTTWScreen
-        from jackify.frontends.gui.screens.wabbajack_installer import WabbajackInstallerScreen
 
+        # Only MainMenu is created eagerly (always shown first).
+        from jackify.frontends.gui.screens import MainMenu
         self.main_menu = MainMenu(stacked_widget=self.stacked_widget, dev_mode=dev_mode)
-        self.feature_placeholder = FeaturePlaceholder(stacked_widget=self.stacked_widget)
-        self.modlist_tasks_screen = ModlistTasksScreen(
-            stacked_widget=self.stacked_widget, main_menu_index=0, dev_mode=dev_mode
-        )
-        self.additional_tasks_screen = AdditionalTasksScreen(
-            stacked_widget=self.stacked_widget, main_menu_index=0, system_info=self.system_info
-        )
-        self.install_modlist_screen = InstallModlistScreen(
-            stacked_widget=self.stacked_widget, main_menu_index=0, system_info=self.system_info
-        )
-        self.configure_new_modlist_screen = ConfigureNewModlistScreen(
-            stacked_widget=self.stacked_widget, main_menu_index=0, system_info=self.system_info
-        )
-        self.configure_existing_modlist_screen = ConfigureExistingModlistScreen(
-            stacked_widget=self.stacked_widget, main_menu_index=0, system_info=self.system_info
-        )
-        self.install_ttw_screen = InstallTTWScreen(
-            stacked_widget=self.stacked_widget, main_menu_index=0, system_info=self.system_info
-        )
-        self.wabbajack_installer_screen = WabbajackInstallerScreen(
-            stacked_widget=self.stacked_widget, additional_tasks_index=3, system_info=self.system_info
-        )
+        self.stacked_widget.addWidget(self.main_menu)          # index 0
 
-        try:
-            self.install_ttw_screen.resize_request.connect(self._on_child_resize_request)
-        except Exception:
-            pass
-        try:
-            self.install_modlist_screen.resize_request.connect(self._on_child_resize_request)
-        except Exception:
-            pass
-        try:
-            self.configure_new_modlist_screen.resize_request.connect(self._on_child_resize_request)
-        except Exception:
-            pass
-        try:
-            self.configure_existing_modlist_screen.resize_request.connect(self._on_child_resize_request)
-        except Exception:
-            pass
-        try:
-            self.wabbajack_installer_screen.resize_request.connect(self._on_child_resize_request)
-        except Exception:
-            pass
+        # Indexes 1-9: insert lightweight placeholders now; real screens on demand.
+        for _ in range(9):
+            self.stacked_widget.addWidget(_LazyPlaceholder())
 
-        self.stacked_widget.addWidget(self.main_menu)
-        self.stacked_widget.addWidget(self.feature_placeholder)
-        self.stacked_widget.addWidget(self.modlist_tasks_screen)
-        self.stacked_widget.addWidget(self.additional_tasks_screen)
-        self.stacked_widget.addWidget(self.install_modlist_screen)
-        self.stacked_widget.addWidget(self.install_ttw_screen)
-        self.stacked_widget.addWidget(self.configure_new_modlist_screen)
-        self.stacked_widget.addWidget(self.wabbajack_installer_screen)
-        self.stacked_widget.addWidget(self.configure_existing_modlist_screen)
+        # Factory map: index -> callable that creates and caches the real screen.
+        self._screen_factories = {
+            1: self._make_feature_placeholder,
+            2: self._make_modlist_tasks_screen,
+            3: self._make_additional_tasks_screen,
+            4: self._make_install_modlist_screen,
+            5: self._make_install_ttw_screen,
+            6: self._make_configure_new_modlist_screen,
+            7: self._make_wabbajack_installer_screen,
+            8: self._make_configure_existing_modlist_screen,
+            9: self._make_install_mo2_screen,
+        }
 
+        self.stacked_widget.currentChanged.connect(self._lazy_init_screen)
         self.stacked_widget.currentChanged.connect(self._debug_screen_change)
         self.stacked_widget.currentChanged.connect(self._maintain_fullscreen_on_deck)
 
@@ -141,6 +107,121 @@ class MainWindowUIMixin:
         self.stacked_widget.setCurrentIndex(0)
         self._check_protontricks_on_startup()
 
+    def _lazy_init_screen(self, index: int) -> None:
+        """Swap placeholder at *index* for the real screen on first visit."""
+        if index == 0:
+            return
+        widget = self.stacked_widget.widget(index)
+        if not isinstance(widget, _LazyPlaceholder):
+            return
+        factory = self._screen_factories.get(index)
+        if factory is None:
+            return
+        real_screen = factory()
+        # Block signals for the entire swap including setCurrentWidget so that:
+        # (a) Qt's auto-current-change on removeWidget doesn't cascade into the
+        #     other placeholders via a re-entrant _lazy_init_screen call, and
+        # (b) setCurrentWidget does not fire a second currentChanged — the outer
+        #     currentChanged (which triggered this lazy init) is still being
+        #     dispatched and will reach _debug_screen_change with the real screen
+        #     already in place, so reset_screen_to_defaults runs exactly once.
+        self.stacked_widget.blockSignals(True)
+        self.stacked_widget.removeWidget(widget)
+        widget.deleteLater()
+        self.stacked_widget.insertWidget(index, real_screen)
+        self.stacked_widget.setCurrentWidget(real_screen)
+        self.stacked_widget.blockSignals(False)
+
+    def _make_feature_placeholder(self):
+        screen = FeaturePlaceholder(stacked_widget=self.stacked_widget)
+        self.feature_placeholder = screen
+        return screen
+
+    def _make_modlist_tasks_screen(self):
+        from jackify.frontends.gui.screens import ModlistTasksScreen
+        screen = ModlistTasksScreen(
+            stacked_widget=self.stacked_widget, main_menu_index=0, dev_mode=self._dev_mode
+        )
+        self.modlist_tasks_screen = screen
+        return screen
+
+    def _make_additional_tasks_screen(self):
+        from jackify.frontends.gui.screens import AdditionalTasksScreen
+        screen = AdditionalTasksScreen(
+            stacked_widget=self.stacked_widget, main_menu_index=0,
+            system_info=self.system_info, install_mo2_screen_index=9,
+        )
+        self.additional_tasks_screen = screen
+        return screen
+
+    def _make_install_modlist_screen(self):
+        from jackify.frontends.gui.screens import InstallModlistScreen
+        screen = InstallModlistScreen(
+            stacked_widget=self.stacked_widget, main_menu_index=2, system_info=self.system_info
+        )
+        self.install_modlist_screen = screen
+        try:
+            screen.resize_request.connect(self._on_child_resize_request)
+        except Exception:
+            pass
+        return screen
+
+    def _make_install_ttw_screen(self):
+        from jackify.frontends.gui.screens.install_ttw import InstallTTWScreen
+        screen = InstallTTWScreen(
+            stacked_widget=self.stacked_widget, main_menu_index=3, system_info=self.system_info
+        )
+        self.install_ttw_screen = screen
+        try:
+            screen.resize_request.connect(self._on_child_resize_request)
+        except Exception:
+            pass
+        return screen
+
+    def _make_configure_new_modlist_screen(self):
+        from jackify.frontends.gui.screens import ConfigureNewModlistScreen
+        screen = ConfigureNewModlistScreen(
+            stacked_widget=self.stacked_widget, main_menu_index=2, system_info=self.system_info
+        )
+        self.configure_new_modlist_screen = screen
+        try:
+            screen.resize_request.connect(self._on_child_resize_request)
+        except Exception:
+            pass
+        return screen
+
+    def _make_wabbajack_installer_screen(self):
+        from jackify.frontends.gui.screens.wabbajack_installer import WabbajackInstallerScreen
+        screen = WabbajackInstallerScreen(
+            stacked_widget=self.stacked_widget, additional_tasks_index=3, system_info=self.system_info
+        )
+        self.wabbajack_installer_screen = screen
+        try:
+            screen.resize_request.connect(self._on_child_resize_request)
+        except Exception:
+            pass
+        return screen
+
+    def _make_configure_existing_modlist_screen(self):
+        from jackify.frontends.gui.screens import ConfigureExistingModlistScreen
+        screen = ConfigureExistingModlistScreen(
+            stacked_widget=self.stacked_widget, main_menu_index=2, system_info=self.system_info
+        )
+        self.configure_existing_modlist_screen = screen
+        try:
+            screen.resize_request.connect(self._on_child_resize_request)
+        except Exception:
+            pass
+        return screen
+
+    def _make_install_mo2_screen(self):
+        from jackify.frontends.gui.screens.install_mo2_screen import InstallMO2Screen
+        screen = InstallMO2Screen(
+            stacked_widget=self.stacked_widget, additional_tasks_index=3, system_info=self.system_info
+        )
+        self.install_mo2_screen = screen
+        return screen
+
     def _debug_screen_change(self, index):
         try:
             idx = int(index) if index is not None else 0
@@ -167,21 +248,22 @@ class MainWindowUIMixin:
                 6: "Configure New Modlist",
                 7: "Wabbajack Installer",
                 8: "Configure Existing Modlist",
+                9: "Install MO2 Screen",
             }
             screen_name = screen_names.get(idx, f"Unknown Screen (Index {idx})")
             widget = self.stacked_widget.widget(idx)
         except (OverflowError, TypeError, ValueError):
             return
         widget_class = widget.__class__.__name__ if widget else "None"
-        print(f"[DEBUG] Screen changed to Index {idx}: {screen_name} (Widget: {widget_class})", file=sys.stderr)
+        logger.debug(f"Screen changed to Index {idx}: {screen_name} (Widget: {widget_class})")
         if idx == 4:
-            print("   Install Modlist Screen details:", file=sys.stderr)
-            print(f"      - Widget type: {type(widget)}", file=sys.stderr)
-            print(f"      - Widget file: {widget.__class__.__module__}", file=sys.stderr)
+            logger.debug("Install Modlist Screen details:")
+            logger.debug(f"  Widget type: {type(widget)}")
+            logger.debug(f"  Widget file: {widget.__class__.__module__}")
             if hasattr(widget, 'windowTitle'):
-                print(f"      - Window title: {widget.windowTitle()}", file=sys.stderr)
+                logger.debug(f"  Window title: {widget.windowTitle()}")
             if hasattr(widget, 'layout'):
                 layout = widget.layout()
                 if layout:
-                    print(f"      - Layout type: {type(layout)}", file=sys.stderr)
-                    print(f"      - Layout children count: {layout.count()}", file=sys.stderr)
+                    logger.debug(f"  Layout type: {type(layout)}")
+                    logger.debug(f"  Layout children count: {layout.count()}")

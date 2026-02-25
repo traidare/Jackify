@@ -145,7 +145,7 @@ def increase_file_descriptor_limit(target_limit=1048576):
         # Get current limit for reporting
         try:
             soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
-        except:
+        except (OSError, ValueError):
             soft_limit = "unknown"
         
         return False, soft_limit, soft_limit, f"Failed to increase file descriptor limit: {e}"
@@ -154,7 +154,7 @@ class ProcessManager:
     """
     Shared process manager for robust subprocess launching, tracking, and cancellation.
     """
-    def __init__(self, cmd, env=None, cwd=None, text=False, bufsize=0):
+    def __init__(self, cmd, env=None, cwd=None, text=False, bufsize=0, separate_stderr=False):
         self.cmd = cmd
         # Default to cleaned environment if None to prevent AppImage variable inheritance
         if env is None:
@@ -164,15 +164,17 @@ class ProcessManager:
         self.cwd = cwd
         self.text = text
         self.bufsize = bufsize
+        self.separate_stderr = separate_stderr
         self.proc = None
         self.process_group_pid = None
         self._start_process()
 
     def _start_process(self):
+        stderr_arg = subprocess.PIPE if self.separate_stderr else subprocess.STDOUT
         self.proc = subprocess.Popen(
             self.cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=stderr_arg,
             env=self.env,
             cwd=self.cwd,
             text=self.text,
@@ -186,38 +188,48 @@ class ProcessManager:
         Attempt to robustly terminate the process and its children.
         """
         cleanup_attempts = 0
-        if self.proc:
-            try:
-                self.proc.terminate()
+        try:
+            if self.proc:
                 try:
-                    self.proc.wait(timeout=timeout_terminate)
-                    return
-                except subprocess.TimeoutExpired:
-                    pass
-            except Exception:
-                pass
-            try:
-                self.proc.kill()
-                try:
-                    self.proc.wait(timeout=timeout_kill)
-                    return
-                except subprocess.TimeoutExpired:
-                    pass
-            except Exception:
-                pass
-            # Kill process group if possible
-            if self.process_group_pid:
-                try:
-                    os.killpg(self.process_group_pid, signal.SIGKILL)
+                    self.proc.terminate()
+                    try:
+                        self.proc.wait(timeout=timeout_terminate)
+                        return
+                    except subprocess.TimeoutExpired:
+                        pass
                 except Exception:
                     pass
-            # Last resort: pkill by command name
-            while cleanup_attempts < max_cleanup_attempts:
                 try:
-                    subprocess.run(['pkill', '-f', os.path.basename(self.cmd[0])], timeout=5, capture_output=True)
+                    self.proc.kill()
+                    try:
+                        self.proc.wait(timeout=timeout_kill)
+                        return
+                    except subprocess.TimeoutExpired:
+                        pass
                 except Exception:
                     pass
-                cleanup_attempts += 1
+                # Kill entire process group (catches 7zz and other child processes)
+                if self.process_group_pid:
+                    try:
+                        os.killpg(self.process_group_pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+                # Last resort: pkill by command name
+                while cleanup_attempts < max_cleanup_attempts:
+                    try:
+                        subprocess.run(['pkill', '-f', os.path.basename(self.cmd[0])], timeout=5, capture_output=True)
+                    except Exception:
+                        pass
+                    cleanup_attempts += 1
+        finally:
+            # Always close pipes — unblocks threads blocked on read(1) or iterating stderr
+            if self.proc:
+                for pipe in (self.proc.stdout, self.proc.stderr):
+                    if pipe:
+                        try:
+                            pipe.close()
+                        except Exception:
+                            pass
 
     def is_running(self):
         return self.proc and self.proc.poll() is None
@@ -234,5 +246,8 @@ class ProcessManager:
 
     def read_stdout_char(self):
         if self.proc and self.proc.stdout:
-            return self.proc.stdout.read(1)
-        return None 
+            try:
+                return self.proc.stdout.read(1)
+            except (ValueError, OSError):
+                return None
+        return None

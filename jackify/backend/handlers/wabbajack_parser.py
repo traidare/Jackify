@@ -36,7 +36,7 @@ class WabbajackParser:
         
         # List of supported games in Jackify
         self.supported_games = [
-            'skyrim', 'fallout4', 'falloutnv', 'oblivion', 
+            'skyrim', 'fallout4', 'falloutnv', 'fallout3', 'oblivion',
             'starfield', 'oblivion_remastered', 'enderal'
         ]
     

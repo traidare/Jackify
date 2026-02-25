@@ -9,6 +9,8 @@ import time
 
 from .install_modlist_installer_thread import InstallerThread
 from .install_modlist_output_mixin import InstallModlistOutputMixin
+from jackify.backend.services.steam_restart_service import ensure_flatpak_steam_filesystem_access
+from jackify.shared.errors import install_dir_create_failed
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,7 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
     def validate_and_start_install(self):
         import time
         self._install_workflow_start_time = time.time()
-        from .install_modlist import debug_print
-        debug_print('DEBUG: validate_and_start_install called')
+        logger.debug('DEBUG: validate_and_start_install called')
 
         # Immediately show "Initialising" status to provide feedback
         self.progress_indicator.set_status("Initialising...", 0)
@@ -90,8 +91,6 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
                 return
 
             # Log authentication status at install start (Issue #111 diagnostics)
-            import logging
-            logger = logging.getLogger(__name__)
             auth_method = self.auth_service.get_auth_method()
             logger.info("=" * 60)
             logger.info("Authentication Status at Install Start")
@@ -144,7 +143,7 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
                     try:
                         os.makedirs(install_dir, exist_ok=True)
                     except Exception as e:
-                        MessageService.critical(self, "Error", f"Failed to create install directory:\n{e}")
+                        MessageService.show_error(self, install_dir_create_failed(install_dir, str(e)))
                         self._abort_install_validation()
                         return
                 else:
@@ -160,7 +159,7 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
                     try:
                         os.makedirs(downloads_dir, exist_ok=True)
                     except Exception as e:
-                        MessageService.critical(self, "Error", f"Failed to create downloads directory:\n{e}")
+                        MessageService.show_error(self, install_dir_create_failed(downloads_dir, str(e)))
                         self._abort_install_validation()
                         return
                 else:
@@ -172,18 +171,17 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
             if resolution and resolution != "Leave unchanged":
                 success = self.resolution_service.save_resolution(resolution)
                 if success:
-                    from .install_modlist import debug_print
-                    debug_print(f"DEBUG: Resolution saved successfully: {resolution}")
+                    logger.debug(f"DEBUG: Resolution saved successfully: {resolution}")
                 else:
-                    from .install_modlist import debug_print
-                    debug_print("DEBUG: Failed to save resolution")
+                    logger.debug("DEBUG: Failed to save resolution")
             else:
                 # Clear saved resolution if "Leave unchanged" is selected
                 if self.resolution_service.has_saved_resolution():
                     self.resolution_service.clear_saved_resolution()
-                    from .install_modlist import debug_print
-                    debug_print("DEBUG: Saved resolution cleared")
+                    logger.debug("DEBUG: Saved resolution cleared")
             
+            ensure_flatpak_steam_filesystem_access(Path(install_dir))
+
             # Handle parent directory saving
             self._save_parent_directories(install_dir, downloads_dir)
             
@@ -228,8 +226,7 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
                 # For online modlists, try to get game type from selected modlist
                 if hasattr(self, 'selected_modlist_info') and self.selected_modlist_info:
                     game_name = self.selected_modlist_info.get('game', '')
-                    from .install_modlist import debug_print
-                    debug_print(f"DEBUG: Detected game_name from selected_modlist_info: '{game_name}'")
+                    logger.debug(f"DEBUG: Detected game_name from selected_modlist_info: '{game_name}'")
                     
                     # Map game name to game type
                     game_mapping = {
@@ -244,15 +241,12 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
                         'enderal special edition': 'enderal'
                     }
                     game_type = game_mapping.get(game_name.lower())
-                    from .install_modlist import debug_print
-                    debug_print(f"DEBUG: Mapped game_name '{game_name}' to game_type: '{game_type}'")
+                    logger.debug(f"DEBUG: Mapped game_name '{game_name}' to game_type: '{game_type}'")
                     if not game_type:
                         game_type = 'unknown'
-                        from .install_modlist import debug_print
-                        debug_print(f"DEBUG: Game type not found in mapping, setting to 'unknown'")
+                        logger.debug(f"DEBUG: Game type not found in mapping, setting to 'unknown'")
                 else:
-                    from .install_modlist import debug_print
-                    debug_print(f"DEBUG: No selected_modlist_info found")
+                    logger.debug(f"DEBUG: No selected_modlist_info found")
                     game_type = 'unknown'
             
             # Store game type and name for later use
@@ -260,15 +254,13 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
             self._current_game_name = game_name
             
             # Check if game is supported
-            from .install_modlist import debug_print
-            debug_print(f"DEBUG: Checking if game_type '{game_type}' is supported")
-            debug_print(f"DEBUG: game_type='{game_type}', game_name='{game_name}'")
+            logger.debug(f"DEBUG: Checking if game_type '{game_type}' is supported")
+            logger.debug(f"DEBUG: game_type='{game_type}', game_name='{game_name}'")
             is_supported = self.wabbajack_parser.is_supported_game(game_type) if game_type else False
-            debug_print(f"DEBUG: is_supported_game('{game_type}') returned: {is_supported}")
+            logger.debug(f"DEBUG: is_supported_game('{game_type}') returned: {is_supported}")
             
             if game_type and not is_supported:
-                from .install_modlist import debug_print
-                debug_print(f"DEBUG: Game '{game_type}' is not supported, showing dialog")
+                logger.debug(f"DEBUG: Game '{game_type}' is not supported, showing dialog")
                 # Show unsupported game dialog
                 from ..widgets.unsupported_game_dialog import UnsupportedGameDialog
                 dialog = UnsupportedGameDialog(self, game_name)
@@ -285,8 +277,9 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
             self.file_progress_list.clear()
             self.file_progress_list.start_cpu_tracking()  # Start tracking CPU during installation
             self._premium_notice_shown = False
-            self._stalled_download_start_time = None  # Reset stall detection
+            self._stalled_download_start_time = None
             self._stalled_download_notified = False
+            self._stalled_data_snapshot = 0
             self._token_error_notified = False  # Reset token error notification
             self._premium_failure_active = False
             self._post_install_active = False
@@ -319,30 +312,26 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
                     )
                     return
             
-            from .install_modlist import debug_print
-            debug_print(f'DEBUG: Calling run_modlist_installer with modlist={modlist}, install_dir={install_dir}, downloads_dir={downloads_dir}, install_mode={install_mode}')
+            logger.debug(f'DEBUG: Calling run_modlist_installer with modlist={modlist}, install_dir={install_dir}, downloads_dir={downloads_dir}, install_mode={install_mode}')
             self.run_modlist_installer(modlist, install_dir, downloads_dir, api_key, install_mode, oauth_info)
         except Exception as e:
-            from .install_modlist import debug_print
-            debug_print(f"DEBUG: Exception in validate_and_start_install: {e}")
+            logger.debug(f"DEBUG: Exception in validate_and_start_install: {e}")
             import traceback
-            debug_print(f"DEBUG: Traceback: {traceback.format_exc()}")
+            logger.debug(f"DEBUG: Traceback: {traceback.format_exc()}")
             # Re-enable all controls after exception
             self._enable_controls_after_operation()
             self.cancel_btn.setVisible(True)
             self.cancel_install_btn.setVisible(False)
-            from .install_modlist import debug_print
-            debug_print(f"DEBUG: Controls re-enabled in exception handler")
+            logger.debug(f"DEBUG: Controls re-enabled in exception handler")
 
     def run_modlist_installer(self, modlist, install_dir, downloads_dir, api_key, install_mode='online', oauth_info=None):
-        from .install_modlist import debug_print
-        debug_print('DEBUG: run_modlist_installer called - USING THREADED BACKEND WRAPPER')
+        logger.debug('DEBUG: run_modlist_installer called - USING THREADED BACKEND WRAPPER')
         
         # Rotate log file at start of each workflow run (keep 5 backups)
         from jackify.backend.handlers.logging_handler import LoggingHandler
         log_handler = LoggingHandler()
         log_handler.rotate_log_file_per_run(Path(self.modlist_log_path), backup_count=5)
-        
+
         # Clear console for fresh installation output
         self.console.clear()
         from jackify import __version__ as jackify_version
@@ -368,4 +357,3 @@ class InstallWorkflowMixin(InstallModlistOutputMixin):
         # R&D: Pass progress state manager to thread
         self.install_thread.progress_state_manager = self.progress_state_manager
         self.install_thread.start()
-

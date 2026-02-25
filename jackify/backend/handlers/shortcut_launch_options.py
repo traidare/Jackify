@@ -153,7 +153,7 @@ class ShortcutLaunchOptionsMixin:
         content = (
             "[handlers]\n"
             "size=1\n"
-            "1\\games=\"skyrimse,skyrim\"\n"
+            "1\\games=\"skyrimse,skyrim,fallout4,falloutnv,fallout3,oblivion,enderal,starfield\"\n"
             f"1\\executable={win_path}\n"
             "1\\arguments=\n"
         )

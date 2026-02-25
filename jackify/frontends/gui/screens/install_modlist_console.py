@@ -3,7 +3,6 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QSizePolicy, QApplication
 from PySide6.QtGui import QTextCursor
 from jackify.frontends.gui.services.message_service import MessageService
-import re
 
 
 class ConsoleOutputMixin:
@@ -147,8 +146,16 @@ class ConsoleOutputMixin:
             self._write_to_log_file(message)
             return
         
-        # CRITICAL: Detect token/auth errors and ALWAYS show them (even when not in debug mode)
         msg_lower = message.lower()
+        # Engine informational line; keep in debug log only to reduce user-facing noise.
+        if (
+            'contains files with foreign characters' in msg_lower and
+            'using proton 7z.exe for extraction' in msg_lower
+        ):
+            self._write_to_log_file(message)
+            return
+        
+        # CRITICAL: Detect token/auth errors and ALWAYS show them (even when not in debug mode)
         token_error_keywords = [
             'token has expired',
             'token expired',
@@ -165,11 +172,9 @@ class ConsoleOutputMixin:
         
         is_token_error = any(keyword in msg_lower for keyword in token_error_keywords)
         if is_token_error:
-            # CRITICAL ERROR - always show, even if console is hidden
-            if not hasattr(self, '_token_error_notified'):
+            if not self._token_error_notified:
                 self._token_error_notified = True
-                # Show error dialog immediately
-                MessageService.error(
+                MessageService.critical(
                     self,
                     "Authentication Error",
                     (
@@ -268,7 +273,7 @@ class ConsoleOutputMixin:
 
         scrollbar = self.console.verticalScrollBar()
         # Check if user was at bottom BEFORE adding text
-        was_at_bottom = (scrollbar.value() >= scrollbar.maximum() - 1)  # Allow 1px tolerance
+        was_at_bottom = (scrollbar.value() >= scrollbar.maximum() - 1)
 
         # Add the text
         self.console.append(clean_text)
@@ -365,4 +370,3 @@ class ConsoleOutputMixin:
         except Exception:
             # Logging should never break the workflow
             pass
-

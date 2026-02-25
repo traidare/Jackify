@@ -9,16 +9,9 @@ from jackify.backend.handlers.progress_parser import ProgressStateManager
 from jackify.frontends.gui.widgets.progress_indicator import OverallProgressIndicator
 from jackify.frontends.gui.widgets.file_progress_list import FileProgressList
 import os
+import logging
 
-
-def debug_print(message):
-    """Print debug message only if debug mode is enabled"""
-    from jackify.backend.handlers.config_handler import ConfigHandler
-    config_handler = ConfigHandler()
-    if config_handler.get('debug_mode', False):
-        print(message)
-
-
+logger = logging.getLogger(__name__)
 class InstallModlistUISetupMixin:
     """Mixin providing UI initialization for InstallModlistScreen."""
 
@@ -76,8 +69,9 @@ class InstallModlistUISetupMixin:
         self.file_progress_list = FileProgressList()  # Shows all active files (scrolls if needed)
         self._premium_notice_shown = False
         self._premium_failure_active = False
-        self._stalled_download_start_time = None  # Track when downloads stall
+        self._stalled_download_start_time = None
         self._stalled_download_notified = False
+        self._stalled_data_snapshot = 0
         self._post_install_sequence = self._build_post_install_sequence()
         self._post_install_total_steps = len(self._post_install_sequence)
         self._post_install_current_step = 0
@@ -294,7 +288,7 @@ class InstallModlistUISetupMixin:
             combo_items = [self.resolution_combo.itemText(i) for i in range(self.resolution_combo.count())]
             resolution_index = self.resolution_service.get_resolution_index(saved_resolution, combo_items)
             self.resolution_combo.setCurrentIndex(resolution_index)
-            debug_print(f"DEBUG: Loaded saved resolution: {saved_resolution} (index: {resolution_index})")
+            logger.debug(f"DEBUG: Loaded saved resolution: {saved_resolution} (index: {resolution_index})")
         elif is_steam_deck:
             # Set default to 1280x800 (Steam Deck)
             combo_items = [self.resolution_combo.itemText(i) for i in range(self.resolution_combo.count())]
@@ -504,7 +498,6 @@ class InstallModlistUISetupMixin:
         self.top_timer.start(2000)
         # --- Start Installation button ---
         self.start_btn.clicked.connect(self.validate_and_start_install)
-        self.steam_restart_finished.connect(self._on_steam_restart_finished)
         
 
         

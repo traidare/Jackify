@@ -329,6 +329,9 @@ class ModlistDetectionMixin:
                     if 'nvse' in content or 'nvse_loader' in content or 'fallout new vegas' in content or 'falloutnv' in content:
                         self.logger.info("Detected FNV via ModOrganizer.ini markers")
                         return "fnv"
+                    if 'fose' in content or 'fose_loader' in content or ('fallout 3' in content and 'fallout 4' not in content):
+                        self.logger.info("Detected FO3 via ModOrganizer.ini markers")
+                        return "fo3"
                     if any(pattern in content for pattern in ['enderal launcher', 'enderal.exe', 'enderal launcher.exe', 'enderalsteam']):
                         self.logger.info("Detected Enderal via ModOrganizer.ini markers")
                         return "enderal"
@@ -353,6 +356,10 @@ class ModlistDetectionMixin:
             if nvse_loader.exists():
                 self.logger.info(f"Detected FNV modlist: found nvse_loader.exe in '{base}'")
                 return "fnv"
+            fose_loader = base / "fose_loader.exe"
+            if fose_loader.exists():
+                self.logger.info(f"Detected FO3 modlist: found fose_loader.exe in '{base}'")
+                return "fo3"
             enderal_launcher = base / "Enderal Launcher.exe"
             if enderal_launcher.exists():
                 self.logger.info(f"Detected Enderal modlist: found Enderal Launcher.exe in '{base}'")
@@ -366,6 +373,9 @@ class ModlistDetectionMixin:
                 if 'fallout new vegas' in gt or gt == 'fnv':
                     self.logger.info("Heuristic detection: game_var indicates FNV")
                     return "fnv"
+                if 'fallout 3' in gt or gt == 'fo3':
+                    self.logger.info("Heuristic detection: game_var indicates FO3")
+                    return "fo3"
                 if 'enderal' in gt:
                     self.logger.info("Heuristic detection: game_var indicates Enderal")
                     return "enderal"
