@@ -90,7 +90,6 @@ At this early stage of development, I'd prefer GitHub Issues for bug reports and
 ## Future Plans (not guaranteed)
 
 - Continue to expand supported games for fully automated configuration
-- Non-Premium / manual download support
 - GUI refinements
 - Dark/Light theme support
 
