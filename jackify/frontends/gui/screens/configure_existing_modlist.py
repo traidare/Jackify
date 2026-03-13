@@ -46,6 +46,22 @@ class ConfigureExistingModlistScreen(
 ):
     resize_request = Signal(str)
 
+    def _park_thread(self, thread, signal_names=None):
+        """Disconnect a running thread from this screen and keep it alive until it finishes."""
+        if thread is None:
+            return None
+        signal_names = signal_names or []
+        for signal_name in signal_names:
+            try:
+                getattr(thread, signal_name).disconnect()
+            except Exception:
+                pass
+        if not hasattr(self, "_parked_threads"):
+            self._parked_threads = []
+        self._parked_threads.append(thread)
+        self._parked_threads = [t for t in self._parked_threads if getattr(t, "isRunning", lambda: False)()]
+        return None
+
     def cleanup_processes(self):
         """Clean up any running processes when the window closes or is cancelled"""
         if hasattr(self, 'file_progress_list'):
@@ -55,13 +71,11 @@ class ConfigureExistingModlistScreen(
         for attr_name, value in list(vars(self).items()):
             try:
                 if isinstance(value, QThread) and value.isRunning():
-                    try:
-                        value.finished_signal.disconnect()
-                    except Exception:
-                        pass
-                    value.terminate()
-                    value.wait(2000)
-                    setattr(self, attr_name, None)
+                    signal_names = []
+                    for candidate in ("finished_signal", "progress_update", "configuration_complete", "error_occurred"):
+                        if hasattr(value, candidate):
+                            signal_names.append(candidate)
+                    setattr(self, attr_name, self._park_thread(value, signal_names))
             except Exception:
                 pass
 
@@ -96,13 +110,9 @@ class ConfigureExistingModlistScreen(
         super().hideEvent(event)
         if self._shortcut_loader is not None:
             if self._shortcut_loader.isRunning():
-                try:
-                    self._shortcut_loader.finished_signal.disconnect()
-                except Exception:
-                    pass
-                self._shortcut_loader.terminate()
-                self._shortcut_loader.wait(2000)
-            self._shortcut_loader = None
+                self._shortcut_loader = self._park_thread(self._shortcut_loader, ["finished_signal", "error_signal"])
+            else:
+                self._shortcut_loader = None
 
     def on_configuration_complete(self, success, message, modlist_name, enb_detected=False):
         """Handle configuration completion"""
@@ -226,12 +236,8 @@ class ConfigureExistingModlistScreen(
         
         # Clean up config thread if running
         if hasattr(self, 'config_thread') and self.config_thread and self.config_thread.isRunning():
-            logger.debug("DEBUG: Terminating ConfigurationThread")
-            try:
-                self.config_thread.progress_update.disconnect()
-                self.config_thread.configuration_complete.disconnect()
-                self.config_thread.error_occurred.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            self.config_thread.terminate()
-            self.config_thread.wait(2000)  # Wait up to 2 seconds 
+            logger.debug("DEBUG: Parking ConfigurationThread")
+            self.config_thread = self._park_thread(
+                self.config_thread,
+                ["progress_update", "configuration_complete", "error_occurred"],
+            )

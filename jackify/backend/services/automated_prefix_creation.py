@@ -5,11 +5,55 @@ import logging
 import os
 import time
 import subprocess
+import re
 
 logger = logging.getLogger(__name__)
 
 class PrefixCreationMixin:
     """Mixin providing prefix creation methods for AutomatedPrefixService."""
+
+    def _get_preferred_steam_root_and_type(self) -> tuple[Optional[Path], Optional[str]]:
+        """Resolve the active Steam root/type using the shared v0.5 selector."""
+        from jackify.shared.steam_utils import (
+            STEAM_PREFERENCE_AUTO,
+            resolve_preferred_steam_installation,
+        )
+        from ..handlers.config_handler import ConfigHandler
+
+        preference = STEAM_PREFERENCE_AUTO
+        try:
+            preference = ConfigHandler().get("steam_install_preference", STEAM_PREFERENCE_AUTO)
+        except Exception:
+            logger.debug("Could not read steam_install_preference; falling back to auto", exc_info=True)
+
+        preferred_type, preferred_root = resolve_preferred_steam_installation(preference)
+        return preferred_root, preferred_type
+
+    def _get_library_roots_for_steam_root(self, steam_root: Path) -> list[Path]:
+        """
+        Read library roots for one chosen Steam install only.
+
+        This avoids mixing native and Flatpak libraries in dual-install environments.
+        """
+        roots: list[Path] = [steam_root]
+        vdf_path = steam_root / "config" / "libraryfolders.vdf"
+        if not vdf_path.is_file():
+            return roots
+
+        try:
+            text = vdf_path.read_text(encoding="utf-8", errors="ignore")
+            for match in re.finditer(r'"path"\s*"([^"]+)"', text):
+                raw_path = match.group(1).replace("\\\\", "\\")
+                lib_root = Path(raw_path).expanduser()
+                try:
+                    resolved = lib_root.resolve()
+                except (OSError, RuntimeError):
+                    resolved = lib_root
+                if resolved not in roots:
+                    roots.append(resolved)
+        except Exception:
+            logger.debug("Failed reading libraryfolders.vdf for %s", steam_root, exc_info=True)
+        return roots
 
     def _get_compatdata_path_for_appid(self, appid: int) -> Optional[Path]:
         """
@@ -31,13 +75,11 @@ class PrefixCreationMixin:
         if compatdata_path:
             return compatdata_path
         
-        # Prefix doesn't exist yet - determine where to create it from libraryfolders.vdf
-        library_paths = PathHandler.get_all_steam_library_paths()
-        if library_paths:
-            # Use the first library (typically the default library)
-            # Construct compatdata path: library_path/steamapps/compatdata/appid
-            first_library = library_paths[0]
-            compatdata_base = first_library / "steamapps" / "compatdata"
+        # Prefix doesn't exist yet - derive it from the selected active Steam root,
+        # not from a mixed native/Flatpak library list.
+        preferred_root, _preferred_type = self._get_preferred_steam_root_and_type()
+        if preferred_root:
+            compatdata_base = preferred_root / "steamapps" / "compatdata"
             return compatdata_base / str(appid)
         
         # Only fallback if VDF parsing completely fails
@@ -156,36 +198,24 @@ class PrefixCreationMixin:
             True if successful, False otherwise
         """
         try:
-            # Determine Steam locations based on installation type
-            from ..handlers.path_handler import PathHandler
-            path_handler = PathHandler()
-            all_libraries = path_handler.get_all_steam_library_paths()
-            
-            # Check if we have Flatpak Steam by looking for .var/app/com.valvesoftware.Steam in library paths
-            is_flatpak_steam = any('.var/app/com.valvesoftware.Steam' in str(lib) for lib in all_libraries)
-            
-            if is_flatpak_steam and all_libraries:
-                # Flatpak Steam: Use the actual library root from libraryfolders.vdf
-                # Compatdata should be in the library root, not the client root
-                flatpak_library_root = all_libraries[0]  # Use first library (typically the default)
-                flatpak_client_root = flatpak_library_root.parent.parent / ".steam/steam"
-                
-                if not flatpak_library_root.is_dir():
-                    logger.error(
-                        f"Flatpak Steam library root does not exist: {flatpak_library_root}"
-                    )
-                    return False
-                
-                steam_root = flatpak_client_root if flatpak_client_root.is_dir() else flatpak_library_root
-                # CRITICAL: compatdata must be in the library root, not client root
-                compatdata_dir = flatpak_library_root / "steamapps/compatdata"
-                proton_common_dir = flatpak_library_root / "steamapps/common"
-            else:
-                # Native Steam (or unknown): fall back to legacy ~/.steam/steam layout
-                steam_root = Path.home() / ".steam/steam"
-                compatdata_dir = steam_root / "steamapps/compatdata"
-                proton_common_dir = steam_root / "steamapps/common"
-            
+            # Determine Steam locations from the selected active Steam install only.
+            steam_root, steam_type = self._get_preferred_steam_root_and_type()
+            if not steam_root:
+                logger.error("Could not determine active Steam root for prefix creation")
+                return False
+
+            if not steam_root.is_dir():
+                logger.error("Preferred Steam root does not exist: %s", steam_root)
+                return False
+
+            compatdata_dir = steam_root / "steamapps" / "compatdata"
+            proton_common_dir = steam_root / "steamapps" / "common"
+            logger.info(
+                "Prefix creation using preferred Steam install: type=%s root=%s",
+                steam_type or "unknown",
+                steam_root,
+            )
+
             # Ensure compatdata root exists and is a directory we actually want to use
             if not compatdata_dir.is_dir():
                 logger.error(f"Compatdata root does not exist: {compatdata_dir}. Aborting prefix creation.")
@@ -256,4 +286,3 @@ class PrefixCreationMixin:
         except Exception as e:
             logger.error(f"Error creating prefix: {e}")
             return False
-

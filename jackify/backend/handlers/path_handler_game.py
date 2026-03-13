@@ -166,7 +166,7 @@ class PathHandlerGameMixin:
             return False
         modlist_path = Path(self.modlist_dir)
         preferred_order = [
-            "Stock Game", "STOCK GAME", "Skyrim Stock", "Stock Game Folder",
+            "Stock Game", "StockGame", "STOCK GAME", "Skyrim Stock", "Stock Game Folder",
             "Stock Folder", Path("root/Skyrim Special Edition"), "Game Root"
         ]
         found_path = None

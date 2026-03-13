@@ -21,7 +21,7 @@ TARGET_EXECUTABLES_LOWER = [
     "skse64_loader.exe", "f4se_loader.exe", "nvse_loader.exe", "obse_loader.exe",
     "sfse_loader.exe", "obse64_loader.exe", "falloutnv.exe"
 ]
-STOCK_GAME_FOLDERS = ["Stock Game", "Game Root", "Stock Folder", "Skyrim Stock"]
+STOCK_GAME_FOLDERS = ["Stock Game", "StockGame", "Game Root", "Stock Folder", "Skyrim Stock"]
 SDCARD_PREFIX = '/run/media/mmcblk0p1/'
 
 
@@ -433,10 +433,16 @@ class PathHandlerMO2Mixin:
                         if "/mods/" in cleaned_value:
                             idx = cleaned_value.index("/mods/")
                             rel_path = cleaned_value[idx:].lstrip('/')
+                        elif existing_game_path:
+                            rel_path = None
+                            game_path_base = existing_game_path
                         else:
                             rel_path = exe_name
-                    processed_modlist_path = self._strip_sdcard_path_prefix(modlist_dir_path) if modlist_sdcard else str(modlist_dir_path)
-                    new_binary_path = f"{drive_prefix}/{processed_modlist_path}/{rel_path}".replace('\\', '/').replace('//', '/')
+                    if rel_path is not None:
+                        processed_modlist_path = self._strip_sdcard_path_prefix(modlist_dir_path) if modlist_sdcard else str(modlist_dir_path)
+                        new_binary_path = f"{drive_prefix}/{processed_modlist_path}/{rel_path}".replace('\\', '/').replace('//', '/')
+                    else:
+                        new_binary_path = f"{drive_prefix}/{game_path_base}/{exe_name}".replace('\\', '/').replace('//', '/')
                 formatted_binary_path = PathHandlerMO2Mixin._format_binary_for_mo2(new_binary_path)
                 if '"' in formatted_binary_path:
                     formatted_binary_path = formatted_binary_path.replace('"', '')

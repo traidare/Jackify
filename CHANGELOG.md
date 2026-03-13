@@ -1,5 +1,11 @@
 # Jackify Changelog
 
+## v0.5.0.1 - Hotfix
+**Release Date:** 13/03/26
+
+- Fixed Proton prefix creation failing for users who previously had Flatpak Steam installed but have since switched to native Steam.
+- Fixed Configure Existing Modlist mangling binary and working directory paths for modlists using a `StockGame` folder (no space variant).
+
 ## v0.5.0 - Non-Premium Support, Modlist Update Handling and Overall Reliability Improvements
 **Release Date:** 13/03/26
 

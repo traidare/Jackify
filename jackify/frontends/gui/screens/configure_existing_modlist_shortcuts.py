@@ -72,14 +72,20 @@ class ConfigureExistingModlistShortcutsMixin:
         # GC'd while still running (which would cause Qt to abort).
         if self._shortcut_loader is not None:
             if self._shortcut_loader.isRunning():
-                try:
-                    self._shortcut_loader.finished_signal.disconnect()
-                except Exception:
-                    pass
-                self._shortcut_loader.terminate()
-                if not hasattr(self, '_old_loaders'):
-                    self._old_loaders = []
-                self._old_loaders.append(self._shortcut_loader)
+                if hasattr(self, '_park_thread'):
+                    self._park_thread(self._shortcut_loader, ["finished_signal", "error_signal"])
+                else:
+                    try:
+                        self._shortcut_loader.finished_signal.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        self._shortcut_loader.error_signal.disconnect()
+                    except Exception:
+                        pass
+                    if not hasattr(self, '_old_loaders'):
+                        self._old_loaders = []
+                    self._old_loaders.append(self._shortcut_loader)
             self._shortcut_loader = None
 
         # Purge finished threads from the holding list
@@ -117,4 +123,3 @@ class ConfigureExistingModlistShortcutsMixin:
             self.shortcut_combo.clear()
             self.shortcut_combo.setEnabled(True)
             self.shortcut_combo.addItem("Error loading modlists - please try again")
-

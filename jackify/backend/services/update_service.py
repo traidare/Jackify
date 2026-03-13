@@ -107,9 +107,9 @@ class UpdateService:
                     if nexus_url:
                         download_url = nexus_url
                         update_source = "nexus"
-                        logger.debug(f"UPD-1001 update_source_selected source=nexus version={latest_version}")
+                        logger.info("Update source: Nexus CDN (version %s)", latest_version)
                     else:
-                        logger.debug(f"UPD-1001 update_source_selected source=github version={latest_version}")
+                        logger.info("Update source: GitHub Releases (version %s)", latest_version)
 
                     # Determine if this is a delta update
                     is_delta = '.delta' in download_url or 'delta' in download_url.lower()
@@ -167,7 +167,7 @@ class UpdateService:
             auth_service = NexusAuthService()
             token = auth_service.get_auth_token()
             if not token:
-                logger.debug("UPD-1002 nexus_lookup_skipped reason=missing_auth_token")
+                logger.info("Nexus update lookup skipped: no auth token")
                 return None
             auth_method = auth_service.get_auth_method()
             is_oauth = auth_method == "oauth"
@@ -175,7 +175,7 @@ class UpdateService:
             from jackify.backend.services.nexus_premium_service import NexusPremiumService
             is_premium, _ = NexusPremiumService().check_premium_status(token, is_oauth=is_oauth)
             if not is_premium:
-                logger.debug("UPD-1002 nexus_lookup_skipped reason=not_premium")
+                logger.info("Nexus update lookup skipped: not Premium")
                 return None
 
             auth_headers = {"Accept": "application/json"}
@@ -201,7 +201,7 @@ class UpdateService:
                     match = match or f
 
             if match is None:
-                logger.debug(f"UPD-1002 nexus_lookup_skipped reason=version_not_on_nexus version={target_version}")
+                logger.info("Nexus update lookup: version %s not found on Nexus", target_version)
                 return None
 
             nexus_file_id = match["file_id"]
@@ -212,11 +212,11 @@ class UpdateService:
             if isinstance(links, list) and links:
                 cdn_url = links[0].get("URI")
                 if cdn_url:
-                    logger.debug(f"UPD-1003 nexus_lookup_success file_id={nexus_file_id} version={target_version}")
+                    logger.info("Nexus update CDN link obtained for version %s (file_id=%s)", target_version, nexus_file_id)
                     return cdn_url
-            logger.debug("UPD-1002 nexus_lookup_skipped reason=empty_download_links")
+            logger.info("Nexus update lookup: empty download links for version %s", target_version)
         except Exception as e:
-            logger.debug(f"UPD-1004 nexus_lookup_failed error={e}")
+            logger.info("Nexus update lookup failed, falling back to GitHub: %s", e)
         return None
 
     def _is_newer_version(self, version: str) -> bool:
@@ -320,8 +320,13 @@ class UpdateService:
             Path to downloaded file, or None if download failed
         """
         try:
-            logger.info(f"Downloading update {update_info.version} (full replacement)")
-            return self._download_update_manual(update_info, progress_callback)
+            logger.info("Downloading update %s from %s (full replacement)", update_info.version, update_info.source)
+            result = self._download_update_manual(update_info, progress_callback)
+            if result:
+                logger.info("Update download complete: %s from %s -> %s", update_info.version, update_info.source, result)
+            else:
+                logger.error("Update download failed: %s from %s", update_info.version, update_info.source)
+            return result
             
         except Exception as e:
             logger.error(f"Failed to download update: {e}")
@@ -340,7 +345,7 @@ class UpdateService:
             Path to downloaded file, or None if download failed
         """
         try:
-            logger.info(f"Manual download of update {update_info.version} from {update_info.download_url}")
+            logger.info("Downloading update %s from %s (%s)", update_info.version, update_info.source, update_info.download_url)
             
             response = requests.get(update_info.download_url, stream=True)
             response.raise_for_status()
@@ -367,7 +372,7 @@ class UpdateService:
             # Make executable
             temp_file.chmod(0o755)
             
-            logger.info(f"Manual update downloaded successfully to {temp_file}")
+            logger.info("Update downloaded successfully: %s from %s -> %s", update_info.version, update_info.source, temp_file)
             return temp_file
             
         except Exception as e:
@@ -397,8 +402,7 @@ class UpdateService:
             helper_script = self._create_update_helper(current_appimage, new_appimage_path)
             
             if helper_script:
-                # Launch helper script and exit
-                logger.info("Launching update helper and exiting")
+                logger.info("Applying update: replacing %s with %s", current_appimage, new_appimage_path)
                 subprocess.Popen(['nohup', 'bash', str(helper_script)], 
                                stdout=subprocess.DEVNULL, 
                                stderr=subprocess.DEVNULL)

@@ -373,7 +373,7 @@ exit"""
     def get_prefix_path(self, appid: int) -> Optional[Path]:
         """
         Get the path to the Proton prefix for the given AppID.
-        Uses same Flatpak detection as create_prefix_with_proton_wrapper.
+        Uses the same preferred Steam install selection as create_prefix_with_proton_wrapper.
 
         Args:
             appid: The AppID (unsigned, positive number)
@@ -381,20 +381,11 @@ exit"""
         Returns:
             Path to the prefix directory, or None if not found
         """
-        from ..handlers.path_handler import PathHandler
-        path_handler = PathHandler()
-        all_libraries = path_handler.get_all_steam_library_paths()
+        steam_root, _steam_type = self._get_preferred_steam_root_and_type()
+        if not steam_root:
+            return None
 
-        # Check if Flatpak Steam
-        is_flatpak_steam = any('.var/app/com.valvesoftware.Steam' in str(lib) for lib in all_libraries)
-
-        if is_flatpak_steam and all_libraries:
-            # Flatpak Steam: use first library root
-            library_root = all_libraries[0]
-            compatdata_dir = library_root / "steamapps/compatdata"
-        else:
-            # Native Steam
-            compatdata_dir = Path.home() / ".steam/steam/steamapps/compatdata"
+        compatdata_dir = steam_root / "steamapps" / "compatdata"
 
         # Ensure we use the absolute value (unsigned AppID)
         prefix_dir = compatdata_dir / str(abs(appid))
