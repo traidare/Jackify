@@ -14,7 +14,7 @@ Jackify is a Linux application for installing and configuring Wabbajack modlists
 
 ## Features
 
-- **Complete Modlist Workflow**: Install from scratch with Nexus Premium, configure a pre-downloaded modlist, or reconfigure an existing modlist already in Steam
+- **Complete Modlist Workflow**: Install from scratch, configure a pre-downloaded modlist, or reconfigure an existing modlist already in Steam
 - **Game Support**: Skyrim, Fallout 4, Fallout New Vegas, Oblivion, Starfield, Enderal, and more
 - **Automated Steam Integration**: Steam shortcut creation with full Proton configuration
 - **GUI and CLI**: Both interfaces provide identical functionality
@@ -40,9 +40,8 @@ Jackify is a Linux application for installing and configuring Wabbajack modlists
   - See [Installing Additional Tools](https://github.com/Omni-guides/Jackify/wiki/Installing-Additional-Tools#installing-protontricks)
 - **GE-Proton 10-14** — While other Proton versions may work, GE-Proton 10-14 is highly recommended for ENB compatibility
   - See [Installing Additional Tools](https://github.com/Omni-guides/Jackify/wiki/Installing-Additional-Tools#installing-ge-proton)
-- **Nexus Mods Premium subscription** (required for automated downloads)
-  - Non-Premium users can still install modlists via Wabbajack under Proton
-  - Native non-premium support planned for a future release
+- **Nexus Mods account** (Premium required for automated downloads)
+  - Non-Premium accounts are supported, but some downloads may require manual browser steps
   - See the [User Guide](https://github.com/Omni-guides/Jackify/wiki/User-Guide) for full details on the options available
 - **FUSE2 compatibility (libfuse.so.2) is required for AppImage execution**
 - **Ubuntu/Debian-based distros only** (Ubuntu, Kubuntu, Linux Mint, Pop!_OS, Zorin OS, elementary OS, and others): Qt platform plugin library
