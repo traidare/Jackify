@@ -31,4 +31,7 @@ packaging>=21.0
 # Time handling (stdlib: time, datetime)
 # Collections (stdlib: collections, itertools, functools)
 # Configuration files (stdlib: configparser)
-# Hashing (stdlib: hashlib) 
+# Hashing (stdlib: hashlib)
+
+# Non-premium download support
+watchdog>=3.0.0

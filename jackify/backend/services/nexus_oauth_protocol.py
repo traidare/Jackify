@@ -26,6 +26,7 @@ class NexusOAuthProtocolMixin:
                 'APPIMAGE' in env or 'APPDIR' in env or
                 (sys.argv[0] and sys.argv[0].endswith('.AppImage'))
             )
+            exec_path_reliable = True
             if is_appimage:
                 if 'APPIMAGE' in env:
                     exec_path = env['APPIMAGE']
@@ -35,34 +36,27 @@ class NexusOAuthProtocolMixin:
                     logger.info("Using resolved sys.argv[0]: %s", exec_path)
                 else:
                     exec_path = sys.argv[0]
+                    exec_path_reliable = False
                     logger.warning("Using sys.argv[0] as fallback: %s", exec_path)
             else:
                 src_dir = Path(__file__).resolve().parent.parent.parent.parent
                 exec_path = f'bash -c \'cd "{src_dir}" && "{sys.executable}" -m jackify.frontends.gui "$@"\' --'
                 logger.info("DEV mode exec path: %s", exec_path)
                 logger.info("Source directory: %s", src_dir)
-            needs_update = False
-            if not desktop_file.exists():
-                needs_update = True
-                logger.info("Creating desktop file for protocol handler")
-            else:
+
+            expected_exec = f'Exec="{exec_path}" %u' if is_appimage else f'Exec={exec_path} %u'
+            needs_write = not desktop_file.exists()
+            if not needs_write and exec_path_reliable:
                 current_content = desktop_file.read_text()
-                if is_appimage:
-                    expected_exec = f'Exec="{exec_path}" %u'
-                else:
-                    expected_exec = f"Exec={exec_path} %u"
                 if expected_exec not in current_content:
-                    needs_update = True
-                    logger.info("Updating desktop file with new Exec path: %s", exec_path)
-                if is_appimage and ' ' in exec_path:
-                    import re
-                    if re.search(r'Exec=[^"]\S*\s+\S*\.AppImage', current_content):
-                        needs_update = True
-                        logger.info("Fixing malformed desktop file (unquoted path with spaces)")
-            if needs_update:
-                desktop_file.parent.mkdir(parents=True, exist_ok=True)
-                if is_appimage:
-                    desktop_content = f"""[Desktop Entry]
+                    needs_write = True
+                    logger.info("Desktop file Exec path outdated, updating: %s", exec_path)
+            elif not needs_write and not exec_path_reliable:
+                logger.warning("Could not reliably determine AppImage path, keeping existing desktop file")
+
+            desktop_file.parent.mkdir(parents=True, exist_ok=True)
+            if needs_write and is_appimage:
+                desktop_content = f"""[Desktop Entry]
 Type=Application
 Name=Jackify
 Comment=Wabbajack modlist manager for Linux
@@ -72,9 +66,9 @@ Terminal=false
 Categories=Game;Utility;
 MimeType=x-scheme-handler/jackify;
 """
-                else:
-                    src_dir = Path(__file__).resolve().parent.parent.parent.parent
-                    desktop_content = f"""[Desktop Entry]
+            elif needs_write:
+                src_dir = Path(__file__).resolve().parent.parent.parent.parent
+                desktop_content = f"""[Desktop Entry]
 Type=Application
 Name=Jackify
 Comment=Wabbajack modlist manager for Linux
@@ -85,10 +79,14 @@ Categories=Game;Utility;
 MimeType=x-scheme-handler/jackify;
 Path={src_dir}
 """
+            if needs_write:
                 desktop_file.write_text(desktop_content)
                 logger.info("Desktop file written: %s", desktop_file)
                 logger.info("Exec path: %s", exec_path)
                 logger.info("AppImage mode: %s", is_appimage)
+            else:
+                logger.debug("Desktop file up to date, skipping write")
+
             logger.info("Registering jackify:// protocol handler")
             apps_dir = Path.home() / ".local" / "share" / "applications"
             subprocess.run(['update-desktop-database', str(apps_dir)], capture_output=True, timeout=10)

@@ -401,6 +401,18 @@ class ModlistConfigurationMixin:
             else:
                 self.logger.warning("Could not set download_directory in ModOrganizer.ini")
 
+        # Step 8.5: Align /home vs /var/home basis for Z: paths to match modlist install directory.
+        # This is intentionally separate from broad binary-path rewriting so it still runs when
+        # engine-installed workflows skip edit_binary_working_paths.
+        if not self.path_handler.align_home_path_basis(
+            modlist_ini_path=modlist_ini_path_obj,
+            modlist_dir_path=modlist_dir_path_obj,
+            modlist_sdcard=self.modlist_sdcard,
+        ):
+            self.logger.error("Failed to align home-path basis in ModOrganizer.ini. Configuration aborted.")
+            self.logger.error("Failed to align /home path basis in ModOrganizer.ini.")
+            return False
+
         self.logger.info("Step 8: Updating ModOrganizer.ini paths... Done")
 
         # Step 9: Update Resolution Settings (if applicable)
@@ -539,6 +551,9 @@ class ModlistConfigurationMixin:
         else:
             self.logger.debug("Step 13: No special launch options needed for this modlist type")
 
+        if status_callback:
+            status_callback(f"{self._get_progress_timestamp()} Finalizing post-install configuration")
+
         # Do not call status_callback here, the final message is handled in menu_handler
         # if status_callback:
         #     status_callback("Configuration completed successfully!")
@@ -546,6 +561,8 @@ class ModlistConfigurationMixin:
         self.logger.info("Configuration steps completed successfully.")
 
         # Step 14: Re-enforce Windows 10 mode after modlist-specific configurations (matches legacy script line 1333)
+        if status_callback:
+            status_callback(f"{self._get_progress_timestamp()} Re-applying final Windows compatibility settings")
         self._re_enforce_windows_10_mode()
 
         return True # Return True on success
@@ -581,4 +598,3 @@ class ModlistConfigurationMixin:
             else:
                 self.selected_resolution = None
                 self.logger.info("Resolution setup skipped by user.")
-

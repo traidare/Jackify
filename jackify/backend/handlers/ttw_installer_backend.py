@@ -64,17 +64,29 @@ class TTWInstallerBackendMixin:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, universal_newlines=True
             )
+            error_context: list = []
+            capturing_explanation = False
             if process.stdout:
                 for line in process.stdout:
                     line = line.rstrip()
                     if line:
                         self.logger.info("TTW_Linux_Installer: %s", line)
+                        lower = line.lower()
+                        if 'failed' in lower or 'cannot continue' in lower or 'error:' in lower:
+                            error_context.append(line.strip())
+                            capturing_explanation = True
+                        elif capturing_explanation and line.startswith(' '):
+                            error_context.append(line.strip())
+                        else:
+                            capturing_explanation = False
             process.wait()
             ret = process.returncode
             if ret == 0:
                 self.logger.info("TTW installation completed successfully.")
                 return True, "TTW installation completed successfully!"
             self.logger.error("TTW installation process returned non-zero exit code: %s", ret)
+            if error_context:
+                return False, "TTW installation failed:\n" + "\n".join(error_context)
             return False, f"TTW installation failed with exit code {ret}"
         except Exception as e:
             self.logger.error("Error executing TTW_Linux_Installer: %s", e, exc_info=True)
@@ -210,6 +222,8 @@ class TTWInstallerBackendMixin:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, universal_newlines=True
             )
+            error_context: list = []
+            capturing_explanation = False
             if process.stdout:
                 for line in process.stdout:
                     line = line.rstrip()
@@ -217,12 +231,22 @@ class TTWInstallerBackendMixin:
                         self.logger.info("TTW_Linux_Installer: %s", line)
                         if output_callback:
                             output_callback(line)
+                        lower = line.lower()
+                        if 'failed' in lower or 'cannot continue' in lower or 'error:' in lower:
+                            error_context.append(line.strip())
+                            capturing_explanation = True
+                        elif capturing_explanation and line.startswith(' '):
+                            error_context.append(line.strip())
+                        else:
+                            capturing_explanation = False
             process.wait()
             ret = process.returncode
             if ret == 0:
                 self.logger.info("TTW installation completed successfully.")
                 return True, "TTW installation completed successfully!"
             self.logger.error("TTW installation process returned non-zero exit code: %s", ret)
+            if error_context:
+                return False, "TTW installation failed:\n" + "\n".join(error_context)
             return False, f"TTW installation failed with exit code {ret}"
         except Exception as e:
             self.logger.error("Error executing TTW_Linux_Installer: %s", e, exc_info=True)

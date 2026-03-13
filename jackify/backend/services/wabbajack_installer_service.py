@@ -63,6 +63,7 @@ class WabbajackInstallerService:
         install_folder: Path,
         shortcut_name: str = "Wabbajack",
         enable_gog: bool = True,
+        existing_appid: Optional[int] = None,
         progress_callback: Optional[Callable[[str, int], None]] = None,
         log_callback: Optional[Callable[[str], None]] = None
     ) -> Tuple[bool, Optional[int], Optional[str], Optional[int], Optional[str], Optional[str]]:
@@ -128,34 +129,6 @@ class WabbajackInstallerService:
             self.handler.create_dotnet_cache(install_folder)
             update_progress(".NET cache created", 3, 20)
 
-            # Step 4: Stop Steam briefly (required to safely modify shortcuts.vdf)
-            # We'll do a full restart after creating the shortcut
-            update_progress("Stopping Steam to modify shortcuts...", 4, 25)
-            try:
-                shutdown_env = _get_clean_subprocess_env()
-
-                if _is_steam_deck:
-                    subprocess.run(['systemctl', '--user', 'stop', 'app-steam@autostart.service'],
-                                   timeout=15, check=False, capture_output=True, env=shutdown_env)
-                elif _is_flatpak:
-                    subprocess.run(['flatpak', 'kill', 'com.valvesoftware.Steam'],
-                                   timeout=15, check=False, capture_output=True, env=shutdown_env)
-
-                subprocess.run(['pkill', 'steam'], timeout=15, check=False, capture_output=True, env=shutdown_env)
-                time.sleep(2)
-
-                check_result = subprocess.run(['pgrep', '-f', 'steamwebhelper'], capture_output=True, timeout=10, env=shutdown_env)
-                if check_result.returncode == 0:
-                    subprocess.run(['pkill', '-9', 'steam'], timeout=15, check=False, capture_output=True, env=shutdown_env)
-                    time.sleep(2)
-
-                update_progress("Steam stopped", 4, 25)
-            except Exception as e:
-                update_progress(f"Warning: Steam shutdown had issues: {e}. Proceeding anyway...", 4, 25)
-
-            # Step 5: Create Steam shortcut using NativeSteamService
-            update_progress("Adding Wabbajack to Steam shortcuts...", 5, 30)
-            
             # Generate launch options with STEAM_COMPAT_MOUNTS
             launch_options = ""
             try:
@@ -170,27 +143,58 @@ class WabbajackInstallerService:
             except Exception as e:
                 update_progress(f"Could not generate STEAM_COMPAT_MOUNTS (non-critical): {e}", 5, 30)
 
-            success, app_id = self.steam_service.create_shortcut_with_proton(
-                app_name=shortcut_name,
-                exe_path=str(wabbajack_exe),
-                start_dir=str(wabbajack_exe.parent),
-                launch_options=launch_options,
-                tags=["Jackify"],
-                proton_version=proton_compat_name
-            )
-            if not success or app_id is None:
-                return False, None, None, None, None, "Failed to create Steam shortcut"
-            update_progress(f"Created Steam shortcut with AppID: {app_id}", 5, 30)
+            if existing_appid is None:
+                # Step 4: Stop Steam briefly (required to safely modify shortcuts.vdf)
+                # We'll do a full restart after creating the shortcut
+                update_progress("Stopping Steam to modify shortcuts...", 4, 25)
+                try:
+                    shutdown_env = _get_clean_subprocess_env()
 
-            # Step 5b: Restart Steam (same pattern as modlist workflows)
-            update_progress("Restarting Steam...", 5, 35)
-            def restart_callback(msg):
-                update_progress(msg, 5, 35)
+                    if _is_steam_deck:
+                        subprocess.run(['systemctl', '--user', 'stop', 'app-steam@autostart.service'],
+                                       timeout=15, check=False, capture_output=True, env=shutdown_env)
+                    elif _is_flatpak:
+                        subprocess.run(['flatpak', 'kill', 'com.valvesoftware.Steam'],
+                                       timeout=15, check=False, capture_output=True, env=shutdown_env)
 
-            if not robust_steam_restart(progress_callback=restart_callback):
-                update_progress("Warning: Steam restart had issues, continuing anyway...", 5, 35)
+                    subprocess.run(['pkill', 'steam'], timeout=15, check=False, capture_output=True, env=shutdown_env)
+                    time.sleep(2)
+
+                    check_result = subprocess.run(['pgrep', '-f', 'steamwebhelper'], capture_output=True, timeout=10, env=shutdown_env)
+                    if check_result.returncode == 0:
+                        subprocess.run(['pkill', '-9', 'steam'], timeout=15, check=False, capture_output=True, env=shutdown_env)
+                        time.sleep(2)
+
+                    update_progress("Steam stopped", 4, 25)
+                except Exception as e:
+                    update_progress(f"Warning: Steam shutdown had issues: {e}. Proceeding anyway...", 4, 25)
+
+                # Step 5: Create Steam shortcut using NativeSteamService
+                update_progress("Adding Wabbajack to Steam shortcuts...", 5, 30)
+                success, app_id = self.steam_service.create_shortcut_with_proton(
+                    app_name=shortcut_name,
+                    exe_path=str(wabbajack_exe),
+                    start_dir=str(wabbajack_exe.parent),
+                    launch_options=launch_options,
+                    tags=["Jackify"],
+                    proton_version=proton_compat_name
+                )
+                if not success or app_id is None:
+                    return False, None, None, None, None, "Failed to create Steam shortcut"
+                update_progress(f"Created Steam shortcut with AppID: {app_id}", 5, 30)
+
+                # Step 5b: Restart Steam (same pattern as modlist workflows)
+                update_progress("Restarting Steam...", 5, 35)
+                def restart_callback(msg):
+                    update_progress(msg, 5, 35)
+
+                if not robust_steam_restart(progress_callback=restart_callback):
+                    update_progress("Warning: Steam restart had issues, continuing anyway...", 5, 35)
+                else:
+                    update_progress("Steam restarted successfully", 5, 40)
             else:
-                update_progress("Steam restarted successfully", 5, 40)
+                app_id = int(existing_appid)
+                update_progress(f"Reusing existing Steam shortcut with AppID: {app_id}", 5, 30)
 
             # Step 6: Initialize Wine prefix (using same method as modlist workflows)
             update_progress("Creating Proton prefix...", 6, 45)
@@ -277,4 +281,3 @@ class WabbajackInstallerService:
             if log_callback:
                 log_callback(f"ERROR: {error_msg}")
             return False, None, None, None, None, error_msg
-

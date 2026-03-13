@@ -45,7 +45,7 @@ def get_appimage_path() -> Optional[Path]:
         if 'jackify' in path.name.lower():
             return path
         else:
-            # Running from different AppImage (e.g., development in Cursor.AppImage)
+            # Running from a different AppImage context
             return None
     
     return None

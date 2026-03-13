@@ -143,7 +143,11 @@ class TTWInstallationThread(QThread):
             elif returncode == 0:
                 self.installation_finished.emit(True, "TTW installation completed successfully!")
             else:
-                self.installation_finished.emit(False, f"TTW installation failed with exit code {returncode}")
+                self.installation_finished.emit(
+                    False,
+                    f"TTW installer exited unexpectedly (code {returncode}). "
+                    "Review the recent console output for the failing step."
+                )
 
         except Exception as e:
             import traceback

@@ -3,13 +3,14 @@ import os
 import re
 import time
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QFileDialog
 
 from jackify.shared.progress_models import FileProgress, OperationType
+from .screen_focus_reclaim import FocusReclaimMixin, STEAM_RESTART_SENTINEL
 
 
-class ConfigureNewModlistConsoleMixin:
+class ConfigureNewModlistConsoleMixin(FocusReclaimMixin):
     """Mixin providing console output management for ConfigureNewModlistScreen."""
 
     def _handle_progress_update(self, text):
@@ -26,10 +27,12 @@ class ConfigureNewModlistConsoleMixin:
             self._stop_component_install_pulse()
             self.progress_indicator.set_status("Restarting Steam...", 20)
             self.file_progress_list.update_or_add_item("__phase__", "Restarting Steam...", 0.0)
-        elif "steam restart" in message_lower and "success" in message_lower:
+        elif "steam started successfully" in message_lower or ("steam restart" in message_lower and "success" in message_lower):
             self._stop_component_install_pulse()
             self.progress_indicator.set_status("Steam restarted successfully", 30)
             self.file_progress_list.update_or_add_item("__phase__", "Steam restarted", 0.0)
+        elif STEAM_RESTART_SENTINEL in text:
+            self._start_focus_reclaim_retries()
         elif "creating proton prefix" in message_lower or "prefix creation" in message_lower:
             self._stop_component_install_pulse()
             self.progress_indicator.set_status("Creating Proton prefix...", 50)
@@ -168,5 +171,4 @@ class ConfigureNewModlistConsoleMixin:
         file, _ = QFileDialog.getOpenFileName(self, "Select ModOrganizer.exe", os.path.expanduser("~"), "ModOrganizer.exe (ModOrganizer.exe)")
         if file:
             self.install_dir_edit.setText(os.path.realpath(file))
-
 

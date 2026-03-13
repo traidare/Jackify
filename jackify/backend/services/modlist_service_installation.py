@@ -186,10 +186,23 @@ class ModlistServiceInstallationMixin:
 
                 clean_env = get_clean_subprocess_env()
                 proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=False, env=clean_env, cwd=engine_dir
                 )
 
+                def _write_stdin(line: str) -> bool:
+                    try:
+                        payload = line if line.endswith('\n') else line + '\n'
+                        proc.stdin.write(payload.encode())
+                        proc.stdin.flush()
+                        return True
+                    except (OSError, BrokenPipeError):
+                        return False
+
+                from jackify.backend.utils.cc_content_detector import is_cc_content_error, extract_cc_filename
+                import json as _json
+                _cc_filename = None
+                _pending_manual: list = []
                 buffer = b''
                 while True:
                     chunk = proc.stdout.read(1)
@@ -197,26 +210,81 @@ class ModlistServiceInstallationMixin:
                         break
                     buffer += chunk
 
-                    if chunk == b'\n':
+                    if chunk in (b'\n', b'\r'):
                         line = buffer.decode('utf-8', errors='replace')
-                        if output_callback:
-                            output_callback(line.rstrip())
+                        decoded = line.rstrip()
                         buffer = b''
-                    elif chunk == b'\r':
-                        line = buffer.decode('utf-8', errors='replace')
+
+                        # JSON engine events - handle silently, don't pass to output_callback
+                        if decoded.strip().startswith('{'):
+                            try:
+                                obj = _json.loads(decoded.strip())
+                                event = obj.get('event')
+                                if event == 'manual_download_required':
+                                    _pending_manual.append(obj)
+                                    continue
+                                if event == 'manual_download_list_complete':
+                                    loop_iter = obj.get('loop_iteration', 1)
+                                    for item in _pending_manual:
+                                        item['loop_iteration'] = loop_iter
+                                    items_batch = list(_pending_manual)
+                                    _pending_manual.clear()
+                                    from jackify.backend.handlers.config_handler import ConfigHandler
+                                    raw_limit = ConfigHandler().get('manual_download_concurrent_limit', 2)
+                                    try:
+                                        manual_limit = int(raw_limit)
+                                    except (TypeError, ValueError):
+                                        manual_limit = 2
+                                    manual_limit = max(1, min(5, manual_limit))
+                                    from jackify.frontends.cli.commands.manual_download_flow import run_cli_manual_download_phase
+                                    completed = run_cli_manual_download_phase(
+                                        events=items_batch,
+                                        loop_iteration=loop_iter,
+                                        download_dir=actual_download_path,
+                                        stdin_write=_write_stdin,
+                                        output_callback=output_callback,
+                                        concurrent_limit=manual_limit,
+                                    )
+                                    if not completed:
+                                        if proc.poll() is None:
+                                            proc.terminate()
+                                        break
+                                    continue
+                                if event == 'manual_download_phase_complete':
+                                    if output_callback:
+                                        found = obj.get('total_found', 0)
+                                        required = obj.get('total_required', 0)
+                                        output_callback(f"All manual downloads confirmed ({found}/{required}). Resuming installation...")
+                                    continue
+                            except (_json.JSONDecodeError, ValueError):
+                                pass
+
                         if output_callback:
-                            output_callback(line.rstrip())
-                        buffer = b''
+                            output_callback(decoded)
+                        if _cc_filename is None and is_cc_content_error(decoded):
+                            _cc_filename = extract_cc_filename(decoded) or ""
 
                 if buffer:
                     line = buffer.decode('utf-8', errors='replace')
+                    decoded = line.rstrip()
                     if output_callback:
-                        output_callback(line.rstrip())
+                        output_callback(decoded)
+                    if _cc_filename is None and is_cc_content_error(decoded):
+                        _cc_filename = extract_cc_filename(decoded) or ""
 
                 proc.wait()
                 if proc.returncode != 0:
                     if output_callback:
                         output_callback(f"Jackify Install Engine exited with code {proc.returncode}.")
+                    if _cc_filename is not None and output_callback:
+                        fname_note = f" ({_cc_filename})" if _cc_filename else ""
+                        output_callback("")
+                        output_callback(f"[WARN] Anniversary Edition Content Missing{fname_note}")
+                        output_callback("  - Open Vanilla Skyrim SE/AE and let it run until all Creation Club content has downloaded.")
+                        output_callback("  - From the Skyrim main menu, go into Creations and select 'Download All'.")
+                        output_callback("  - If specific files are still missing, search for and download them from the Creations menu.")
+                        output_callback("  - If problems persist, uninstall and reinstall Skyrim, then launch once to trigger the AE download.")
+                        output_callback("  - Note: Skyrim AE via Steam Family Sharing does not transfer DLC content.")
                     return False
                 if output_callback:
                     output_callback("Installation completed successfully")

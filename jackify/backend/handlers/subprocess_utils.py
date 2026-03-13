@@ -6,6 +6,7 @@ import resource
 import sys
 import shutil
 import logging
+import threading
 
 def get_safe_python_executable():
     """
@@ -154,7 +155,7 @@ class ProcessManager:
     """
     Shared process manager for robust subprocess launching, tracking, and cancellation.
     """
-    def __init__(self, cmd, env=None, cwd=None, text=False, bufsize=0, separate_stderr=False):
+    def __init__(self, cmd, env=None, cwd=None, text=False, bufsize=0, separate_stderr=False, enable_stdin=False):
         self.cmd = cmd
         # Default to cleaned environment if None to prevent AppImage variable inheritance
         if env is None:
@@ -165,14 +166,18 @@ class ProcessManager:
         self.text = text
         self.bufsize = bufsize
         self.separate_stderr = separate_stderr
+        self.enable_stdin = enable_stdin
         self.proc = None
         self.process_group_pid = None
+        self._stdin_lock = threading.Lock()
         self._start_process()
 
     def _start_process(self):
         stderr_arg = subprocess.PIPE if self.separate_stderr else subprocess.STDOUT
+        stdin_arg = subprocess.PIPE if self.enable_stdin else None
         self.proc = subprocess.Popen(
             self.cmd,
+            stdin=stdin_arg,
             stdout=subprocess.PIPE,
             stderr=stderr_arg,
             env=self.env,
@@ -190,31 +195,45 @@ class ProcessManager:
         cleanup_attempts = 0
         try:
             if self.proc:
+                # Terminate process group first so child tools don't survive parent exit.
+                if self.process_group_pid:
+                    try:
+                        os.killpg(self.process_group_pid, signal.SIGTERM)
+                    except Exception:
+                        pass
+
                 try:
                     self.proc.terminate()
-                    try:
-                        self.proc.wait(timeout=timeout_terminate)
-                        return
-                    except subprocess.TimeoutExpired:
-                        pass
                 except Exception:
                     pass
+
                 try:
-                    self.proc.kill()
-                    try:
-                        self.proc.wait(timeout=timeout_kill)
-                        return
-                    except subprocess.TimeoutExpired:
-                        pass
+                    self.proc.wait(timeout=timeout_terminate)
+                except subprocess.TimeoutExpired:
+                    pass
                 except Exception:
                     pass
-                # Kill entire process group (catches 7zz and other child processes)
+
+                # Escalate to SIGKILL for stubborn children/process group.
                 if self.process_group_pid:
                     try:
                         os.killpg(self.process_group_pid, signal.SIGKILL)
                     except Exception:
                         pass
-                # Last resort: pkill by command name
+
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+
+                try:
+                    self.proc.wait(timeout=timeout_kill)
+                except subprocess.TimeoutExpired:
+                    pass
+                except Exception:
+                    pass
+
+                # Last resort: pkill by command name (kept bounded).
                 while cleanup_attempts < max_cleanup_attempts:
                     try:
                         subprocess.run(['pkill', '-f', os.path.basename(self.cmd[0])], timeout=5, capture_output=True)
@@ -224,7 +243,7 @@ class ProcessManager:
         finally:
             # Always close pipes — unblocks threads blocked on read(1) or iterating stderr
             if self.proc:
-                for pipe in (self.proc.stdout, self.proc.stderr):
+                for pipe in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
                     if pipe:
                         try:
                             pipe.close()
@@ -251,3 +270,19 @@ class ProcessManager:
             except (ValueError, OSError):
                 return None
         return None
+
+    def write_stdin(self, line: str) -> bool:
+        """
+        Write a line to the process stdin. Thread-safe.
+        Returns True on success, False if stdin is not available or process is gone.
+        """
+        if not self.enable_stdin or not self.proc or not self.proc.stdin:
+            return False
+        with self._stdin_lock:
+            try:
+                payload = line if line.endswith('\n') else line + '\n'
+                self.proc.stdin.write(payload.encode())
+                self.proc.stdin.flush()
+                return True
+            except (OSError, BrokenPipeError):
+                return False

@@ -20,9 +20,12 @@ from PySide6.QtCore import Qt, QThread, Signal, QSize
 from PySide6.QtGui import QTextCursor
 
 from jackify.backend.models.configuration import SystemInfo
+from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
 from jackify.shared.errors import wabbajack_install_failed
+from ..dialogs.existing_setup_dialog import prompt_existing_setup_dialog
 from ..services.message_service import MessageService
 from ..shared_theme import JACKIFY_COLOR_BLUE, DEBUG_BORDERS
+from .screen_focus_reclaim import FocusReclaimMixin, STEAM_RESTART_SENTINEL
 from ..utils import set_responsive_minimum
 from ..widgets.file_progress_list import FileProgressList
 from ..widgets.progress_indicator import OverallProgressIndicator
@@ -39,11 +42,12 @@ class WabbajackInstallerWorker(QThread):
     log_output = Signal(str)  # Console log output
     installation_complete = Signal(bool, str, str, str, str)  # Success, message, launch_options, app_id, time_taken
 
-    def __init__(self, install_folder: Path, shortcut_name: str = "Wabbajack", enable_gog: bool = True):
+    def __init__(self, install_folder: Path, shortcut_name: str = "Wabbajack", enable_gog: bool = True, existing_appid: int | None = None):
         super().__init__()
         self.install_folder = install_folder
         self.shortcut_name = shortcut_name
         self.enable_gog = enable_gog
+        self.existing_appid = existing_appid
         self.launch_options = ""  # Store launch options for success message
         self.start_time = None  # Track installation start time
 
@@ -73,6 +77,7 @@ class WabbajackInstallerWorker(QThread):
             install_folder=self.install_folder,
             shortcut_name=self.shortcut_name,
             enable_gog=self.enable_gog,
+            existing_appid=self.existing_appid,
             progress_callback=progress_callback,
             log_callback=log_callback
         )
@@ -84,7 +89,7 @@ class WabbajackInstallerWorker(QThread):
             self.installation_complete.emit(False, error_msg or "Installation failed", "", "", "")
 
 
-class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
+class WabbajackInstallerScreen(ScreenBackMixin, FocusReclaimMixin, QWidget):
     """Wabbajack installer GUI screen following standard Jackify layout"""
 
     resize_request = Signal(str)
@@ -347,10 +352,17 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
 
     def _on_show_details_toggled(self, checked):
         """Handle Show details checkbox toggle"""
-        self.console.setVisible(checked)
         if checked:
+            self.console.setVisible(True)
+            self.console.setMinimumHeight(200)
+            self.console.setMaximumHeight(16777215)
+            self.console.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.resize_request.emit("expand")
         else:
+            self.console.setVisible(False)
+            self.console.setMinimumHeight(0)
+            self.console.setMaximumHeight(0)
+            self.console.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             self.resize_request.emit("compact")
 
     def _browse_folder(self):
@@ -398,6 +410,51 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
         if confirm != QMessageBox.Yes:
             return
 
+        existing_appid = None
+        candidate_exe = self.install_folder / "Wabbajack.exe"
+        prefix_service = AutomatedPrefixService()
+        conflict_result = prefix_service.handle_existing_shortcut_conflict(
+            self.shortcut_name,
+            str(candidate_exe),
+            str(self.install_folder),
+        )
+        if isinstance(conflict_result, list):
+            action, new_name = prompt_existing_setup_dialog(
+                self,
+                window_title="Existing Modlist Setup Detected",
+                heading="Use Existing Setup or Create a New Shortcut",
+                body=(
+                    "Jackify found an existing Steam shortcut for this Wabbajack setup.\n\n"
+                    "Choose 'Use Existing Setup' to reuse the current Steam shortcut, or enter a "
+                    "different name to create a separate shortcut."
+                ),
+                existing_name=conflict_result[0].get("name", self.shortcut_name),
+                requested_name=self.shortcut_name,
+                install_dir=str(self.install_folder),
+                field_label="New shortcut name",
+                reuse_label="Use Existing Setup",
+                new_label="Create New Shortcut",
+                cancel_label="Cancel",
+            )
+            if action == "reuse":
+                existing_appid = conflict_result[0].get("appid")
+                if not existing_appid:
+                    MessageService.warning(self, "Existing Setup Not Found", "Jackify could not determine the Steam AppID for the existing shortcut.")
+                    return
+                self._write_to_log_file(f"Reusing existing Steam shortcut '{self.shortcut_name}' with AppID {existing_appid}")
+            elif action == "new":
+                if not new_name:
+                    MessageService.warning(self, "Invalid Name", "Please enter a valid shortcut name.")
+                    return
+                if new_name == self.shortcut_name:
+                    MessageService.warning(self, "Same Name", "Please enter a different name to create a separate shortcut.")
+                    return
+                self.shortcut_name = new_name
+                self.shortcut_name_edit.setText(new_name)
+            else:
+                self._write_to_log_file("Shortcut creation cancelled by user")
+                return
+
         # Clear displays
         self.console.clear()
         self.file_progress_list.clear()
@@ -420,7 +477,7 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
         self.progress_indicator.set_status("Starting installation...", 0)
 
         # Start worker thread
-        self.worker = WabbajackInstallerWorker(self.install_folder, shortcut_name=self.shortcut_name, enable_gog=True)
+        self.worker = WabbajackInstallerWorker(self.install_folder, shortcut_name=self.shortcut_name, enable_gog=True, existing_appid=int(existing_appid) if existing_appid else None)
         self.worker.progress_update.connect(self._on_progress_update)
         self.worker.activity_update.connect(self._on_activity_update)
         self.worker.log_output.connect(self._on_log_output)
@@ -428,8 +485,9 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
         self.worker.start()
 
     def _on_progress_update(self, message: str, percentage: int):
-        """Handle progress updates"""
         self.progress_indicator.set_status(message, percentage)
+        if STEAM_RESTART_SENTINEL in message:
+            self._start_focus_reclaim_retries()
 
     def _on_activity_update(self, label: str, current: int, total: int):
         """Handle activity tab updates"""
@@ -569,6 +627,7 @@ class WabbajackInstallerScreen(ScreenBackMixin, QWidget):
     def showEvent(self, event):
         """Called when widget becomes visible"""
         super().showEvent(event)
+        self.force_collapsed_details_state()
         try:
             main_window = self.window()
             if main_window:

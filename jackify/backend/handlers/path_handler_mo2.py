@@ -29,6 +29,95 @@ class PathHandlerMO2Mixin:
     """Mixin providing ModOrganizer.ini path updates and formatting."""
 
     @staticmethod
+    def _desired_home_basis_from_modlist_dir(modlist_dir_path: Path) -> Optional[str]:
+        """
+        Determine desired Linux home-path basis from modlist install directory.
+
+        Returns:
+            "/var/home" when modlist dir is under /var/home,
+            "/home" when modlist dir is under /home,
+            None otherwise.
+        """
+        try:
+            posix = modlist_dir_path.as_posix()
+        except Exception:
+            posix = str(modlist_dir_path).replace("\\", "/")
+        if posix.startswith("/var/home/"):
+            return "/var/home"
+        if posix.startswith("/home/"):
+            return "/home"
+        return None
+
+    @staticmethod
+    def _rewrite_z_home_basis_in_line(line: str, desired_home_basis: str) -> str:
+        """
+        Rewrite only Z:-drive /home -> /var/home path basis in a single INI line.
+
+        Preserves slash style (forward or backslash), and leaves D: paths untouched.
+        """
+        if desired_home_basis == "/var/home":
+            # Z:/home/... -> Z:/var/home/...
+            # Z:\\home\\... -> Z:\\var\\home\\...
+            return re.sub(r'([Zz]:[/\\]+)home([/\\]+)', r'\1var\2home\2', line)
+        return line
+
+    def align_home_path_basis(self, modlist_ini_path: Path, modlist_dir_path: Path, modlist_sdcard: bool) -> bool:
+        """
+        Align gamePath/binary/workingDirectory home-path basis to modlist_dir_path.
+
+        This is a targeted post-processing step for Z: paths only:
+        - If install path is /var/home/... then rewrite Z:/home/... to Z:/var/home/...
+        - Otherwise do nothing.
+        """
+        if modlist_sdcard:
+            return True
+        desired_home_basis = self._desired_home_basis_from_modlist_dir(modlist_dir_path)
+        # This alignment pass is intentionally one-way:
+        # only promote Z:/home -> Z:/var/home when install dir uses /var/home.
+        if desired_home_basis != "/var/home":
+            return True
+        if not modlist_ini_path.is_file():
+            logger.error(f"INI file {modlist_ini_path} does not exist for home-basis alignment")
+            return False
+        try:
+            with open(modlist_ini_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            changed = 0
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if not (
+                    re.match(r'^\s*gamepath\s*=.*$', stripped, re.IGNORECASE)
+                    or re.match(r'^(\d+)(\\+)\s*binary\s*=.*$', stripped, re.IGNORECASE)
+                    or re.match(r'^(\d+)(\\+)\s*workingDirectory\s*=.*$', stripped, re.IGNORECASE)
+                ):
+                    continue
+                rewritten = self._rewrite_z_home_basis_in_line(line, desired_home_basis)
+                if rewritten != line:
+                    lines[i] = rewritten
+                    changed += 1
+
+            if changed > 0:
+                with open(modlist_ini_path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+                logger.info(
+                    "Aligned ModOrganizer.ini home-path basis to %s for %d line(s): %s",
+                    desired_home_basis,
+                    changed,
+                    modlist_ini_path,
+                )
+            else:
+                logger.debug(
+                    "No home-path basis alignment needed for %s (target %s)",
+                    modlist_ini_path,
+                    desired_home_basis,
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Error aligning home path basis in {modlist_ini_path}: {e}")
+            return False
+
+    @staticmethod
     def _strip_sdcard_path_prefix(path_obj: Path) -> str:
         """Removes SD card mount prefix. Returns path as POSIX-style string."""
         path_str = path_obj.as_posix()

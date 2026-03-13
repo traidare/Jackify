@@ -1,4 +1,5 @@
 """CLI configuration phase methods for ModlistInstallCLI (Mixin)."""
+import json
 import logging
 import os
 import subprocess
@@ -166,19 +167,81 @@ class ModlistOperationsConfigurationCLIMixin:
 
                 from jackify.backend.handlers.subprocess_utils import get_clean_subprocess_env
                 clean_env = get_clean_subprocess_env()
-                self._current_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False, env=clean_env, cwd=engine_dir)
+                self._current_process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=False,
+                    env=clean_env,
+                    cwd=engine_dir,
+                )
                 proc = self._current_process
+
+                def _write_stdin(payload: str) -> bool:
+                    if not proc.stdin or proc.poll() is not None:
+                        return False
+                    try:
+                        proc.stdin.write((payload + '\n').encode('utf-8'))
+                        proc.stdin.flush()
+                        return True
+                    except Exception:
+                        self.logger.debug("Failed writing to engine stdin", exc_info=True)
+                        return False
 
                 buffer = b''
                 inline_progress_active = False
+                pending_manual = []
                 while True:
                     chunk = proc.stdout.read(1)
                     if not chunk:
                         break
                     buffer += chunk
 
-                    if chunk == b'\n':
+                    if chunk in (b'\n', b'\r'):
                         line = buffer.decode('utf-8', errors='replace')
+                        decoded = line.rstrip('\r\n')
+                        if decoded.startswith('{'):
+                            try:
+                                event = json.loads(decoded)
+                            except (json.JSONDecodeError, ValueError):
+                                event = None
+                            if event:
+                                event_name = event.get('event')
+                                if event_name == 'manual_download_required':
+                                    pending_manual.append(event)
+                                    buffer = b''
+                                    continue
+                                if event_name == 'manual_download_list_complete':
+                                    loop_iter = event.get('loop_iteration', 1)
+                                    for item in pending_manual:
+                                        item['loop_iteration'] = loop_iter
+                                    from jackify.backend.handlers.config_handler import ConfigHandler
+                                    raw_limit = ConfigHandler().get('manual_download_concurrent_limit', 2)
+                                    try:
+                                        manual_limit = int(raw_limit)
+                                    except (TypeError, ValueError):
+                                        manual_limit = 2
+                                    from jackify.frontends.cli.commands.manual_download_flow import run_cli_manual_download_phase
+                                    completed = run_cli_manual_download_phase(
+                                        events=list(pending_manual),
+                                        loop_iteration=loop_iter,
+                                        download_dir=actual_download_path,
+                                        stdin_write=_write_stdin,
+                                        concurrent_limit=max(1, min(5, manual_limit)),
+                                    )
+                                    if not completed:
+                                        if proc.poll() is None:
+                                            proc.terminate()
+                                        buffer = b''
+                                        break
+                                    pending_manual.clear()
+                                    buffer = b''
+                                    continue
+                                if event_name == 'manual_download_phase_complete':
+                                    print("All manual downloads confirmed. Resuming installation...")
+                                    buffer = b''
+                                    continue
                         if '[FILE_PROGRESS]' in line:
                             parts = line.split('[FILE_PROGRESS]', 1)
                             if parts[0].strip():
@@ -196,26 +259,6 @@ class ModlistOperationsConfigurationCLIMixin:
                                 print()
                                 inline_progress_active = False
                             print(line, end='')
-                        buffer = b''
-                    elif chunk == b'\r':
-                        line = buffer.decode('utf-8', errors='replace')
-                        if '[FILE_PROGRESS]' in line:
-                            parts = line.split('[FILE_PROGRESS]', 1)
-                            if parts[0].strip():
-                                line = parts[0].rstrip()
-                            else:
-                                buffer = b''
-                                continue
-                        clean_line = line.rstrip('\r\n')
-                        if clean_line.startswith("Installing files "):
-                            print(f"\r{clean_line}", end='')
-                            inline_progress_active = True
-                        else:
-                            if inline_progress_active:
-                                print()
-                                inline_progress_active = False
-                            print(line, end='')
-                        sys.stdout.flush()
                         buffer = b''
 
                 if buffer:
@@ -400,6 +443,16 @@ class ModlistOperationsConfigurationCLIMixin:
 
             app_id = None
             use_automated_prefix = os.environ.get('JACKIFY_USE_AUTOMATED_PREFIX', '1') == '1'
+            existing_shortcut_appid = self.context.get('existing_shortcut_appid')
+            update_existing_install = bool(self.context.get('update_existing_install'))
+
+            if update_existing_install and existing_shortcut_appid:
+                app_id = str(existing_shortcut_appid)
+                success = True
+                prefix_path = None
+                result = True
+                print(f"\n{COLOR_INFO}Update mode selected. Reusing existing Steam shortcut AppID {app_id}.{COLOR_RESET}")
+                use_automated_prefix = False
 
             if use_automated_prefix:
                 print(f"\n{COLOR_INFO}Using automated Steam setup workflow...{COLOR_RESET}")
@@ -535,17 +588,20 @@ class ModlistOperationsConfigurationCLIMixin:
                         success, prefix_path, app_id = True, None, None
                     else:
                         success, prefix_path, app_id = False, None, None
-
-                if success:
+            if success:
+                if update_existing_install and app_id:
+                    print(f"{COLOR_SUCCESS}Update mode Steam setup confirmed.{COLOR_RESET}")
+                    print(f"{COLOR_INFO}Reusing Steam AppID: {app_id}{COLOR_RESET}")
+                else:
                     print(f"{COLOR_SUCCESS}Automated Steam setup completed successfully!{COLOR_RESET}")
                     if prefix_path:
                         print(f"{COLOR_INFO}Proton prefix created at: {prefix_path}{COLOR_RESET}")
                     if app_id:
                         print(f"{COLOR_INFO}Steam AppID: {app_id}{COLOR_RESET}")
-                else:
-                    print(f"{COLOR_ERROR}Automated Steam setup failed. Result: {result}{COLOR_RESET}")
-                    print(f"{COLOR_ERROR}Steam integration was not completed. Please check the logs for details.{COLOR_RESET}")
-                    return
+            else:
+                print(f"{COLOR_ERROR}Automated Steam setup failed. Result: {result}{COLOR_RESET}")
+                print(f"{COLOR_ERROR}Steam integration was not completed. Please check the logs for details.{COLOR_RESET}")
+                return
 
             from jackify.backend.services.modlist_service import ModlistService
             from jackify.backend.models.modlist import ModlistContext
@@ -572,18 +628,28 @@ class ModlistOperationsConfigurationCLIMixin:
                 progress_callback("")
                 progress_callback("=== Configuration Phase ===")
 
-            print(f"\n{COLOR_INFO}=== Configuration Phase ==={COLOR_RESET}")
-            self.logger.info("Running post-installation configuration phase using ModlistService")
+                print(f"\n{COLOR_INFO}=== Configuration Phase ==={COLOR_RESET}")
+                self.logger.info("Running post-installation configuration phase using ModlistService")
 
             configuration_success = modlist_service.configure_modlist_post_steam(modlist_context)
 
             if configuration_success:
-                print(f"{COLOR_SUCCESS}Configuration completed successfully!{COLOR_RESET}")
                 self.logger.info("Post-installation configuration completed successfully")
+                print(f"{COLOR_INFO}Core configuration complete. Checking post-install automation...{COLOR_RESET}")
                 try:
                     # Ensure CLI install flow gets the same VNV automation behavior as GUI.
-                    from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable
+                    from jackify.backend.services.vnv_integration_helper import (
+                        run_vnv_automation_if_applicable,
+                        should_offer_vnv_automation,
+                    )
                     from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
+                    from jackify.backend.services.vnv_post_install_service import VNVPostInstallService
+                    from jackify.backend.handlers.path_handler import PathHandler
+                    from jackify.frontends.cli.commands.vnv_manual_downloads import (
+                        build_vnv_cli_manual_file_callback,
+                        create_vnv_cli_progress_callback,
+                        ensure_vnv_cli_manual_downloads,
+                    )
 
                     modlist_name_for_automation = self.context.get('modlist_name') or shortcut_name or ""
                     def _confirm_vnv(description: str) -> bool:
@@ -593,31 +659,47 @@ class ModlistOperationsConfigurationCLIMixin:
                         except (EOFError, KeyboardInterrupt):
                             return False
                         return user_input in ("", "y", "yes")
-                    def _manual_vnv_file(title: str, instructions: str):
-                        print(f"\n{COLOR_WARNING}{title}{COLOR_RESET}")
-                        print(instructions)
-                        try:
-                            file_input = input(f"{COLOR_PROMPT}Path to downloaded file: {COLOR_RESET}").strip()
-                        except (EOFError, KeyboardInterrupt):
-                            return None
-                        if not file_input:
-                            return None
-                        selected = Path(file_input).expanduser().resolve()
-                        return selected if selected.exists() else None
-                    automation_ran, vnv_error = run_vnv_automation_if_applicable(
-                        modlist_name=modlist_name_for_automation,
-                        modlist_install_location=Path(install_dir_str),
-                        game_root=None,  # Auto-detect from modlist structure.
-                        ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
-                        progress_callback=lambda msg: print(msg),
-                        manual_file_callback=_manual_vnv_file,
-                        confirmation_callback=_confirm_vnv,
-                    )
-                    if automation_ran and not vnv_error:
-                        print(f"{COLOR_INFO}VNV post-install automation completed.{COLOR_RESET}")
-                    if vnv_error:
-                        print(f"{COLOR_WARNING}VNV automation encountered an error: {vnv_error}{COLOR_RESET}")
-                        print(f"{COLOR_INFO}You can complete these steps manually by following: https://vivanewvegas.moddinglinked.com/wabbajack.html{COLOR_RESET}")
+                    install_path = Path(install_dir_str)
+                    if should_offer_vnv_automation(modlist_name_for_automation, install_path):
+                        game_paths = PathHandler().find_vanilla_game_paths()
+                        resolved_game_root = game_paths.get('Fallout New Vegas')
+                        vnv_service = VNVPostInstallService(
+                            modlist_install_location=install_path,
+                            game_root=resolved_game_root or install_path,
+                            ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
+                        )
+                        completed = vnv_service.check_already_completed()
+                        all_vnv_steps_done = (
+                            completed['root_mods']
+                            and completed['4gb_patch']
+                            and completed['bsa_decompressed']
+                        )
+                        if all_vnv_steps_done:
+                            print(f"{COLOR_INFO}VNV post-install steps are already complete.{COLOR_RESET}")
+                        elif _confirm_vnv(vnv_service.get_automation_description()):
+                            if not ensure_vnv_cli_manual_downloads(vnv_service, output_callback=print):
+                                print(f"{COLOR_WARNING}VNV manual downloads were not completed. Skipping VNV automation.{COLOR_RESET}")
+                            else:
+                                progress_callback, close_progress = create_vnv_cli_progress_callback(print)
+                                try:
+                                    automation_ran, vnv_error = run_vnv_automation_if_applicable(
+                                        modlist_name=modlist_name_for_automation,
+                                        modlist_install_location=install_path,
+                                        game_root=None,  # Auto-detect from modlist structure.
+                                        ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
+                                        progress_callback=progress_callback,
+                                        manual_file_callback=build_vnv_cli_manual_file_callback(vnv_service, output_callback=print),
+                                        confirmation_callback=lambda _description: True,
+                                    )
+                                finally:
+                                    close_progress()
+                                if automation_ran and not vnv_error:
+                                    print(f"{COLOR_INFO}VNV post-install automation completed.{COLOR_RESET}")
+                                if vnv_error:
+                                    print(f"{COLOR_WARNING}VNV automation encountered an error: {vnv_error}{COLOR_RESET}")
+                                    print(f"{COLOR_INFO}You can complete these steps manually by following: https://vivanewvegas.moddinglinked.com/wabbajack.html{COLOR_RESET}")
+                        else:
+                            print(f"{COLOR_INFO}VNV automation skipped by user.{COLOR_RESET}")
                 except Exception as vnv_err:
                     self.logger.error("VNV post-install automation failed: %s", vnv_err, exc_info=True)
                     print(f"{COLOR_WARNING}VNV automation could not be completed. Check logs for details.{COLOR_RESET}")
@@ -632,6 +714,7 @@ class ModlistOperationsConfigurationCLIMixin:
                 except Exception as ttw_err:
                     self.logger.error("TTW post-install prompt failed: %s", ttw_err, exc_info=True)
                     print(f"{COLOR_WARNING}TTW integration prompt failed. Check logs for details.{COLOR_RESET}")
+                print(f"{COLOR_SUCCESS}Configuration completed successfully!{COLOR_RESET}")
             else:
                 print(f"{COLOR_WARNING}Configuration had some issues but completed.{COLOR_RESET}")
                 self.logger.warning("Post-installation configuration had issues")

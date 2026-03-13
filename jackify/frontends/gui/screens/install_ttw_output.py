@@ -51,6 +51,9 @@ class TTWOutputMixin:
             is_file_op = any(ext in lower_cleaned for ext in ['.ogg', '.mp3', '.bsa', '.dds', '.nif', '.kf', '.hkx'])
             is_noise = cleaned.strip().upper() in ['OK', 'OK.', 'OK!', 'DONE', 'DONE.', 'SUCCESS', 'SUCCESS.']
 
+            if is_error and 'cannot get directory path for location type' in lower_cleaned:
+                self._ttw_unclean_game_dir_detected = True
+
             should_show = (is_error or is_warning or is_milestone) or (self.show_details_checkbox.isChecked() and not is_file_op and not is_noise)
 
             if should_show:

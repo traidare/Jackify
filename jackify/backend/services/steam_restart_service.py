@@ -673,6 +673,7 @@ def robust_steam_restart(progress_callback: Optional[Callable[[str], None]] = No
                     final_check = subprocess.run(['pgrep', '-f', 'steamwebhelper'], capture_output=True, timeout=10, env=start_env)
                     if final_check.returncode == 0:
                         report("Steam started successfully.")
+                        report("[Jackify] Steam restart complete")
                         logger.info(f"Steam confirmed running after {elapsed_wait}s wait.")
                         return True
                     else:

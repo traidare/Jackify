@@ -1,359 +1,367 @@
 """Installation workflow methods for InstallModlistScreen (Mixin)."""
-from pathlib import Path
-from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 import logging
 import os
-import re
+import shutil
 import time
 
-from .install_modlist_installer_thread import InstallerThread
+from jackify.frontends.gui.dialogs.existing_setup_dialog import prompt_existing_setup_dialog
 from .install_modlist_output_mixin import InstallModlistOutputMixin
-from jackify.backend.services.steam_restart_service import ensure_flatpak_steam_filesystem_access
-from jackify.shared.errors import install_dir_create_failed
+from .install_modlist_workflow_execution import InstallWorkflowExecutionMixin
 
 logger = logging.getLogger(__name__)
 
 
-class InstallWorkflowMixin(InstallModlistOutputMixin):
+class InstallWorkflowMixin(InstallWorkflowExecutionMixin, InstallModlistOutputMixin):
     """Mixin providing installation workflow methods for InstallModlistScreen."""
 
-    def validate_and_start_install(self):
-        import time
-        self._install_workflow_start_time = time.time()
-        logger.debug('DEBUG: validate_and_start_install called')
+    @staticmethod
+    def _normalize_version_token(value: str | None) -> str | None:
+        """Return a normalized version token for lightweight equality checks."""
+        if value is None:
+            return None
+        token = str(value).strip()
+        if not token:
+            return None
+        token = token.lstrip("vV")
+        return token.lower()
 
-        # Immediately show "Initialising" status to provide feedback
-        self.progress_indicator.set_status("Initialising...", 0)
-        from PySide6.QtWidgets import QApplication
-        QApplication.processEvents()  # Force UI update
+    @staticmethod
+    def _normalize_modlist_name(value: str | None) -> str:
+        return " ".join((value or "").strip().lower().split())
 
-        # Reload config to pick up any settings changes made in Settings dialog
-        self.config_handler.reload_config()
+    def _get_requested_modlist_version(self, install_mode: str) -> str | None:
+        """Return selected modlist version from gallery metadata when available."""
+        if install_mode != "online":
+            return None
+        info = getattr(self, "selected_modlist_info", None) or {}
+        return self._normalize_version_token(info.get("version"))
 
-        # Check protontricks before proceeding
-        if not self._check_protontricks():
-            self.progress_indicator.reset()
+    def _evaluate_update_candidate(
+        self,
+        modlist_name: str,
+        install_dir: str,
+        install_mode: str,
+        existing_appid: str | None,
+    ) -> tuple[bool, dict]:
+        """
+        Decide whether update-mode prompt should be shown.
+
+        Policy:
+        - Require existing shortcut AppID and jackify_meta.json.
+        - Require modlist identity match (requested name == installed meta name).
+        - Version relation is informational:
+          - `different` when both requested/installed versions are available and differ.
+          - `same` when both are available and equal.
+          - `unknown` when either side is missing.
+        """
+        from jackify.backend.utils.modlist_meta import read_modlist_meta
+
+        result = {
+            "eligible": False,
+            "reason": "unknown",
+            "requested_version": None,
+            "installed_version": None,
+            "version_relation": "unknown",
+            "installed_name": None,
+        }
+        if not existing_appid:
+            result["reason"] = "missing_shortcut_appid"
+            return False, result
+
+        meta = read_modlist_meta(install_dir)
+        if not meta:
+            result["reason"] = "missing_meta"
+            return False, result
+
+        installed_name = (meta.get("modlist_name") or "").strip()
+        result["installed_name"] = installed_name
+        if self._normalize_modlist_name(installed_name) != self._normalize_modlist_name(modlist_name):
+            result["reason"] = "modlist_name_mismatch"
+            return False, result
+
+        requested_version = self._get_requested_modlist_version(install_mode)
+        installed_version = self._normalize_version_token(meta.get("modlist_version"))
+        result["requested_version"] = requested_version
+        result["installed_version"] = installed_version
+        if requested_version and installed_version:
+            result["version_relation"] = "same" if requested_version == installed_version else "different"
+
+        result["eligible"] = True
+        result["reason"] = "eligible"
+        return True, result
+
+    def _resolve_modorganizer_ini_path(self, install_dir: str) -> str | None:
+        """Return ModOrganizer.ini path for standard/special layouts."""
+        candidates = [
+            os.path.join(install_dir, "ModOrganizer.ini"),
+            os.path.join(install_dir, "files", "ModOrganizer.ini"),
+        ]
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
+    def _capture_mo2_path_state(self, ini_path: str) -> dict[str, str]:
+        """Capture path-critical keys from ModOrganizer.ini for update comparison."""
+        state: dict[str, str] = {}
+        section = "root"
+        try:
+            with open(ini_path, "r", encoding="utf-8", errors="ignore") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith(("#", ";")):
+                        continue
+                    if line.startswith("[") and line.endswith("]"):
+                        section = line[1:-1].strip() or "root"
+                        continue
+                    if "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    key_lower = key.lower()
+                    if (
+                        key_lower in {"gamepath", "download_directory"}
+                        or key_lower.startswith("binary")
+                        or key_lower.startswith("workingdirectory")
+                    ):
+                        state[f"{section}.{key}"] = value
+        except Exception as e:
+            logger.warning("Failed to capture MO2 path state from %s: %s", ini_path, e)
+        return state
+
+    def _create_update_ini_backup(self, ini_path: str, label: str) -> str | None:
+        """Create timestamped backup of ModOrganizer.ini for update traceability."""
+        try:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_path = f"{ini_path}.{label}_{timestamp}.bak"
+            shutil.copy2(ini_path, backup_path)
+            return backup_path
+        except Exception as e:
+            logger.warning("Failed to create %s backup for %s: %s", label, ini_path, e)
+            return None
+
+    def _record_pre_update_ini_snapshot(self, install_dir: str) -> None:
+        """Capture pre-engine MO2 ini snapshot/backup for update-mode comparison."""
+        ini_path = self._resolve_modorganizer_ini_path(install_dir)
+        if not ini_path:
+            self._update_pre_engine_ini_path = None
+            self._update_pre_engine_ini_state = {}
+            logger.warning("Update mode: ModOrganizer.ini not found before engine phase")
             return
 
-        # Disable all controls during installation (except Cancel)
-        self._disable_controls_during_operation()
-        
-        try:
-            tab_index = self.source_tabs.currentIndex()
-            install_mode = 'online'
-            if tab_index == 1:  # .wabbajack File tab
-                modlist = self.file_edit.text().strip()
-                if not modlist or not os.path.isfile(modlist) or not modlist.endswith('.wabbajack'):
-                    self._abort_with_message(
-                        "warning",
-                        "Invalid Modlist",
-                        "Please select a valid .wabbajack file."
-                    )
-                    return
-                install_mode = 'file'
-            else:
-                # For online modlists, ALWAYS use machine_url from selected_modlist_info
-                # Button text is now the display name (title), NOT the machine URL
-                if not hasattr(self, 'selected_modlist_info') or not self.selected_modlist_info:
-                    self._abort_with_message(
-                        "warning",
-                        "Invalid Modlist",
-                        "Modlist information is missing. Please select the modlist again from the gallery."
-                    )
-                    return
-                
-                machine_url = self.selected_modlist_info.get('machine_url')
-                if not machine_url:
-                    self._abort_with_message(
-                        "warning",
-                        "Invalid Modlist",
-                        "Modlist information is incomplete. Please select the modlist again from the gallery."
-                    )
-                    return
-                
-                # CRITICAL: Use machine_url, NOT button text
-                modlist = machine_url
-            install_dir = self.install_dir_edit.text().strip()
-            downloads_dir = self.downloads_dir_edit.text().strip()
-
-            # Get authentication token (OAuth or API key) with automatic refresh
-            api_key, oauth_info = self.auth_service.get_auth_for_engine()
-            if not api_key:
-                self._abort_with_message(
-                    "warning",
-                    "Authorisation Required",
-                    "Please authorise with Nexus Mods before installing modlists.\n\n"
-                    "Click the 'Authorise' button above to log in with OAuth,\n"
-                    "or configure an API key in Settings.",
-                    safety_level="medium"
-                )
-                return
-
-            # Log authentication status at install start (Issue #111 diagnostics)
-            auth_method = self.auth_service.get_auth_method()
-            logger.info("=" * 60)
-            logger.info("Authentication Status at Install Start")
-            logger.info(f"Method: {auth_method or 'UNKNOWN'}")
-            logger.info(f"Token length: {len(api_key)} chars")
-            if len(api_key) >= 8:
-                logger.info(f"Token (partial): {api_key[:4]}...{api_key[-4:]}")
-
-            if auth_method == 'oauth':
-                token_handler = self.auth_service.token_handler
-                token_info = token_handler.get_token_info()
-                if 'expires_in_minutes' in token_info:
-                    logger.info(f"OAuth expires in: {token_info['expires_in_minutes']:.1f} minutes")
-                if token_info.get('refresh_token_likely_expired'):
-                    logger.warning(f"OAuth refresh token age: {token_info['refresh_token_age_days']:.1f} days (may need re-auth)")
-            logger.info("=" * 60)
-
-            modlist_name = self.modlist_name_edit.text().strip()
-            missing_fields = []
-            if not modlist_name:
-                missing_fields.append("Modlist Name")
-            if not install_dir:
-                missing_fields.append("Install Directory")
-            if not downloads_dir:
-                missing_fields.append("Downloads Directory")
-            if missing_fields:
-                self._abort_with_message(
-                    "warning",
-                    "Missing Required Fields",
-                    "Please fill in all required fields before starting the install:\n- " + "\n- ".join(missing_fields)
-                )
-                return
-            from jackify.backend.handlers.validation_handler import ValidationHandler
-            validation_handler = ValidationHandler()
-            is_safe, reason = validation_handler.is_safe_install_directory(Path(install_dir))
-            if not is_safe:
-                from jackify.frontends.gui.dialogs.warning_dialog import WarningDialog
-                dlg = WarningDialog(reason, parent=self)
-                result = dlg.exec()
-                if not result or not dlg.confirmed:
-                    self._abort_install_validation()
-                    return
-            if not os.path.isdir(install_dir):
-                from ..services.message_service import MessageService
-                create = MessageService.question(self, "Create Directory?",
-                    f"The install directory does not exist:\n{install_dir}\n\nWould you like to create it?",
-                    critical=False  # Non-critical, won't steal focus
-                )
-                if create == QMessageBox.Yes:
-                    try:
-                        os.makedirs(install_dir, exist_ok=True)
-                    except Exception as e:
-                        MessageService.show_error(self, install_dir_create_failed(install_dir, str(e)))
-                        self._abort_install_validation()
-                        return
-                else:
-                    self._abort_install_validation()
-                    return
-            if not os.path.isdir(downloads_dir):
-                from ..services.message_service import MessageService
-                create = MessageService.question(self, "Create Directory?",
-                    f"The downloads directory does not exist:\n{downloads_dir}\n\nWould you like to create it?",
-                    critical=False  # Non-critical, won't steal focus
-                )
-                if create == QMessageBox.Yes:
-                    try:
-                        os.makedirs(downloads_dir, exist_ok=True)
-                    except Exception as e:
-                        MessageService.show_error(self, install_dir_create_failed(downloads_dir, str(e)))
-                        self._abort_install_validation()
-                        return
-                else:
-                    self._abort_install_validation()
-                    return
-
-            # Handle resolution saving
-            resolution = self.resolution_combo.currentText()
-            if resolution and resolution != "Leave unchanged":
-                success = self.resolution_service.save_resolution(resolution)
-                if success:
-                    logger.debug(f"DEBUG: Resolution saved successfully: {resolution}")
-                else:
-                    logger.debug("DEBUG: Failed to save resolution")
-            else:
-                # Clear saved resolution if "Leave unchanged" is selected
-                if self.resolution_service.has_saved_resolution():
-                    self.resolution_service.clear_saved_resolution()
-                    logger.debug("DEBUG: Saved resolution cleared")
-            
-            ensure_flatpak_steam_filesystem_access(Path(install_dir))
-
-            # Handle parent directory saving
-            self._save_parent_directories(install_dir, downloads_dir)
-            
-            # Detect game type and check support
-            game_type = None
-            game_name = None
-            
-            if install_mode == 'file':
-                # Parse .wabbajack file to get game type
-                wabbajack_path = Path(modlist)
-                result = self.wabbajack_parser.parse_wabbajack_game_type(wabbajack_path)
-                if result:
-                    if isinstance(result, tuple):
-                        game_type, raw_game_type = result
-                        # Get display name for the game
-                        display_names = {
-                            'skyrim': 'Skyrim',
-                            'fallout4': 'Fallout 4',
-                            'falloutnv': 'Fallout New Vegas',
-                            'oblivion': 'Oblivion',
-                            'starfield': 'Starfield',
-                            'oblivion_remastered': 'Oblivion Remastered',
-                            'enderal': 'Enderal'
-                        }
-                        if game_type == 'unknown' and raw_game_type:
-                            game_name = raw_game_type
-                        else:
-                            game_name = display_names.get(game_type, game_type)
-                    else:
-                        game_type = result
-                        display_names = {
-                            'skyrim': 'Skyrim',
-                            'fallout4': 'Fallout 4',
-                            'falloutnv': 'Fallout New Vegas',
-                            'oblivion': 'Oblivion',
-                            'starfield': 'Starfield',
-                            'oblivion_remastered': 'Oblivion Remastered',
-                            'enderal': 'Enderal'
-                        }
-                        game_name = display_names.get(game_type, game_type)
-            else:
-                # For online modlists, try to get game type from selected modlist
-                if hasattr(self, 'selected_modlist_info') and self.selected_modlist_info:
-                    game_name = self.selected_modlist_info.get('game', '')
-                    logger.debug(f"DEBUG: Detected game_name from selected_modlist_info: '{game_name}'")
-                    
-                    # Map game name to game type
-                    game_mapping = {
-                        'skyrim special edition': 'skyrim',
-                        'skyrim': 'skyrim',
-                        'fallout 4': 'fallout4',
-                        'fallout new vegas': 'falloutnv',
-                        'oblivion': 'oblivion',
-                        'starfield': 'starfield',
-                        'oblivion_remastered': 'oblivion_remastered',
-                        'enderal': 'enderal',
-                        'enderal special edition': 'enderal'
-                    }
-                    game_type = game_mapping.get(game_name.lower())
-                    logger.debug(f"DEBUG: Mapped game_name '{game_name}' to game_type: '{game_type}'")
-                    if not game_type:
-                        game_type = 'unknown'
-                        logger.debug(f"DEBUG: Game type not found in mapping, setting to 'unknown'")
-                else:
-                    logger.debug(f"DEBUG: No selected_modlist_info found")
-                    game_type = 'unknown'
-            
-            # Store game type and name for later use
-            self._current_game_type = game_type
-            self._current_game_name = game_name
-            
-            # Check if game is supported
-            logger.debug(f"DEBUG: Checking if game_type '{game_type}' is supported")
-            logger.debug(f"DEBUG: game_type='{game_type}', game_name='{game_name}'")
-            is_supported = self.wabbajack_parser.is_supported_game(game_type) if game_type else False
-            logger.debug(f"DEBUG: is_supported_game('{game_type}') returned: {is_supported}")
-            
-            if game_type and not is_supported:
-                logger.debug(f"DEBUG: Game '{game_type}' is not supported, showing dialog")
-                # Show unsupported game dialog
-                from ..widgets.unsupported_game_dialog import UnsupportedGameDialog
-                dialog = UnsupportedGameDialog(self, game_name)
-                if not dialog.show_dialog(self, game_name):
-                    self._abort_install_validation()
-                    return
-            
-            self.console.clear()
-            self.process_monitor.clear()
-            
-            # R&D: Reset progress indicator for new installation
-            self.progress_indicator.reset()
-            self.progress_state_manager.reset()
-            self.file_progress_list.clear()
-            self.file_progress_list.start_cpu_tracking()  # Start tracking CPU during installation
-            self._premium_notice_shown = False
-            self._stalled_download_start_time = None
-            self._stalled_download_notified = False
-            self._stalled_data_snapshot = 0
-            self._token_error_notified = False  # Reset token error notification
-            self._premium_failure_active = False
-            self._post_install_active = False
-            self._post_install_current_step = 0
-            # Activity tab is always visible (tabs handle visibility automatically)
-            
-            # Update button states for installation
-            self.start_btn.setEnabled(False)
-            self.cancel_btn.setVisible(False)
-            self.cancel_install_btn.setVisible(True)
-            
-            # CRITICAL: Final safety check - ensure online modlists use machine_url
-            if install_mode == 'online':
-                if hasattr(self, 'selected_modlist_info') and self.selected_modlist_info:
-                    expected_machine_url = self.selected_modlist_info.get('machine_url')
-                    if expected_machine_url:
-                        modlist = expected_machine_url  # Force use machine_url
-                    else:
-                        self._abort_with_message(
-                            "critical",
-                            "Installation Error",
-                            "Cannot determine modlist machine URL. Please select the modlist again."
-                        )
-                        return
-                else:
-                    self._abort_with_message(
-                        "critical",
-                        "Installation Error",
-                        "Modlist information is missing. Please select the modlist again from the gallery."
-                    )
-                    return
-            
-            logger.debug(f'DEBUG: Calling run_modlist_installer with modlist={modlist}, install_dir={install_dir}, downloads_dir={downloads_dir}, install_mode={install_mode}')
-            self.run_modlist_installer(modlist, install_dir, downloads_dir, api_key, install_mode, oauth_info)
-        except Exception as e:
-            logger.debug(f"DEBUG: Exception in validate_and_start_install: {e}")
-            import traceback
-            logger.debug(f"DEBUG: Traceback: {traceback.format_exc()}")
-            # Re-enable all controls after exception
-            self._enable_controls_after_operation()
-            self.cancel_btn.setVisible(True)
-            self.cancel_install_btn.setVisible(False)
-            logger.debug(f"DEBUG: Controls re-enabled in exception handler")
-
-    def run_modlist_installer(self, modlist, install_dir, downloads_dir, api_key, install_mode='online', oauth_info=None):
-        logger.debug('DEBUG: run_modlist_installer called - USING THREADED BACKEND WRAPPER')
-        
-        # Rotate log file at start of each workflow run (keep 5 backups)
-        from jackify.backend.handlers.logging_handler import LoggingHandler
-        log_handler = LoggingHandler()
-        log_handler.rotate_log_file_per_run(Path(self.modlist_log_path), backup_count=5)
-
-        # Clear console for fresh installation output
-        self.console.clear()
-        from jackify import __version__ as jackify_version
-        self._safe_append_text(f"Jackify v{jackify_version}")
-        self._safe_append_text("Starting modlist installation with custom progress handling...")
-        
-        # Update UI state for installation
-        self.start_btn.setEnabled(False)
-        self.cancel_btn.setVisible(False)
-        self.cancel_install_btn.setVisible(True)
-        
-        self.install_thread = InstallerThread(
-            modlist, install_dir, downloads_dir, api_key, self.modlist_name_edit.text().strip(), install_mode,
-            progress_state_manager=self.progress_state_manager,  # R&D: Pass progress state manager
-            auth_service=self.auth_service,  # Fix Issue #127: Pass auth_service for Premium detection diagnostics
-            oauth_info=oauth_info  # Pass OAuth state for auto-refresh
+        self._update_pre_engine_ini_path = ini_path
+        self._update_pre_engine_ini_state = self._capture_mo2_path_state(ini_path)
+        self._update_pre_engine_ini_backup = self._create_update_ini_backup(ini_path, "pre_update")
+        logger.info(
+            "Update mode: captured pre-engine MO2 state | ini=%s backup=%s keys=%d",
+            ini_path,
+            self._update_pre_engine_ini_backup,
+            len(self._update_pre_engine_ini_state),
         )
-        self.install_thread.output_received.connect(self.on_installation_output)
-        self.install_thread.progress_received.connect(self.on_installation_progress)
-        self.install_thread.progress_updated.connect(self.on_progress_updated)  # R&D: Connect progress update
-        self.install_thread.installation_finished.connect(self.on_installation_finished)
-        self.install_thread.premium_required_detected.connect(self.on_premium_required_detected)
-        # R&D: Pass progress state manager to thread
-        self.install_thread.progress_state_manager = self.progress_state_manager
-        self.install_thread.start()
+
+    def _record_post_engine_ini_snapshot_and_diff(self, install_dir: str) -> None:
+        """Capture post-engine MO2 snapshot and log path-key drift vs pre-engine state."""
+        ini_path = self._resolve_modorganizer_ini_path(install_dir)
+        if not ini_path:
+            logger.warning("Update mode: ModOrganizer.ini not found after engine phase")
+            return
+
+        post_state = self._capture_mo2_path_state(ini_path)
+        post_backup = self._create_update_ini_backup(ini_path, "post_engine")
+        pre_state = getattr(self, "_update_pre_engine_ini_state", {}) or {}
+
+        changed: list[str] = []
+        for key in sorted(set(pre_state) | set(post_state)):
+            before = pre_state.get(key)
+            after = post_state.get(key)
+            if before != after:
+                changed.append(f"{key}: '{before}' -> '{after}'")
+
+        self._update_ini_path_drift_detected = bool(changed)
+        self._update_post_engine_ini_state = post_state
+        self._update_post_engine_ini_path = ini_path
+        logger.info(
+            "Update mode: captured post-engine MO2 state | ini=%s backup=%s keys=%d changed=%d",
+            ini_path,
+            post_backup,
+            len(post_state),
+            len(changed),
+        )
+        if changed:
+            logger.warning("Update mode: MO2 path-key changes detected after engine phase")
+            for change in changed:
+                logger.warning("Update mode INI diff | %s", change)
+        else:
+            logger.info("Update mode: no path-key changes detected in ModOrganizer.ini after engine phase")
+
+    def _verify_update_ini_after_configuration(self, install_dir: str) -> None:
+        """Log-only verification of path-critical ModOrganizer.ini keys after update configuration."""
+        summary = self._evaluate_update_ini_verification(install_dir)
+        if not summary.get("ini_found"):
+            logger.warning("Update mode verify: ModOrganizer.ini not found after configuration")
+            return
+
+        logger.info(
+            "Update mode verify: MO2 ini post-config summary | ini=%s critical_keys=%d empty_critical=%d changed_vs_post_engine=%d changed_vs_pre_engine=%d",
+            summary["ini_path"],
+            summary["critical_key_count"],
+            summary["empty_critical_count"],
+            summary["changed_vs_post_engine_count"],
+            summary["changed_vs_pre_engine_count"],
+        )
+        if summary["empty_critical_keys"]:
+            logger.warning("Update mode verify: empty critical MO2 keys detected")
+            for key in summary["empty_critical_keys"]:
+                logger.warning("Update mode verify | empty key: %s", key)
+
+    def _evaluate_update_ini_verification(self, install_dir: str) -> dict:
+        """
+        Evaluate post-config MO2 path-key integrity for update-mode installs.
+
+        Returns a summary dictionary that can be consumed by logging or tests.
+        """
+        ini_path = self._resolve_modorganizer_ini_path(install_dir)
+        if not ini_path:
+            return {
+                "ini_found": False,
+                "ini_path": None,
+                "critical_key_count": 0,
+                "empty_critical_count": 0,
+                "empty_critical_keys": [],
+                "changed_vs_post_engine_count": 0,
+                "changed_vs_pre_engine_count": 0,
+                "changed_vs_post_engine_keys": [],
+                "changed_vs_pre_engine_keys": [],
+            }
+
+        final_state = self._capture_mo2_path_state(ini_path)
+        pre_state = getattr(self, "_update_pre_engine_ini_state", {}) or {}
+        post_engine_state = getattr(self, "_update_post_engine_ini_state", {}) or {}
+
+        critical_items = {
+            k: v
+            for k, v in final_state.items()
+            if (
+                k.lower().endswith(".gamepath")
+                or ".binary" in k.lower()
+                or ".workingdirectory" in k.lower()
+                or k.lower().endswith(".download_directory")
+            )
+        }
+        empty_critical = [k for k, v in critical_items.items() if not (v or "").strip()]
+
+        changed_vs_post_engine = [
+            k
+            for k in sorted(set(post_engine_state) | set(final_state))
+            if post_engine_state.get(k) != final_state.get(k)
+        ]
+        changed_vs_pre_engine = [
+            k
+            for k in sorted(set(pre_state) | set(final_state))
+            if pre_state.get(k) != final_state.get(k)
+        ]
+        return {
+            "ini_found": True,
+            "ini_path": ini_path,
+            "critical_key_count": len(critical_items),
+            "empty_critical_count": len(empty_critical),
+            "empty_critical_keys": empty_critical,
+            "changed_vs_post_engine_count": len(changed_vs_post_engine),
+            "changed_vs_pre_engine_count": len(changed_vs_pre_engine),
+            "changed_vs_post_engine_keys": changed_vs_post_engine,
+            "changed_vs_pre_engine_keys": changed_vs_pre_engine,
+        }
+
+    def _find_existing_shortcut_appid(self, modlist_name: str, install_dir: str) -> str | None:
+        """Return existing Steam shortcut AppID for this install dir/name when present."""
+        try:
+            from jackify.backend.handlers.shortcut_handler import ShortcutHandler
+            from jackify.backend.services.platform_detection_service import PlatformDetectionService
+
+            platform_service = PlatformDetectionService.get_instance()
+            shortcut_handler = ShortcutHandler(steamdeck=platform_service.is_steamdeck, verbose=False)
+
+            install_real = os.path.realpath(install_dir)
+            candidate_exes = [
+                os.path.join(install_real, "ModOrganizer.exe"),
+                os.path.join(install_real, "files", "ModOrganizer.exe"),  # Somnium layout
+            ]
+
+            for exe_path in candidate_exes:
+                if not os.path.exists(exe_path):
+                    continue
+                appid = shortcut_handler.get_appid_from_vdf(modlist_name, exe_path)
+                if appid:
+                    return appid
+
+            # Fallback: match by name + start dir from shortcuts.vdf even if exe moved
+            for shortcut in shortcut_handler.find_shortcuts_by_exe("ModOrganizer.exe"):
+                if (
+                    (shortcut.get("AppName", "").strip() == modlist_name.strip())
+                    and os.path.realpath(shortcut.get("StartDir", "")) == install_real
+                ):
+                    raw_appid = shortcut.get("appid")
+                    if raw_appid is not None:
+                        return str(int(raw_appid) & 0xFFFFFFFF)
+        except Exception as e:
+            logger.warning("Update detection: failed shortcut lookup: %s", e)
+        return None
+
+    def _prompt_update_or_new_install(
+        self,
+        modlist_name: str,
+        install_dir: str,
+        update_meta: dict | None = None,
+    ) -> str:
+        """Prompt user when update conditions are met. Returns: 'update'|'new'|'cancel'."""
+        version_note = ""
+        if update_meta:
+            relation = update_meta.get("version_relation")
+            req = update_meta.get("requested_version")
+            inst = update_meta.get("installed_version")
+            if relation == "different":
+                version_note = (
+                    f"\n\nDetected version change: installed v{inst} -> selected v{req}."
+                )
+            elif relation == "same" and inst:
+                version_note = (
+                    f"\n\nDetected same version (v{inst}). "
+                    "Use the existing setup if you are repairing or reconfiguring this install."
+                )
+
+        body = (
+            "Jackify detected an existing modlist installation in the selected directory.\n\n"
+            "Choose 'Use Existing Setup' to continue with the current install and Steam shortcut. "
+            "Choose 'Create New Shortcut' only if you want a separate Steam entry with a different name."
+            f"{version_note}"
+        )
+
+        action, new_name = prompt_existing_setup_dialog(
+            self,
+            window_title="Existing Modlist Setup Detected",
+            heading="Use Existing Setup or Create a New Shortcut",
+            body=body,
+            existing_name=modlist_name,
+            requested_name=modlist_name,
+            install_dir=install_dir,
+            field_label="New shortcut name",
+            reuse_label="Use Existing Setup",
+            new_label="Create New Shortcut",
+            cancel_label="Cancel",
+        )
+
+        if action == "reuse":
+            return "update"
+        if action == "new":
+            if not new_name:
+                MessageBox = QMessageBox  # keep local usage explicit
+                MessageBox.warning(self, "Invalid Name", "Please enter a valid shortcut name.")
+                return "cancel"
+            if new_name == modlist_name:
+                QMessageBox.warning(self, "Same Name", "Please enter a different name to create a separate shortcut.")
+                return "cancel"
+            self.modlist_name_edit.setText(new_name)
+            return "new"
+        return "cancel"

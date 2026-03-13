@@ -55,6 +55,12 @@ class ConfigureNewModlistUISetupMixin:
         self.progress_indicator = OverallProgressIndicator(show_progress_bar=True)
         self.progress_indicator.set_status("Ready to configure", 0)
         self.file_progress_list = FileProgressList()
+        self._post_install_sequence = self._build_post_install_sequence()
+        self._post_install_total_steps = len(self._post_install_sequence)
+        self._post_install_current_step = 0
+        self._post_install_active = False
+        self._post_install_last_label = ""
+        self._bsa_hold_deadline = 0.0
 
         # Create "Show Details" checkbox
         self.show_details_checkbox = QCheckBox("Show details")
@@ -601,4 +607,3 @@ class ConfigureNewModlistUISetupMixin:
                                  f"Unable to verify protontricks installation: {e}\n\n"
                                  "Continuing anyway, but some features may not work correctly.")
             return True  # Continue anyway
-

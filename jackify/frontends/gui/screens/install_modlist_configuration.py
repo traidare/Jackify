@@ -1,6 +1,7 @@
 """Configuration phase workflow for InstallModlistScreen (Mixin)."""
 from PySide6.QtWidgets import QMessageBox, QProgressDialog
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from .screen_focus_reclaim import FocusReclaimMixin, STEAM_RESTART_SENTINEL
 from PySide6.QtGui import QFont
 from jackify.frontends.gui.services.message_service import MessageService
 from jackify.shared.errors import manual_steps_incomplete, configuration_failed
@@ -16,7 +17,7 @@ import logging
 logger = logging.getLogger(__name__)
 from .install_modlist_shortcut_dialog import InstallModlistShortcutDialogMixin
 
-class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
+class ConfigurationPhaseMixin(FocusReclaimMixin, InstallModlistShortcutDialogMixin):
     """Mixin providing configuration phase workflow and dialog management for InstallModlistScreen."""
 
     def on_configuration_progress(self, progress_msg):
@@ -43,14 +44,9 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                 pass
             finally:
                 self.steam_restart_progress = None
-        # Controls are managed by the proper control management system
-        # Delay focus reclaim so Steam's window finishes painting before we steal it back
-        try:
-            from PySide6.QtCore import QTimer
-            win = self.window()
-            QTimer.singleShot(10000, lambda: (win.raise_(), win.activateWindow()))
-        except Exception:
-            pass
+        # Controls are managed by the proper control management system.
+        # Reclaim focus with bounded retries because Steam restart timing varies.
+        self._start_focus_reclaim_retries()
 
     def _detect_game_type_from_mo2_ini(self, install_dir: str) -> str:
         """Detect game type by checking ModOrganizer.ini for loader executables."""
@@ -167,13 +163,20 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
                 # No VNV automation - end post-install feedback now
                 self._end_post_install_feedback(True)
 
+                if getattr(self, "_is_update_install", False):
+                    try:
+                        self._verify_update_ini_after_configuration(install_dir)
+                    except Exception as e:
+                        logger.warning("Update mode verify: failed post-config INI verification: %s", e)
+
                 # Clear Activity window before showing success dialog
                 self.file_progress_list.clear()
 
                 # Show normal success dialog
+                workflow_type = "update" if getattr(self, "_is_update_install", False) else "install"
                 success_dialog = SuccessDialog(
                     modlist_name=modlist_name,
-                    workflow_type="install",
+                    workflow_type=workflow_type,
                     time_taken=time_str,
                     game_name=game_name,
                     parent=self
@@ -196,7 +199,19 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
             else:
                 # Configuration failed for other reasons
                 self._end_post_install_feedback(False)
-                MessageService.show_error(self, configuration_failed("Post-install configuration failed."))
+                MessageService.show_error(
+                    self,
+                    configuration_failed(
+                        "Post-install configuration failed.",
+                        context={
+                            "operation": "install_modlist",
+                            "step": "post_install_configuration",
+                            "modlist_name": modlist_name,
+                            "install_dir": install_dir,
+                            "workflow_type": "update" if getattr(self, "_is_update_install", False) else "install",
+                        },
+                    ),
+                )
         except Exception as e:
             # Ensure controls are re-enabled even on unexpected errors
             self._enable_controls_after_operation()
@@ -206,7 +221,19 @@ class ConfigurationPhaseMixin(InstallModlistShortcutDialogMixin):
     def on_configuration_error(self, error_message):
         """Handle configuration error on main thread"""
         self._safe_append_text(f"Configuration failed with error: {error_message}")
-        MessageService.show_error(self, configuration_failed(str(error_message)))
+        MessageService.show_error(
+            self,
+            configuration_failed(
+                str(error_message),
+                context={
+                    "operation": "install_modlist",
+                    "step": "post_install_configuration",
+                    "modlist_name": self.modlist_name_edit.text().strip(),
+                    "install_dir": self.install_dir_edit.text().strip(),
+                    "workflow_type": "update" if getattr(self, "_is_update_install", False) else "install",
+                },
+            ),
+        )
 
         # Re-enable all controls on error
         self._enable_controls_after_operation()

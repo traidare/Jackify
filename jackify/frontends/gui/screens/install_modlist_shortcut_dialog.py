@@ -1,111 +1,83 @@
-"""Steam shortcut conflict dialog and retry workflow for InstallModlistScreen (Mixin)."""
-from PySide6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QHBoxLayout,
-)
+"""Steam shortcut conflict handling for InstallModlistScreen (Mixin)."""
+import os
+
+from jackify.frontends.gui.dialogs.existing_setup_dialog import prompt_existing_setup_dialog
 from jackify.frontends.gui.services.message_service import MessageService
 
 
 class InstallModlistShortcutDialogMixin:
     """Mixin providing shortcut conflict dialog and retry-with-new-name for InstallModlistScreen."""
 
+    def _restore_controls_after_shortcut_dialog_abort(self):
+        """Return Install Modlist to a usable state when shortcut resolution is aborted."""
+        if hasattr(self, "_abort_install_validation"):
+            try:
+                self._abort_install_validation()
+                return
+            except Exception:
+                pass
+        try:
+            self._enable_controls_after_operation()
+        except Exception:
+            pass
+        try:
+            self.cancel_btn.setVisible(True)
+            self.cancel_install_btn.setVisible(False)
+        except Exception:
+            pass
+
     def show_shortcut_conflict_dialog(self, conflicts):
-        """Show dialog to resolve shortcut name conflicts."""
-        conflict_names = [c['name'] for c in conflicts]
-        conflict_info = f"Found existing Steam shortcut: '{conflict_names[0]}'"
-
+        """Show dialog to resolve existing install / shortcut conflicts."""
+        existing_name = conflicts[0].get("name") or self.modlist_name_edit.text().strip()
         modlist_name = self.modlist_name_edit.text().strip()
+        install_dir = os.path.realpath(self.install_dir_edit.text().strip())
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Steam Shortcut Conflict")
-        dialog.setModal(True)
-        dialog.resize(450, 180)
+        action, new_name = prompt_existing_setup_dialog(
+            self,
+            window_title="Existing Modlist Setup Detected",
+            heading="Modlist Update or New Install",
+            body=(
+                "Jackify detected an existing Steam shortcut for this modlist setup.\n\n"
+                "If you are updating, repairing, or reconfiguring an existing install, choose "
+                "'Use Existing Setup'. If you want a separate Steam entry, enter a different "
+                "name and choose 'Create New Shortcut'."
+            ),
+            existing_name=existing_name,
+            requested_name=modlist_name,
+            install_dir=install_dir,
+            field_label="New shortcut name",
+            reuse_label="Use Existing Setup",
+            new_label="Create New Shortcut",
+            cancel_label="Cancel",
+        )
 
-        dialog.setStyleSheet("""
-            QDialog {
-                background-color: #2b2b2b;
-                color: #ffffff;
-            }
-            QLabel {
-                color: #ffffff;
-                font-size: 14px;
-                padding: 10px 0px;
-            }
-            QLineEdit {
-                background-color: #404040;
-                color: #ffffff;
-                border: 2px solid #555555;
-                border-radius: 4px;
-                padding: 8px;
-                font-size: 14px;
-                selection-background-color: #3fd0ea;
-            }
-            QLineEdit:focus {
-                border-color: #3fd0ea;
-            }
-            QPushButton {
-                background-color: #404040;
-                color: #ffffff;
-                border: 2px solid #555555;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-size: 14px;
-                min-width: 120px;
-            }
-            QPushButton:hover {
-                background-color: #505050;
-                border-color: #3fd0ea;
-            }
-            QPushButton:pressed {
-                background-color: #303030;
-            }
-        """)
+        if action == "reuse":
+            existing_appid = conflicts[0].get("appid")
+            if not existing_appid:
+                MessageService.warning(
+                    self,
+                    "Existing Setup Not Found",
+                    "Jackify could not determine the Steam AppID for the existing shortcut.",
+                )
+                self._restore_controls_after_shortcut_dialog_abort()
+                return
+            self._safe_append_text(f"Reusing existing Steam shortcut '{existing_name}'.")
+            self.continue_configuration_after_automated_prefix(int(existing_appid), modlist_name, install_dir, None)
+            return
 
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-
-        conflict_label = QLabel(f"{conflict_info}\n\nPlease choose a different name for your shortcut:")
-        layout.addWidget(conflict_label)
-
-        name_input = QLineEdit(modlist_name)
-        name_input.selectAll()
-        layout.addWidget(name_input)
-
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-
-        create_button = QPushButton("Create with New Name")
-        cancel_button = QPushButton("Cancel")
-
-        button_layout.addStretch()
-        button_layout.addWidget(cancel_button)
-        button_layout.addWidget(create_button)
-        layout.addLayout(button_layout)
-
-        def on_create():
-            new_name = name_input.text().strip()
+        if action == "new":
             if new_name and new_name != modlist_name:
-                dialog.accept()
                 self.retry_automated_workflow_with_new_name(new_name)
-            elif new_name == modlist_name:
+                return
+            if new_name == modlist_name:
                 MessageService.warning(self, "Same Name", "Please enter a different name to resolve the conflict.")
             else:
                 MessageService.warning(self, "Invalid Name", "Please enter a valid shortcut name.")
+            self._restore_controls_after_shortcut_dialog_abort()
+            return
 
-        def on_cancel():
-            dialog.reject()
-            self._safe_append_text("Shortcut creation cancelled by user")
-
-        create_button.clicked.connect(on_create)
-        cancel_button.clicked.connect(on_cancel)
-        name_input.returnPressed.connect(on_create)
-
-        dialog.exec()
+        self._safe_append_text("Shortcut creation cancelled by user")
+        self._restore_controls_after_shortcut_dialog_abort()
 
     def retry_automated_workflow_with_new_name(self, new_name):
         """Retry the automated workflow with a new shortcut name."""

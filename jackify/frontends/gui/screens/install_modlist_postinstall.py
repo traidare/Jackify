@@ -229,6 +229,8 @@ class PostInstallFeedbackMixin:
                         prev_step = self._post_install_sequence[self._post_install_current_step - 1]
                         if prev_step['id'] == 'wine_components' and step['id'] != 'wine_components':
                             self._stop_component_install_pulse()
+                        if prev_step['id'] == 'vnv_bsa_decompress' and step['id'] != 'vnv_bsa_decompress':
+                            self._stop_bsa_decompress_pulse()
 
                     self._post_install_current_step = idx
                     self._post_install_last_label = step['label']
@@ -249,6 +251,9 @@ class PostInstallFeedbackMixin:
                         if comp_list:
                             self._start_component_install_pulse_with_components(comp_list)
                         break
+
+                    if step['id'] == 'vnv_bsa_decompress':
+                        self._start_bsa_decompress_pulse()
 
                 # Keep Activity window in sync with progress banner
                 # If we're already in wine_components step, check for component list updates
@@ -402,6 +407,7 @@ class PostInstallFeedbackMixin:
         if not self._post_install_active:
             return
         self._stop_component_install_pulse()
+        self._stop_bsa_decompress_pulse()
         total = max(1, self._post_install_total_steps)
         final_step = total if success else max(0, self._post_install_current_step)
         label = "Post-installation complete" if success else "Post-installation stopped"
@@ -468,3 +474,18 @@ class PostInstallFeedbackMixin:
         if hasattr(self, '_component_install_list'):
             del self._component_install_list
 
+    def _start_bsa_decompress_pulse(self):
+        """Keep the Activity window alive during long BSA decompression runs."""
+        self.file_progress_list.update_or_add_item("__vnv_bsa__", "VNV: Decompressing BSA files...", 0.0)
+        if not getattr(self, '_bsa_decompress_timer', None):
+            self._bsa_decompress_timer = QTimer(self)
+            self._bsa_decompress_timer.timeout.connect(self._bsa_decompress_heartbeat)
+        self._bsa_decompress_timer.start(250)
+
+    def _bsa_decompress_heartbeat(self):
+        self.file_progress_list.update_or_add_item("__vnv_bsa__", "VNV: Decompressing BSA files...", 0.0)
+
+    def _stop_bsa_decompress_pulse(self):
+        if hasattr(self, '_bsa_decompress_timer') and self._bsa_decompress_timer:
+            self._bsa_decompress_timer.stop()
+            self._bsa_decompress_timer = None

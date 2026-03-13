@@ -304,25 +304,28 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
         """Clean up any running processes when the window closes or is cancelled"""
         logger.debug("DEBUG: cleanup_processes called - cleaning up InstallationThread and other processes")
         
-        # Clean up InstallationThread if running
-        if hasattr(self, 'install_thread') and self.install_thread.isRunning():
+        # install_thread uses cancel() for cooperative shutdown before terminate.
+        if hasattr(self, 'install_thread') and self.install_thread and self.install_thread.isRunning():
             logger.debug("DEBUG: Cancelling running InstallationThread")
             self.install_thread.cancel()
-            self.install_thread.wait(3000)  # Wait up to 3 seconds
+            self.install_thread.wait(3000)
             if self.install_thread.isRunning():
                 self.install_thread.terminate()
-        
-        # Clean up other threads
-        threads = [
-            'prefix_thread', 'config_thread', 'fetch_thread'
-        ]
-        for thread_name in threads:
-            if hasattr(self, thread_name):
-                thread = getattr(self, thread_name)
-                if thread and thread.isRunning():
-                    logger.debug(f"DEBUG: Terminating {thread_name}")
-                    thread.terminate()
-                    thread.wait(1000)  # Wait up to 1 second
+                self.install_thread.wait(2000)
+            self.install_thread = None
+
+        from PySide6.QtCore import QThread
+        for attr_name, value in list(vars(self).items()):
+            if attr_name == 'install_thread':
+                continue
+            try:
+                if isinstance(value, QThread) and value.isRunning():
+                    logger.debug(f"DEBUG: Terminating {attr_name}")
+                    value.terminate()
+                    value.wait(2000)
+                    setattr(self, attr_name, None)
+            except Exception:
+                pass
     
     def cancel_installation(self):
         """Cancel the currently running installation"""
@@ -353,7 +356,7 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
                 """)
 
             # Cancel the installation thread if it exists
-            if hasattr(self, 'install_thread') and self.install_thread.isRunning():
+            if hasattr(self, 'install_thread') and self.install_thread and self.install_thread.isRunning():
                 self.install_thread.cancel()
                 self.install_thread.wait(3000)  # Wait up to 3 seconds for graceful shutdown
                 if self.install_thread.isRunning():
@@ -361,7 +364,7 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
                     self.install_thread.wait(1000)
             
             # Cancel the automated prefix thread if it exists
-            if hasattr(self, 'prefix_thread') and self.prefix_thread.isRunning():
+            if hasattr(self, 'prefix_thread') and self.prefix_thread and self.prefix_thread.isRunning():
                 self.prefix_thread.terminate()
                 self.prefix_thread.wait(3000)  # Wait up to 3 seconds for graceful shutdown
                 if self.prefix_thread.isRunning():
@@ -369,7 +372,7 @@ class InstallTTWScreen(ScreenBackMixin, TTWUISetupMixin, TTWIntegrationMixin, TT
                     self.prefix_thread.wait(1000)
             
             # Cancel the configuration thread if it exists
-            if hasattr(self, 'config_thread') and self.config_thread.isRunning():
+            if hasattr(self, 'config_thread') and self.config_thread and self.config_thread.isRunning():
                 self.config_thread.terminate()
                 self.config_thread.wait(3000)  # Wait up to 3 seconds for graceful shutdown
                 if self.config_thread.isRunning():

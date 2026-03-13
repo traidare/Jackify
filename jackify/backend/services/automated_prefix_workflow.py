@@ -47,11 +47,19 @@ class WorkflowMixin:
                 startdir_matches = shortcut_startdir == modlist_install_dir
                 
                 if (name_matches and (exe_matches or startdir_matches)):
+                    raw_appid = shortcut.get('appid')
+                    normalized_appid = None
+                    if raw_appid is not None:
+                        try:
+                            normalized_appid = str(int(raw_appid) & 0xFFFFFFFF)
+                        except Exception:
+                            normalized_appid = str(raw_appid)
                     conflicts.append({
                         'index': i,
                         'name': name,
                         'exe': shortcut_exe,
-                        'startdir': shortcut_startdir
+                        'startdir': shortcut_startdir,
+                        'appid': normalized_appid,
                     })
             
             if conflicts:
@@ -124,42 +132,59 @@ class WorkflowMixin:
             Tuple of (success, prefix_path, appid, last_timestamp)
         """
         logger.info("Starting proven working automated prefix creation workflow")
-        
-        # Show installation complete and configuration start headers FIRST
-        if progress_callback:
-            progress_callback("")
-            progress_callback("=" * 64)
-            progress_callback("= Installation phase complete =")
-            progress_callback("=" * 64)
-            progress_callback("")
-            progress_callback("=" * 64)
-            progress_callback("= Starting Configuration Phase =")
-            progress_callback("=" * 64)
-            progress_callback("")
-        
-        # Reset timing for Steam Integration section (part of Configuration Phase)
-        from jackify.shared.timing import start_new_phase
-        start_new_phase()
-        
-        # Show immediate feedback to user with section header
-        if progress_callback:
-            progress_callback("")  # Blank line before Steam Integration
-            progress_callback("=== Steam Integration ===")
-            progress_callback(f"{self._get_progress_timestamp()} Creating Steam shortcut with native service")
-        
-        # Registry injection approach for both FNV and Enderal
-        from ..handlers.modlist_handler import ModlistHandler
-        modlist_handler = ModlistHandler()
-        special_game_type = modlist_handler.detect_special_game_type(modlist_install_dir)
 
-        # No launch options needed - FNV, FO3 and Enderal use registry injection
-        custom_launch_options = None
-        if special_game_type in ["fnv", "fo3", "enderal"]:
-            logger.info(f"Using registry injection approach for {special_game_type.upper()} modlist")
-        else:
-            logger.debug("Standard modlist - no special game handling needed")
-        
         try:
+            conflict_result = self.handle_existing_shortcut_conflict(
+                shortcut_name,
+                final_exe_path,
+                modlist_install_dir,
+            )
+            if isinstance(conflict_result, list):
+                logger.warning(
+                    "Found %d existing shortcut(s) with same name and path before Steam integration",
+                    len(conflict_result),
+                )
+                return ("CONFLICT", conflict_result, None, None)
+            if conflict_result is False:
+                logger.error("User cancelled due to shortcut conflict")
+                return False, None, None, None
+
+            # Show installation complete and configuration start headers only after
+            # conflict checks pass, so users do not see Steam integration start
+            # messages when Jackify is about to stop for duplicate-shortcut review.
+            if progress_callback:
+                progress_callback("")
+                progress_callback("=" * 64)
+                progress_callback("= Installation phase complete =")
+                progress_callback("=" * 64)
+                progress_callback("")
+                progress_callback("=" * 64)
+                progress_callback("= Starting Configuration Phase =")
+                progress_callback("=" * 64)
+                progress_callback("")
+
+            # Reset timing for Steam Integration section (part of Configuration Phase)
+            from jackify.shared.timing import start_new_phase
+            start_new_phase()
+
+            # Show immediate feedback to user with section header
+            if progress_callback:
+                progress_callback("")  # Blank line before Steam Integration
+                progress_callback("=== Steam Integration ===")
+                progress_callback(f"{self._get_progress_timestamp()} Creating Steam shortcut with native service")
+
+            # Registry injection approach for both FNV and Enderal
+            from ..handlers.modlist_handler import ModlistHandler
+            modlist_handler = ModlistHandler()
+            special_game_type = modlist_handler.detect_special_game_type(modlist_install_dir)
+
+            # No launch options needed - FNV, FO3 and Enderal use registry injection
+            custom_launch_options = None
+            if special_game_type in ["fnv", "fo3", "enderal"]:
+                logger.info(f"Using registry injection approach for {special_game_type.upper()} modlist")
+            else:
+                logger.debug("Standard modlist - no special game handling needed")
+
             # Step 0: Shut down Steam before modifying VDF files
             # Required to safely modify shortcuts.vdf and config.vdf without race conditions
             logger.info("Step 0: Shutting down Steam before modifying VDF files")
@@ -179,22 +204,6 @@ class WorkflowMixin:
 
             # Step 1: Create shortcut with native Steam service (Steam is now shut down)
             logger.info("Step 1: Creating shortcut with native Steam service")
-
-            # DISABLED: Shortcut conflict detection temporarily disabled pending rework
-            # Re-enable after conflict resolution workflow refactor
-            # When re-enabled, this will detect and handle cases where shortcuts with the same
-            # name and path already exist in Steam, allowing users to resolve conflicts
-            # Disabled pending workflow improvements - planned for future release
-            # conflict_result = self.handle_existing_shortcut_conflict(shortcut_name, final_exe_path, modlist_install_dir)
-            # if isinstance(conflict_result, list):  # Conflicts found
-            #     logger.warning(f"Found {len(conflict_result)} existing shortcut(s) with same name and path")
-            #     # Return a special tuple to indicate conflict that needs user resolution
-            #     return ("CONFLICT", conflict_result, None)
-            # elif not conflict_result:  # User cancelled or other failure
-            #     logger.error("User cancelled due to shortcut conflict")
-            #     return False, None, None, None
-            logger.info("Conflict detection temporarily disabled - proceeding with shortcut creation")
-
             # Create shortcut using native Steam service with special game launch options
             success, appid = self.create_shortcut_with_native_service(
                 shortcut_name, final_exe_path, modlist_install_dir, custom_launch_options, download_dir=download_dir
@@ -387,4 +396,3 @@ class WorkflowMixin:
             if progress_callback:
                 progress_callback(f"Error: {str(e)}")
             return False, None, None, None
-

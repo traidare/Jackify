@@ -209,6 +209,14 @@ class TTWWorkflowMixin:
                 font-size: 13px;
             """)
             self._safe_append_text(f"\nError: {message}")
+            if getattr(self, '_ttw_unclean_game_dir_detected', False):
+                self._safe_append_text(
+                    "\nLikely cause: Your Fallout New Vegas game directory is not clean vanilla.\n"
+                    "TTW requires an unmodified FNV installation to patch correctly.\n"
+                    "If you have previously installed an FNV modlist that modifies the game directory,\n"
+                    "verify or reinstall FNV via Steam to restore vanilla files, then try again."
+                )
+            self._last_install_message = message
             self.process_finished(1, QProcess.CrashExit)
 
     def process_finished(self, exit_code, exit_status):
@@ -247,9 +255,11 @@ class TTWWorkflowMixin:
                     )
         else:
             last_output = self.console.toPlainText()
-            if "cancelled by user" in last_output.lower():
+            failure_msg = (getattr(self, '_last_install_message', '') or "").strip()
+            if "cancelled by user" in last_output.lower() or "cancelled by user" in failure_msg.lower():
                 MessageService.information(self, "Installation Cancelled", "The installation was cancelled by the user.", safety_level="low")
             else:
-                MessageService.show_error(self, wabbajack_install_failed(f"Exit code {exit_code}. Check the console output for details."))
-                self._safe_append_text(f"\nInstall failed (exit code {exit_code}).")
+                user_summary = failure_msg or "TTW installation failed. Review recent console output for the failing step."
+                MessageService.show_error(self, wabbajack_install_failed(user_summary))
+                self._safe_append_text(f"\nInstall failed: {user_summary}")
         self.console.moveCursor(QTextCursor.End)

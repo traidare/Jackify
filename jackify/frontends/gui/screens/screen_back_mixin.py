@@ -6,6 +6,7 @@ should use this mixin so the main window consistently collapses when leaving.
 """
 
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtWidgets import QSizePolicy
 from ..utils import set_responsive_minimum
 
 
@@ -48,3 +49,48 @@ class ScreenBackMixin:
         self.show_details_checkbox.blockSignals(False)
         if not is_steamdeck and hasattr(self, "_toggle_console_visibility"):
             self._toggle_console_visibility(Qt.Unchecked)
+
+    def force_collapsed_details_state(self, resize_mode: str = "compact"):
+        """
+        Normalize Show Details state when a screen is opened/reset.
+
+        Some screens still manage console visibility locally instead of through a
+        single shared widget module. This helper forces the collapsed state in a
+        way that is safe across those implementations.
+        """
+        try:
+            if hasattr(self, "show_details_checkbox"):
+                self.show_details_checkbox.blockSignals(True)
+                self.show_details_checkbox.setChecked(False)
+                self.show_details_checkbox.blockSignals(False)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "console"):
+                self.console.setVisible(False)
+                self.console.setMinimumHeight(0)
+                self.console.setMaximumHeight(0)
+                self.console.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "console_and_buttons_widget"):
+                self.console_and_buttons_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                self.console_and_buttons_widget.setFixedHeight(50)
+                self.console_and_buttons_widget.updateGeometry()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "main_overall_vbox") and hasattr(self, "console"):
+                self.main_overall_vbox.setStretchFactor(self.console, 0)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "resize_request"):
+                self.resize_request.emit(resize_mode)
+        except Exception:
+            pass

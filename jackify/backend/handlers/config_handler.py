@@ -17,6 +17,10 @@ from typing import Optional
 from .config_handler_encryption import ConfigEncryptionMixin
 from .config_handler_directories import ConfigDirectoriesMixin
 from .config_handler_proton import ConfigProtonMixin
+from jackify.shared.steam_utils import (
+    STEAM_PREFERENCE_AUTO,
+    resolve_preferred_steam_installation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,7 @@ class ConfigHandler(ConfigEncryptionMixin, ConfigDirectoriesMixin, ConfigProtonM
             "resolution": None,
             "protontricks_path": None,
             "steam_path": None,
+            "steam_install_preference": STEAM_PREFERENCE_AUTO,  # auto|flatpak|native
             "nexus_api_key": None,  # Base64 encoded API key
             "default_install_parent_dir": None,  # Parent directory for modlist installations
             "default_download_parent_dir": None,  # Parent directory for downloads
@@ -62,6 +67,8 @@ class ConfigHandler(ConfigEncryptionMixin, ConfigDirectoriesMixin, ConfigProtonM
             "proton_path": None,  # Install Proton path (for jackify-engine) - None means auto-detect
             "proton_version": None,  # Install Proton version name - None means auto-detect
             "steam_restart_strategy": "jackify",  # "jackify" (default) or "simple"
+            "manual_download_concurrent_limit": 2,  # Shared GUI/CLI default for manual download browser tabs
+            "manual_download_watch_directory": None,  # Optional override for manual-download watcher folder
             "window_width": None,  # Saved window width (None = use dynamic sizing)
             "window_height": None  # Saved window height (None = use dynamic sizing)
         }
@@ -72,14 +79,13 @@ class ConfigHandler(ConfigEncryptionMixin, ConfigDirectoriesMixin, ConfigProtonM
         # Perform version migrations
         self._migrate_config()
 
+        # Normalize/repair Proton selections on every startup so stale deleted versions
+        # cannot break workflows.
+        self.normalize_proton_paths_on_boot()
+
         # If steam_path is not set, detect it
         if not self.settings["steam_path"]:
             self.settings["steam_path"] = self._detect_steam_path()
-
-        # Auto-detect and set Proton version ONLY on first run (config file doesn't exist)
-        # Do NOT overwrite user's saved settings!
-        if not os.path.exists(self.config_file) and not self.settings.get("proton_path"):
-            self._auto_detect_proton()
         
         # If jackify_data_dir is not set, initialize it to default
         if not self.settings.get("jackify_data_dir"):
@@ -95,35 +101,16 @@ class ConfigHandler(ConfigEncryptionMixin, ConfigDirectoriesMixin, ConfigProtonM
             str: Path to the Steam installation or None if not found
         """
         logger.info("Detecting Steam installation path...")
-        
-        # Common Steam installation paths
-        steam_paths = [
-            os.path.expanduser("~/.steam/steam"),
-            os.path.expanduser("~/.local/share/Steam"),
-            os.path.expanduser("~/.steam/root")
-        ]
-        
-        # Check each path
-        for path in steam_paths:
-            if os.path.exists(path):
-                logger.info(f"Found Steam installation at: {path}")
-                return path
-        
-        # If not found in common locations, try to find using libraryfolders.vdf
-        libraryfolders_vdf_paths = [
-            os.path.expanduser("~/.steam/steam/config/libraryfolders.vdf"),
-            os.path.expanduser("~/.local/share/Steam/config/libraryfolders.vdf"),
-            os.path.expanduser("~/.steam/root/config/libraryfolders.vdf"),
-            os.path.expanduser("~/.var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf")  # Flatpak
-        ]
-        
-        for vdf_path in libraryfolders_vdf_paths:
-            if os.path.exists(vdf_path):
-                # Extract the Steam path from the libraryfolders.vdf path
-                steam_path = os.path.dirname(os.path.dirname(vdf_path))
-                logger.info(f"Found Steam installation at: {steam_path}")
-                return steam_path
-        
+        preference = self.settings.get("steam_install_preference", STEAM_PREFERENCE_AUTO)
+        install_type, install_root = resolve_preferred_steam_installation(preference=preference)
+        if install_root:
+            logger.info(
+                "Selected Steam installation: %s (%s)",
+                install_type,
+                install_root,
+            )
+            return str(install_root)
+
         logger.error("Steam installation not found")
         return None
     

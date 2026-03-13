@@ -1,6 +1,6 @@
 """Nexus authentication methods for InstallModlistScreen (Mixin)."""
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QProgressDialog, QApplication
-from PySide6.QtCore import Qt, QTimer, QThread, Signal
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QApplication
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 import logging
 import webbrowser
@@ -47,7 +47,6 @@ class NexusAuthMixin:
         layout = QVBoxLayout()
         layout.setSpacing(15)
 
-        # Explanation label
         info_label = QLabel(
             "Could not open browser automatically.\n\n"
             "Please copy the URL below and paste it into your browser:"
@@ -56,11 +55,10 @@ class NexusAuthMixin:
         info_label.setStyleSheet("color: #ccc; font-size: 12px;")
         layout.addWidget(info_label)
 
-        # URL input (read-only but selectable)
         url_input = QLineEdit()
         url_input.setText(url)
         url_input.setReadOnly(True)
-        url_input.selectAll()  # Pre-select text for easy copying
+        url_input.selectAll()
         url_input.setStyleSheet("""
             QLineEdit {
                 background-color: #1a1a1a;
@@ -74,11 +72,9 @@ class NexusAuthMixin:
         """)
         layout.addWidget(url_input)
 
-        # Button row
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        # Copy button
         copy_btn = QPushButton("Copy URL")
         copy_btn.setStyleSheet("""
             QPushButton {
@@ -101,7 +97,6 @@ class NexusAuthMixin:
         copy_btn.clicked.connect(copy_to_clipboard)
         button_layout.addWidget(copy_btn)
 
-        # Close button
         close_btn = QPushButton("Close")
         close_btn.setStyleSheet("""
             QPushButton {
@@ -119,7 +114,113 @@ class NexusAuthMixin:
         button_layout.addWidget(close_btn)
 
         layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec()
 
+    def _show_oauth_paste_dialog(self):
+        """Show dialog for pasting jackify:// callback URL as manual fallback."""
+        import urllib.parse
+        from pathlib import Path
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Paste Callback URL")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        info_label = QLabel(
+            "If your browser did not complete the flow automatically:\n\n"
+            "1. Click Continue in your browser if you have not already.\n"
+            "2. If a URL starting with jackify:// appears in your browser\n"
+            "   address bar, copy it and paste it below."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #ccc; font-size: 12px;")
+        layout.addWidget(info_label)
+
+        url_input = QLineEdit()
+        url_input.setPlaceholderText("jackify://oauth/callback?code=...&state=...")
+        url_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #1a1a1a;
+                color: #3fd0ea;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: monospace;
+                font-size: 11px;
+            }
+        """)
+        layout.addWidget(url_input)
+
+        error_label = QLabel("")
+        error_label.setStyleSheet("color: #f44336; font-size: 11px;")
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        submit_btn = QPushButton("Submit")
+        submit_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3fd0ea;
+                color: #000;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5fdfff;
+            }
+        """)
+
+        def on_submit():
+            url = url_input.text().strip()
+            if not url.startswith('jackify://oauth/callback'):
+                error_label.setText("URL must start with jackify://oauth/callback")
+                return
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query)
+            code = params.get('code', [None])[0]
+            state = params.get('state', [None])[0]
+            if not code or not state:
+                error_label.setText("URL is missing required code or state parameter.")
+                return
+            callback_file = Path.home() / ".config" / "jackify" / "oauth_callback.tmp"
+            try:
+                callback_file.parent.mkdir(parents=True, exist_ok=True)
+                callback_file.write_text(f"{code}\n{state}")
+                logger.info("OAuth callback written via manual paste")
+                dialog.accept()
+            except Exception as e:
+                error_label.setText(f"Failed to write callback: {e}")
+
+        submit_btn.clicked.connect(on_submit)
+        url_input.returnPressed.connect(on_submit)
+        btn_layout.addWidget(submit_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #444;
+                color: #ccc;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 20px;
+            }
+            QPushButton:hover {
+                background-color: #555;
+            }
+        """)
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
         dialog.setLayout(layout)
         dialog.exec()
 
@@ -129,13 +230,11 @@ class NexusAuthMixin:
 
         authenticated, method, _ = self.auth_service.get_auth_status()
         if authenticated and method == 'oauth':
-            # OAuth is active - offer to revoke
             reply = MessageService.question(self, "Revoke", "Revoke OAuth authorisation?", safety_level="low")
             if reply == QMessageBox.Yes:
                 self.auth_service.revoke_oauth()
                 self._update_nexus_status()
         else:
-            # Not authorised or using API key - offer to authorise with OAuth
             reply = MessageService.question(self, "Authorise with Nexus",
                 "Your browser will open for Nexus authorisation.\n\n"
                 "Note: Your browser may ask permission to open 'xdg-open'\n"
@@ -146,33 +245,82 @@ class NexusAuthMixin:
             if reply != QMessageBox.Yes:
                 return
 
-            # Create progress dialog
-            progress = QProgressDialog(
-                "Waiting for authorisation...\n\nPlease check your browser.",
-                "Cancel",
-                0, 0,
-                self
-            )
-            progress.setWindowTitle("Nexus OAuth")
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.setMinimumWidth(400)
+            # Build waiting dialog with paste fallback always accessible
+            wait_dialog = QDialog(self)
+            wait_dialog.setWindowTitle("Nexus OAuth")
+            wait_dialog.setWindowModality(Qt.WindowModal)
+            wait_dialog.setMinimumWidth(420)
 
-            # Track cancellation
+            wait_layout = QVBoxLayout()
+            wait_layout.setSpacing(12)
+            wait_layout.setContentsMargins(20, 20, 20, 20)
+
+            wait_label = QLabel(
+                "Waiting for authorisation...\n\n"
+                "Please complete authorisation in your browser.\n\n"
+                "Your browser may ask permission to open Jackify — click Open or Allow."
+            )
+            wait_label.setWordWrap(True)
+            wait_label.setStyleSheet("color: #ccc; font-size: 12px;")
+            wait_layout.addWidget(wait_label)
+
+            wait_layout.addStretch()
+
+            btn_layout = QHBoxLayout()
+
+            paste_btn = QPushButton("Paste callback URL")
+            paste_btn.setToolTip(
+                "If your browser shows a jackify:// URL after clicking Continue, paste it here."
+            )
+            paste_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #333;
+                    color: #aaa;
+                    border: 1px solid #555;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                }
+                QPushButton:hover {
+                    background-color: #444;
+                    color: #ccc;
+                }
+            """)
+            paste_btn.clicked.connect(self._show_oauth_paste_dialog)
+            btn_layout.addWidget(paste_btn)
+
+            btn_layout.addStretch()
+
             oauth_cancelled = [False]
 
-            def on_cancel():
+            cancel_btn = QPushButton("Cancel")
+            cancel_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #444;
+                    color: #ccc;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                }
+                QPushButton:hover {
+                    background-color: #555;
+                }
+            """)
+            def on_cancel_click():
                 oauth_cancelled[0] = True
+                wait_dialog.close()
+            cancel_btn.clicked.connect(on_cancel_click)
+            btn_layout.addWidget(cancel_btn)
 
-            progress.canceled.connect(on_cancel)
-            progress.show()
+            wait_layout.addLayout(btn_layout)
+            wait_dialog.setLayout(wait_layout)
+            wait_dialog.show()
             QApplication.processEvents()
 
             # Create OAuth thread to prevent GUI freeze
             class OAuthThread(QThread):
                 finished_signal = Signal(bool)
                 message_signal = Signal(str)
-                manual_url_signal = Signal(str)  # Signal when browser fails to open
+                manual_url_signal = Signal(str)
 
                 def __init__(self, auth_service, parent=None):
                     super().__init__(parent)
@@ -180,9 +328,7 @@ class NexusAuthMixin:
 
                 def run(self):
                     def show_message(msg):
-                        # Check if this is a "browser failed" message with URL
                         if "Could not open browser" in msg and "Please open this URL manually:" in msg:
-                            # Extract URL from message
                             url_start = msg.find("Please open this URL manually:") + len("Please open this URL manually:")
                             url = msg[url_start:].strip()
                             self.manual_url_signal.emit(url)
@@ -194,23 +340,20 @@ class NexusAuthMixin:
 
             oauth_thread = OAuthThread(self.auth_service, self)
 
-            # Connect message signal to update progress dialog
             def update_progress_message(msg):
                 if not oauth_cancelled[0]:
-                    progress.setLabelText(f"Waiting for authorisation...\n\n{msg}")
+                    wait_label.setText(f"Waiting for authorisation...\n\n{msg}")
                     QApplication.processEvents()
 
-            # Connect manual URL signal to show copyable dialog
             def show_manual_url_dialog(url):
                 if not oauth_cancelled[0]:
-                    progress.hide()  # Hide progress dialog temporarily
+                    wait_dialog.hide()
                     self._show_copyable_url_dialog(url)
-                    progress.show()
+                    wait_dialog.show()
 
             oauth_thread.message_signal.connect(update_progress_message)
             oauth_thread.manual_url_signal.connect(show_manual_url_dialog)
 
-            # Wait for thread completion
             oauth_success = [False]
             def on_oauth_finished(success):
                 oauth_success[0] = success
@@ -218,25 +361,21 @@ class NexusAuthMixin:
             oauth_thread.finished_signal.connect(on_oauth_finished)
             oauth_thread.start()
 
-            # Wait for thread to finish (non-blocking event loop)
             while oauth_thread.isRunning():
                 QApplication.processEvents()
-                oauth_thread.wait(100)  # Check every 100ms
+                oauth_thread.wait(100)
                 if oauth_cancelled[0]:
-                    # User cancelled - thread will still complete but we ignore result
                     oauth_thread.wait(2000)
                     if oauth_thread.isRunning():
                         oauth_thread.terminate()
                     break
 
-            progress.close()
+            wait_dialog.close()
             QApplication.processEvents()
 
             self._update_nexus_status()
             self._enable_controls_after_operation()
 
-            # Check success first - if OAuth succeeded, ignore cancellation flag
-            # (progress dialog close can trigger cancel handler even on success)
             if oauth_success[0]:
                 _, _, username = self.auth_service.get_auth_status()
                 if username:
@@ -250,11 +389,10 @@ class NexusAuthMixin:
                 MessageService.warning(
                     self,
                     "Authorisation Failed",
-                    "OAuth authorisation failed.\n\n"
-                    "If your browser showed a blank page (e.g. Firefox on Steam Deck),\n"
-                    "try again and use 'Paste callback URL' to paste the URL from the address bar.\n\n"
-                    "If you see 'redirect URI mismatch', the OAuth redirect URI must be configured by Nexus.\n\n"
-                    "You can configure an API key in Settings as a fallback.",
+                    "OAuth authorisation timed out.\n\n"
+                    "If your browser shows a URL starting with jackify:// after\n"
+                    "clicking Continue, try again and use 'Paste callback URL'\n"
+                    "during the wait to complete authorisation manually.\n\n"
+                    "If the issue persists, an API key can be configured in Settings.",
                     safety_level="medium"
                 )
-

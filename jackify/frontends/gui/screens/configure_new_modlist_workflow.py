@@ -145,7 +145,6 @@ class ConfigureNewModlistWorkflowMixin:
             progress_update = Signal(str)
             workflow_complete = Signal(object)  # Will emit the result tuple
             error_occurred = Signal(object)  # error (JackifyError or str)
-            
             def __init__(self, modlist_name, install_dir, mo2_exe_path, steamdeck, auto_restart):
                 super().__init__()
                 self.modlist_name = modlist_name
@@ -153,27 +152,23 @@ class ConfigureNewModlistWorkflowMixin:
                 self.mo2_exe_path = mo2_exe_path
                 self.steamdeck = steamdeck
                 self.auto_restart = auto_restart
-                
+
             def run(self):
                 try:
                     from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
-                    
-                    # Initialize the automated prefix service
+
                     prefix_service = AutomatedPrefixService()
-                    
-                    # Define progress callback for GUI updates
+
                     def progress_callback(message):
                         self.progress_update.emit(message)
-                    
-                    # Run the automated workflow (this contains the blocking operations)
+
                     result = prefix_service.run_working_workflow(
-                        self.modlist_name, self.install_dir, self.mo2_exe_path, 
+                        self.modlist_name, self.install_dir, self.mo2_exe_path,
                         progress_callback, steamdeck=self.steamdeck, auto_restart=self.auto_restart
                     )
-                    
-                    # Emit the result
+
                     self.workflow_complete.emit(result)
-                    
+
                 except Exception as e:
                     from jackify.shared.errors import JackifyError, prefix_creation_failed
                     if not isinstance(e, JackifyError):
@@ -474,7 +469,10 @@ class ConfigureNewModlistWorkflowMixin:
                         )
                         
                         if not success:
-                            self.error_occurred.emit("Configuration failed - check logs for details")
+                            self.error_occurred.emit(
+                                "Configuration did not complete successfully. "
+                                "Review the latest workflow output above for the failing step."
+                            )
                             
                     except Exception as e:
                         import traceback
@@ -509,4 +507,3 @@ class ConfigureNewModlistWorkflowMixin:
                 return f"{elapsed_minutes} minutes {elapsed_seconds_remainder} seconds"
         else:
             return f"{elapsed_seconds_remainder} seconds"
-

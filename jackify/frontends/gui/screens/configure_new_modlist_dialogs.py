@@ -1,10 +1,12 @@
 """Dialog management for ConfigureNewModlistScreen (Mixin)."""
+import os
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout, QFileDialog, QMessageBox, QApplication, QListWidget, QListWidgetItem
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QTextCursor
 from pathlib import Path
-from typing import Optional
+
 import subprocess
+from jackify.frontends.gui.dialogs.existing_setup_dialog import prompt_existing_setup_dialog
 from jackify.frontends.gui.services.message_service import MessageService
 from jackify.shared.errors import manual_steps_incomplete
 import logging
@@ -75,131 +77,85 @@ class SelectionDialog(QDialog):
 class ConfigureNewModlistDialogsMixin:
     """Mixin providing dialog management for ConfigureNewModlistScreen."""
 
+    def _restore_controls_after_shortcut_dialog_abort(self):
+        """Return Configure New to an editable state when shortcut resolution is aborted."""
+        try:
+            self._enable_controls_after_operation()
+        except Exception:
+            pass
+
     def cleanup_processes(self):
         """Clean up any running processes when the window closes or is cancelled"""
-        # Stop CPU tracking if active
         if hasattr(self, 'file_progress_list'):
             self.file_progress_list.stop_cpu_tracking()
 
-        # Clean up automated prefix thread if running
-        if hasattr(self, 'automated_prefix_thread') and self.automated_prefix_thread.isRunning():
-            self.automated_prefix_thread.terminate()
-            self.automated_prefix_thread.wait(1000)
-
-        # Clean up configuration thread if running
-        if hasattr(self, 'config_thread') and self.config_thread.isRunning():
-            self.config_thread.terminate()
-            self.config_thread.wait(1000)
+        from PySide6.QtCore import QThread
+        for attr_name, value in list(vars(self).items()):
+            try:
+                if isinstance(value, QThread) and value.isRunning():
+                    value.terminate()
+                    value.wait(2000)
+                    setattr(self, attr_name, None)
+            except Exception:
+                pass
 
     def show_shortcut_conflict_dialog(self, conflicts):
-        """Show dialog to resolve shortcut name conflicts"""
+        """Show dialog to reuse an existing shortcut or choose a new name."""
         conflict_names = [c['name'] for c in conflicts]
-        conflict_info = f"Found existing Steam shortcut: '{conflict_names[0]}'"
-        
+        existing_name = conflict_names[0]
+
         modlist_name = self.modlist_name_edit.text().strip()
-        
-        # Create dialog with Jackify styling
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QHBoxLayout
-        from PySide6.QtCore import Qt
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Steam Shortcut Conflict")
-        dialog.setModal(True)
-        dialog.resize(450, 180)
-        
-        # Apply Jackify dark theme styling
-        dialog.setStyleSheet("""
-            QDialog {
-                background-color: #2b2b2b;
-                color: #ffffff;
-            }
-            QLabel {
-                color: #ffffff;
-                font-size: 14px;
-                padding: 10px 0px;
-            }
-            QLineEdit {
-                background-color: #404040;
-                color: #ffffff;
-                border: 2px solid #555555;
-                border-radius: 4px;
-                padding: 8px;
-                font-size: 14px;
-                selection-background-color: #3fd0ea;
-            }
-            QLineEdit:focus {
-                border-color: #3fd0ea;
-            }
-            QPushButton {
-                background-color: #404040;
-                color: #ffffff;
-                border: 2px solid #555555;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-size: 14px;
-                min-width: 120px;
-            }
-            QPushButton:hover {
-                background-color: #505050;
-                border-color: #3fd0ea;
-            }
-            QPushButton:pressed {
-                background-color: #303030;
-            }
-        """)
-        
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-        
-        # Conflict message
-        conflict_label = QLabel(f"{conflict_info}\n\nPlease choose a different name for your shortcut:")
-        layout.addWidget(conflict_label)
-        
-        # Text input for new name
-        name_input = QLineEdit(modlist_name)
-        name_input.selectAll()
-        layout.addWidget(name_input)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-        
-        create_button = QPushButton("Create with New Name")
-        cancel_button = QPushButton("Cancel")
-        
-        button_layout.addStretch()
-        button_layout.addWidget(cancel_button)
-        button_layout.addWidget(create_button)
-        layout.addLayout(button_layout)
-        
+        install_dir = os.path.dirname(self.install_dir_edit.text().strip()) if self.install_dir_edit.text().strip().endswith('ModOrganizer.exe') else self.install_dir_edit.text().strip()
+
+        action, new_name = prompt_existing_setup_dialog(
+            self,
+            window_title="Existing Modlist Setup Detected",
+            heading="Modlist Update or New Install",
+            body=(
+                "Jackify detected an existing Steam shortcut for this setup.\n\n"
+                "If you are updating an existing modlist or reconfiguring it, choose "
+                "'Use Existing Setup'. If you want a separate Steam entry, enter a different "
+                "name and choose 'Create New Shortcut'."
+            ),
+            existing_name=existing_name,
+            requested_name=modlist_name,
+            install_dir=install_dir,
+            field_label="New shortcut name",
+            reuse_label="Use Existing Setup",
+            new_label="Create New Shortcut",
+            cancel_label="Cancel",
+        )
+
         # Connect signals
-        def on_create():
-            new_name = name_input.text().strip()
+        if action == "new":
             if new_name and new_name != modlist_name:
-                dialog.accept()
-                # Retry workflow with new name
                 self.retry_automated_workflow_with_new_name(new_name)
             elif new_name == modlist_name:
-                # Same name - show warning
-                from jackify.backend.services.message_service import MessageService
                 MessageService.warning(self, "Same Name", "Please enter a different name to resolve the conflict.")
+                self._restore_controls_after_shortcut_dialog_abort()
             else:
-                # Empty name
-                from jackify.backend.services.message_service import MessageService
                 MessageService.warning(self, "Invalid Name", "Please enter a valid shortcut name.")
-        
-        def on_cancel():
-            dialog.reject()
+                self._restore_controls_after_shortcut_dialog_abort()
+        elif action == "reuse":
+            existing_appid = conflicts[0].get('appid')
+            if not existing_appid:
+                MessageService.warning(
+                    self,
+                    "Existing Setup Not Found",
+                    "Jackify could not determine the Steam AppID for the existing shortcut.",
+                )
+                self._restore_controls_after_shortcut_dialog_abort()
+                return
+            self._safe_append_text(f"Reusing existing Steam shortcut '{existing_name}'.")
+            self.continue_configuration_after_automated_prefix(
+                str(existing_appid),
+                existing_name,
+                install_dir,
+                None,
+            )
+        else:
             self._safe_append_text("Shortcut creation cancelled by user")
-        
-        create_button.clicked.connect(on_create)
-        cancel_button.clicked.connect(on_cancel)
-        
-        # Make Enter key work
-        name_input.returnPressed.connect(on_create)
-        
-        dialog.exec()
+            self._restore_controls_after_shortcut_dialog_abort()
 
     def retry_automated_workflow_with_new_name(self, new_name):
         """Retry the automated workflow with a new shortcut name"""
@@ -228,89 +184,64 @@ class ConfigureNewModlistDialogsMixin:
             MessageService.show_error(self, manual_steps_incomplete())
             self.on_configuration_complete(False, "Manual steps validation failed after multiple attempts", self.modlist_name_edit.text().strip())
 
-    def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str):
-        """Check if VNV automation should run and execute if applicable
+    def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str) -> bool:
+        """Check if VNV automation should run and start it if applicable.
 
-        Args:
-            modlist_name: Name of the installed modlist
-            install_dir: Installation directory path
+        Returns:
+            True if VNV automation is starting (caller should defer success dialog)
+            False if no VNV needed (show success dialog immediately)
         """
-        try:
-            from pathlib import Path
-            from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable, should_offer_vnv_automation
-            from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
-            from jackify.backend.handlers.path_handler import PathHandler
+        from ..services.vnv_automation_controller import VNVAutomationController
 
-            # Get paths first (needed for VNV detection)
-            install_path = Path(install_dir)
-            
-            # Quick check before importing more (pass install location for ModOrganizer.ini check)
-            if not should_offer_vnv_automation(modlist_name, install_path):
-                return
-            game_paths = PathHandler().find_vanilla_game_paths()
-            game_root = game_paths.get('Fallout New Vegas')
+        self._vnv_controller = VNVAutomationController()
+        return self._vnv_controller.attempt(
+            parent=self,
+            modlist_name=modlist_name,
+            install_dir=install_dir,
+            on_progress=self._safe_append_text,
+            on_complete=self._on_vnv_complete,
+            begin_feedback=self._begin_post_install_feedback,
+            handle_feedback=self._handle_post_install_progress,
+        )
 
-            if not game_root:
-                logger.debug("DEBUG: VNV automation skipped - FNV game root not found")
-                return
-
-            # Confirmation callback - show dialog to user
-            def confirmation_callback(description: str) -> bool:
-                from ..services.message_service import MessageService
-                reply = MessageService.question(
-                    self,
-                    "VNV Post-Install Automation",
-                    description,
-                    critical=False,
-                    safety_level="medium"
-                )
-                return reply == QMessageBox.Yes
-
-            # Manual file callback for non-Premium users
-            def manual_file_callback(title: str, instructions: str) -> Optional[Path]:
-                from PySide6.QtWidgets import QFileDialog
-                from ..services.message_service import MessageService
-
-                # Show instructions
-                MessageService.information(self, title, instructions)
-
-                # Open file picker
-                file_path, _ = QFileDialog.getOpenFileName(
-                    self,
-                    title,
-                    str(Path.home() / "Downloads"),
-                    "All Files (*.*)"
-                )
-
-                if file_path:
-                    return Path(file_path).resolve()
-                return None
-
-            # Run automation
-            automation_ran, error = run_vnv_automation_if_applicable(
-                modlist_name=modlist_name,
-                modlist_install_location=install_path,
-                game_root=game_root,
-                ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
-                progress_callback=None,  # GUI doesn't need progress updates for post-install
-                manual_file_callback=manual_file_callback,
-                confirmation_callback=confirmation_callback
+    def _on_vnv_complete(self, success: bool, error: str):
+        """Handle VNV automation completion and show deferred success dialog."""
+        self._end_post_install_feedback(not bool(error))
+        if not success and error:
+            from ..services.message_service import MessageService
+            MessageService.warning(
+                self,
+                "VNV Automation Failed",
+                f"VNV post-install automation encountered an error:\n\n{error}\n\n"
+                "You can complete these steps manually by following the guide at:\n"
+                "https://vivanewvegas.moddinglinked.com/wabbajack.html"
             )
+        elif success:
+            self._safe_append_text("VNV post-install automation completed successfully.")
 
-            if error:
-                from ..services.message_service import MessageService
-                MessageService.warning(
-                    self,
-                    "VNV Automation Failed",
-                    f"VNV post-install automation encountered an error:\n\n{error}\n\n"
-                    "You can complete these steps manually by following the guide at:\n"
-                    "https://vivanewvegas.moddinglinked.com/wabbajack.html"
-                )
+        if hasattr(self, '_pending_success_dialog_params'):
+            params = self._pending_success_dialog_params
+            del self._pending_success_dialog_params
 
-        except Exception as e:
-            logger.debug(f"ERROR: Failed to run VNV automation: {e}")
-            import traceback
-            logger.debug(f"Traceback: {traceback.format_exc()}")
+            self.file_progress_list.clear()
+
+            from ..dialogs import SuccessDialog
+            success_dialog = SuccessDialog(
+                modlist_name=params['modlist_name'],
+                workflow_type=params['workflow_type'],
+                time_taken=params['time_taken'],
+                game_name=params['game_name'],
+                parent=self,
+            )
+            success_dialog.show()
+
+            if params.get('enb_detected'):
+                try:
+                    from ..dialogs.enb_proton_dialog import ENBProtonDialog
+                    enb_dialog = ENBProtonDialog(modlist_name=params['modlist_name'], parent=self)
+                    enb_dialog.exec()
+                except Exception as e:
+                    logger.warning("Failed to show ENB dialog: %s", e)
 
     def show_next_steps_dialog(self, message):
         dlg = QDialog(self)
@@ -335,4 +266,3 @@ class ConfigureNewModlistDialogsMixin:
         btn_return.clicked.connect(on_return)
         btn_exit.clicked.connect(on_exit)
         dlg.exec()
-

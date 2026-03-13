@@ -69,6 +69,11 @@ class InstallModlistUISetupMixin:
         self.file_progress_list = FileProgressList()  # Shows all active files (scrolls if needed)
         self._premium_notice_shown = False
         self._premium_failure_active = False
+        self._installation_cancelled = False
+        self._non_premium_gate_enabled = False
+        self._non_premium_info_acknowledged = False
+        self._pending_manual_download_events = None
+        self._non_premium_info_dlg = None
         self._stalled_download_start_time = None
         self._stalled_download_notified = False
         self._stalled_data_snapshot = 0
@@ -509,4 +514,3 @@ class InstallModlistUISetupMixin:
         
         # Now collect all actionable controls after UI is fully built
         self._collect_actionable_controls()
-

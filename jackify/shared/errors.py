@@ -75,12 +75,24 @@ def _looks_sensitive_key(key: str) -> bool:
 def _scrub_sensitive_text(text: str) -> str:
     """Best-effort redaction for key=value style sensitive fragments."""
     scrubbed = text
-    patterns = [
+    # Authorization header forms: "authorization: Bearer <token>"
+    scrubbed = re.sub(
+        r"(?i)\bauthorization\b\s*[:=]\s*bearer\s+[A-Za-z0-9\-._~+/]+=*",
+        "authorization=[REDACTED]",
+        scrubbed,
+    )
+    # Standalone bearer form: "Bearer <token>"
+    scrubbed = re.sub(
+        r"(?i)\b(bearer)\s+[A-Za-z0-9\-._~+/]+=*",
+        r"\1=[REDACTED]",
+        scrubbed,
+    )
+    # Generic sensitive key/value forms.
+    scrubbed = re.sub(
         r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization|password|secret)\b\s*[:=]\s*([^\s,;]+)",
-        r"(?i)\b(bearer)\s+([A-Za-z0-9\-._~+/]+=*)",
-    ]
-    for pattern in patterns:
-        scrubbed = re.sub(pattern, r"\1=[REDACTED]", scrubbed)
+        r"\1=[REDACTED]",
+        scrubbed,
+    )
     return scrubbed
 
 
@@ -226,7 +238,24 @@ def modlist_not_found(path: str) -> ModlistError:
     )
 
 
-def configuration_failed(detail: str) -> ConfigError:
+def game_not_found_for_modlist(game_name: str, detail: Optional[str] = None) -> InstallError:
+    game = (game_name or "Unknown game").strip()
+    return InstallError(
+        title="Required Game Not Found",
+        message=f"Jackify could not find the required base game: {game}",
+        suggestion="Install the base game in Steam, launch it once, then retry.",
+        solutions=[
+            "Confirm the game is installed in Steam and fully updated.",
+            "Launch the vanilla game once from Steam to complete first-run setup.",
+            "If you have multiple Steam installs, ensure Jackify is pointed at the install that contains this game.",
+            "Restart Steam and retry the install workflow.",
+            f"If detection still fails, check Jackify logs ({_logs_dir_display()}) for game-detection details.",
+        ],
+        technical=format_technical_context(detail=detail, context={"required_game": game}),
+    )
+
+
+def configuration_failed(detail: str, context: Optional[dict] = None) -> ConfigError:
     return ConfigError(
         title="Post-Install Configuration Failed",
         message="Jackify could not complete the post-installation configuration for this modlist.",
@@ -239,7 +268,7 @@ def configuration_failed(detail: str) -> ConfigError:
             "If the error mentions registry or prefix, ensure sufficient disk space.",
             f"If this still fails, check Jackify logs ({_logs_dir_display()}) and open a GitHub issue with modlist name.",
         ],
-        technical=format_technical_context(detail=detail),
+        technical=format_technical_context(detail=detail, context=context),
     )
 
 
@@ -261,7 +290,7 @@ def ttw_install_failed(detail: str) -> TTWError:
     )
 
 
-def wabbajack_install_failed(detail: str) -> InstallError:
+def wabbajack_install_failed(detail: str, context: Optional[dict] = None) -> InstallError:
     return InstallError(
         title="Wabbajack Installation Failed",
         message="The modlist installation did not complete successfully.",
@@ -275,7 +304,7 @@ def wabbajack_install_failed(detail: str) -> InstallError:
             "Check Modlist_Install_workflow.log for the specific file that failed.",
             "If the same failure repeats with no clear workaround, open a GitHub issue with logs.",
         ],
-        technical=format_technical_context(detail=detail),
+        technical=format_technical_context(detail=detail, context=context),
     )
 
 
@@ -321,6 +350,27 @@ def manual_steps_incomplete() -> ConfigError:
             "Do not perform manual Steam shortcut or prefix setup steps.",
             f"If this state appears again, check Jackify logs ({_logs_dir_display()}) and open a GitHub issue.",
         ],
+    )
+
+
+def cc_content_missing(filename: str = "") -> InstallError:
+    detail = f"Missing file: {filename}" if filename else ""
+    return InstallError(
+        title="Anniversary Edition Content Missing",
+        message=(
+            "One or more Skyrim Anniversary Edition Creation Club files were not found "
+            "in your game installation."
+            + (f" ({filename})" if filename else "")
+        ),
+        suggestion="Open Vanilla Skyrim and allow it to download the required Anniversary Edition content.",
+        solutions=[
+            "Open Vanilla Skyrim SE/AE and let it run until all Creation Club content has downloaded.",
+            "From the Skyrim main menu, go into Creations and select 'Download All'.",
+            "If specific files are still missing, search for and download them individually from the Creations menu.",
+            "If problems persist, uninstall and reinstall Skyrim, then launch once to trigger the AE download.",
+            "Note: Skyrim AE via Steam Family Sharing does not transfer DLC content — you must own AE directly.",
+        ],
+        technical=format_technical_context(detail=detail) if detail else None,
     )
 
 

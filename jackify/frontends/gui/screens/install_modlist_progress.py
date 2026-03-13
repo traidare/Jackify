@@ -8,6 +8,7 @@ from jackify.shared.progress_models import InstallationPhase, OperationType, Ins
 from jackify.backend.utils.nexus_premium_detector import is_non_premium_indicator
 import time
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 class ProgressHandlersMixin:
@@ -52,6 +53,52 @@ class ProgressHandlersMixin:
 
         if hasattr(self, 'install_thread') and self.install_thread:
             self.install_thread.cancel()
+
+    def on_non_premium_detected(self):
+        """Gate the manual-download dialog until non-premium info has been acknowledged."""
+        self._non_premium_gate_enabled = True
+        self._non_premium_info_acknowledged = False
+        logger.info("[MDL-1002] Non-premium flow detected; info dialog will show when manual downloads arrive")
+
+    def _show_non_premium_info_dialog(self):
+        """Show the non-premium information dialog. Blocks (nested event loop) until user clicks OK.
+
+        Called from on_manual_download_list_received, so it only appears when files actually
+        need manual downloading. The engine is paused waiting for a continue signal at that
+        point, so process_finished will not fire and close the dialog prematurely.
+        """
+        from PySide6.QtCore import Qt
+        if getattr(self, '_non_premium_info_dlg', None) is not None:
+            return
+        if getattr(self, '_non_premium_info_acknowledged', False):
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Non-Premium Account Detected")
+        box.setIcon(QMessageBox.Information)
+        box.setWindowModality(Qt.WindowModal)
+        box.setTextFormat(Qt.RichText)
+        box.setText(
+            "<b>Jackify has detected that your Nexus account does not have Premium.</b>"
+            "<br><br>"
+            "The install will proceed in the following stages:"
+            "<ol>"
+            "<li>Automatically download any mods available from non-Nexus sources</li>"
+            "<li>After you click OK here, open a manual download dialog listing all remaining manual archives</li>"
+            "</ol>"
+            "When your browser opens a Nexus page, click <b>\"Slow Download\"</b>."
+            " For non-Nexus manual links, follow the site instructions shown in the page.<br><br>"
+            "<b>Watch folder:</b> Jackify watches the folder shown in that dialog for newly downloaded files. "
+            "Files detected there are validated and moved automatically into your modlist downloads folder — "
+            "you do not need to move files manually. If your browser saves to a different location, "
+            "please set the Watch Folder to that directory before starting the download of mod archives."
+        )
+        box.setStandardButtons(QMessageBox.Ok)
+        self._non_premium_info_dlg = box
+        box.exec()
+        self._non_premium_info_dlg = None
+        self._non_premium_info_acknowledged = True
+        logger.info("[MDL-1003] Non-premium information dialog acknowledged by user")
 
     def on_progress_updated(self, progress_state):
         """R&D: Handle structured progress updates from parser"""
@@ -321,11 +368,16 @@ class ProgressHandlersMixin:
                 from jackify.backend.utils.modlist_meta import write_modlist_meta
                 thread = getattr(self, 'install_thread', None)
                 if thread and getattr(thread, 'install_dir', None) and getattr(thread, 'modlist_name', None):
+                    modlist_version = None
+                    if getattr(thread, 'install_mode', 'online') == 'online':
+                        info = getattr(self, 'selected_modlist_info', None) or {}
+                        modlist_version = info.get('version')
                     write_modlist_meta(
                         thread.install_dir,
                         thread.modlist_name,
                         getattr(self, '_current_game_type', None),
                         install_mode=getattr(thread, 'install_mode', 'online'),
+                        modlist_version=modlist_version,
                     )
             except Exception as _meta_err:
                 logger.debug(f"Modlist meta write skipped: {_meta_err}")
@@ -337,6 +389,19 @@ class ProgressHandlersMixin:
         else:
             # Reset to initial state on failure
             self.progress_indicator.reset()
+            cancellation_detected = (
+                (isinstance(message, str) and "cancelled by user" in message.lower())
+                or bool(getattr(self, '_cancellation_requested', False))
+            )
+            if cancellation_detected:
+                self._installation_cancelled = True
+                logger.info("Installation cancelled by user")
+                if self.show_details_checkbox.isChecked():
+                    self._safe_append_text("\nInstallation cancelled by user.")
+                # Use a distinct non-success code and let process_finished route this
+                # through the cancellation UX path (not failure path).
+                self.process_finished(130, QProcess.NormalExit)
+                return
 
             if self._premium_failure_active:
                 message = "Installation stopped because Nexus Premium is required for automated downloads."
@@ -359,9 +424,38 @@ class ProgressHandlersMixin:
         self.cancel_btn.setVisible(True)
         self.cancel_install_btn.setVisible(False)
         logger.debug("DEBUG: Button states reset in process_finished")
+
+        # Stop manual download manager if it is still running (e.g. install failed mid-phase)
+        if getattr(self, '_manual_dl_manager', None) is not None:
+            try:
+                self._manual_dl_manager.stop()
+            except Exception:
+                pass
+            self._manual_dl_manager = None
+        if getattr(self, '_manual_dl_dialog', None) is not None:
+            try:
+                self._manual_dl_dialog.close()
+            except Exception:
+                pass
+            self._manual_dl_dialog = None
+        if getattr(self, '_non_premium_info_dlg', None) is not None:
+            try:
+                self._non_premium_info_dlg.close()
+            except Exception:
+                pass
+            self._non_premium_info_dlg = None
+        self._non_premium_gate_enabled = False
+        self._non_premium_info_acknowledged = False
+        self._pending_manual_download_events = None
         
 
         if exit_code == 0:
+            if getattr(self, "_is_update_install", False):
+                try:
+                    install_dir = os.path.realpath(self.install_dir_edit.text().strip())
+                    self._record_post_engine_ini_snapshot_and_diff(install_dir)
+                except Exception as e:
+                    logger.warning("Update mode: failed post-engine MO2 snapshot/diff: %s", e)
             # Check if this was an unsupported game
             game_type = getattr(self, '_current_game_type', None)
             game_name = getattr(self, '_current_game_name', None)
@@ -395,9 +489,22 @@ class ProgressHandlersMixin:
                     )
                 
                 if reply == QMessageBox.Yes:
-                    # --- Create Steam shortcut BEFORE restarting Steam ---
-                    # Proceed directly to automated prefix creation
-                    self.start_automated_prefix_workflow()
+                    if getattr(self, "_is_update_install", False) and getattr(self, "_existing_shortcut_appid", None):
+                        # Update workflow: reuse existing shortcut and skip shortcut creation/restart path.
+                        modlist_name = self.modlist_name_edit.text().strip()
+                        install_dir = os.path.realpath(self.install_dir_edit.text().strip())
+                        self._safe_append_text(
+                            f"Update mode: reusing existing Steam shortcut AppID {self._existing_shortcut_appid}."
+                        )
+                        self.continue_configuration_after_automated_prefix(
+                            self._existing_shortcut_appid,
+                            modlist_name,
+                            install_dir,
+                            None,
+                        )
+                    else:
+                        # New install workflow: create shortcut and run automated prefix flow.
+                        self.start_automated_prefix_workflow()
                 else:
                     # User selected "No" - show completion message and keep GUI open
                     self._safe_append_text("\nModlist installation completed successfully!")
@@ -424,6 +531,10 @@ class ProgressHandlersMixin:
                 logger.warning("Install stopped: Nexus Premium required")
                 self._safe_append_text("\nInstall stopped: Nexus Premium required.")
                 self._premium_failure_active = False
+            elif getattr(self, '_installation_cancelled', False):
+                MessageService.information(self, "Installation Cancelled", "The installation was cancelled by the user.", safety_level="low")
+                self._installation_cancelled = False
+                self._cancellation_requested = False
             elif hasattr(self, '_cancellation_requested') and self._cancellation_requested:
                 # User explicitly cancelled via cancel button
                 MessageService.information(self, "Installation Cancelled", "The installation was cancelled by the user.", safety_level="low")
@@ -434,14 +545,39 @@ class ProgressHandlersMixin:
                 if "cancelled by user" in last_output.lower():
                     MessageService.information(self, "Installation Cancelled", "The installation was cancelled by the user.", safety_level="low")
                 else:
-                    logger.error(f"Install failed (exit code {exit_code})")
                     engine_error = getattr(self, '_engine_error', None)
                     if engine_error:
                         self._engine_error = None
+                        logger.error(
+                            "Install failed | exit_code=%s error=%s",
+                            exit_code,
+                            engine_error.message,
+                        )
                         MessageService.show_error(self, engine_error)
+                        self._safe_append_text(f"\nInstall failed: {engine_error.message}")
                     else:
-                        failure_msg = getattr(self, '_failure_message', None) or f"Exit code {exit_code}."
+                        failure_msg = (
+                            getattr(self, '_failure_message', None)
+                            or "Install failed, but no specific error details were captured from engine output."
+                        )
                         self._failure_message = None
-                        MessageService.show_error(self, wabbajack_install_failed(failure_msg))
-                    self._safe_append_text(f"\nInstall failed (exit code {exit_code}).")
+                        logger.error(
+                            "Install failed | exit_code=%s summary=%s",
+                            exit_code,
+                            failure_msg,
+                        )
+                        MessageService.show_error(
+                            self,
+                            wabbajack_install_failed(
+                                failure_msg,
+                                context={
+                                    "operation": "install_modlist",
+                                    "step": "engine_install",
+                                    "exit_code": exit_code,
+                                    "modlist_name": self.modlist_name_edit.text().strip(),
+                                    "install_dir": self.install_dir_edit.text().strip(),
+                                },
+                            ),
+                        )
+                        self._safe_append_text(f"\nInstall failed: {failure_msg}")
         self.console.moveCursor(QTextCursor.End)

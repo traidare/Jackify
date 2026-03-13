@@ -68,7 +68,7 @@ class ModlistOperationsConfigurationGUIMixin:
 
                         if result:
                             if completion_callback:
-                                completion_callback(True, "Configuration completed successfully!", config_context['name'])
+                                completion_callback(True, "Core configuration complete", config_context['name'])
                             return True
                         else:
                             retry_count += 1
@@ -139,7 +139,7 @@ class ModlistOperationsConfigurationGUIMixin:
 
                     if result:
                         if completion_callback:
-                            completion_callback(True, "Configuration completed successfully!", config_context['name'])
+                            completion_callback(True, "Core configuration complete", config_context['name'])
                         return True
                     else:
                         if progress_callback:

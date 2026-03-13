@@ -35,14 +35,18 @@ from .configure_new_modlist_workflow import ConfigureNewModlistWorkflowMixin
 from .configure_new_modlist_dialogs import ConfigureNewModlistDialogsMixin, ModlistFetchThread, SelectionDialog
 from .screen_back_mixin import ScreenBackMixin
 from .install_modlist_ttw import TTWIntegrationMixin
+from .install_modlist_postinstall import PostInstallFeedbackMixin
 
 logger = logging.getLogger(__name__)
 
-class ConfigureNewModlistScreen(ScreenBackMixin, TTWIntegrationMixin, ConfigureNewModlistUISetupMixin, ConfigureNewModlistConsoleMixin, ConfigureNewModlistWorkflowMixin, ConfigureNewModlistDialogsMixin, QWidget):
+class ConfigureNewModlistScreen(ScreenBackMixin, TTWIntegrationMixin, ConfigureNewModlistUISetupMixin, ConfigureNewModlistConsoleMixin, ConfigureNewModlistWorkflowMixin, ConfigureNewModlistDialogsMixin, PostInstallFeedbackMixin, QWidget):
     resize_request = Signal(str)
 
     def cancel_and_cleanup(self):
         """Handle Cancel button - clean up processes and go back"""
+        if getattr(self, '_vnv_controller', None) is not None:
+            self._vnv_controller.cleanup()
+            self._vnv_controller = None
         self.cleanup_processes()
         self.collapse_show_details_before_leave()
         self.go_back()
@@ -50,23 +54,7 @@ class ConfigureNewModlistScreen(ScreenBackMixin, TTWIntegrationMixin, ConfigureN
     def showEvent(self, event):
         """Called when the widget becomes visible - ensure collapsed state"""
         super().showEvent(event)
-
-        # Ensure initial collapsed layout each time this screen is opened
-        try:
-            from PySide6.QtCore import Qt as _Qt
-            # Ensure checkbox is unchecked without emitting signals
-            if self.show_details_checkbox.isChecked():
-                self.show_details_checkbox.blockSignals(True)
-                self.show_details_checkbox.setChecked(False)
-                self.show_details_checkbox.blockSignals(False)
-            
-            # Force collapsed state
-            # Set console to hidden state without emitting signals
-            self.console.setVisible(False)
-            self.resize_request.emit("compact")
-        except Exception as e:
-            # If initial collapse fails, log but don't crash
-            print(f"Warning: Failed to set initial collapsed state: {e}")
+        self.force_collapsed_details_state()
 
     def on_configuration_complete(self, success, message, modlist_name, enb_detected=False):
         """Handle configuration completion (same as Tuxborn)"""
@@ -88,8 +76,15 @@ class ConfigureNewModlistScreen(ScreenBackMixin, TTWIntegrationMixin, ConfigureN
                         return
 
             # Check for VNV post-install automation after configuration
-            if install_dir:
-                self._check_and_run_vnv_automation(modlist_name, install_dir)
+            if install_dir and self._check_and_run_vnv_automation(modlist_name, install_dir):
+                self._pending_success_dialog_params = {
+                    'modlist_name': modlist_name,
+                    'workflow_type': 'configure_new',
+                    'time_taken': self._calculate_time_taken(),
+                    'game_name': getattr(self, '_current_game_name', None),
+                    'enb_detected': enb_detected,
+                }
+                return
 
             # Calculate time taken
             time_taken = self._calculate_time_taken()
@@ -97,7 +92,6 @@ class ConfigureNewModlistScreen(ScreenBackMixin, TTWIntegrationMixin, ConfigureN
             # Clear Activity window before showing success dialog
             self.file_progress_list.clear()
 
-            # Show success dialog with celebration
             success_dialog = SuccessDialog(
                 modlist_name=modlist_name,
                 workflow_type="configure_new",
@@ -106,16 +100,14 @@ class ConfigureNewModlistScreen(ScreenBackMixin, TTWIntegrationMixin, ConfigureN
                 parent=self
             )
             success_dialog.show()
-            
-            # Show ENB Proton dialog if ENB was detected (use stored detection result, no re-detection)
+
             if enb_detected:
                 try:
                     from ..dialogs.enb_proton_dialog import ENBProtonDialog
                     enb_dialog = ENBProtonDialog(modlist_name=modlist_name, parent=self)
-                    enb_dialog.exec()  # Modal dialog - blocks until user clicks OK
+                    enb_dialog.exec()
                 except Exception as e:
-                    # Non-blocking: if dialog fails, just log and continue
-                    logger.warning(f"Failed to show ENB dialog: {e}")
+                    logger.warning("Failed to show ENB dialog: %s", e)
         else:
             self._safe_append_text(f"Configuration failed: {message}")
             MessageService.show_error(self, configuration_failed(str(message)))
@@ -169,10 +161,15 @@ class ConfigureNewModlistScreen(ScreenBackMixin, TTWIntegrationMixin, ConfigureN
 
         # Re-enable controls (in case they were disabled from previous errors)
         self._enable_controls_after_operation()
+        self.force_collapsed_details_state()
 
     def cleanup(self):
         """Clean up any running threads when the screen is closed"""
         logger.debug("DEBUG: cleanup called - cleaning up threads")
+
+        if getattr(self, '_vnv_controller', None) is not None:
+            self._vnv_controller.cleanup()
+            self._vnv_controller = None
         
         # Clean up automated prefix thread if running
         if hasattr(self, 'automated_prefix_thread') and self.automated_prefix_thread and self.automated_prefix_thread.isRunning():

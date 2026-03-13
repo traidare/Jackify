@@ -243,6 +243,46 @@ class ModlistOperationsDiscoveryMixin:
             self.context['download_dir'] = download_dir_path
         self.logger.debug(f"Download directory context set to: {self.context['download_dir']}")
 
+        install_dir_value = self.context.get('install_dir')
+        install_dir_real = os.path.realpath(str(install_dir_value[0] if isinstance(install_dir_value, tuple) else install_dir_value))
+        existing_appid = self._find_existing_shortcut_appid(self.context['modlist_name'], install_dir_real)
+        eligible_update, update_meta = self._evaluate_update_candidate(
+            self.context['modlist_name'],
+            install_dir_real,
+            existing_appid,
+        )
+        if eligible_update:
+            print("\n" + "-" * 28)
+            print(f"{COLOR_WARNING}Existing modlist installation detected in this directory.{COLOR_RESET}")
+            relation = update_meta.get("version_relation")
+            if relation == "different":
+                print(
+                    f"{COLOR_INFO}Detected version change: installed v{update_meta.get('installed_version')} -> "
+                    f"selected v{update_meta.get('requested_version')}.{COLOR_RESET}"
+                )
+            elif relation == "same" and update_meta.get("installed_version"):
+                print(
+                    f"{COLOR_INFO}Detected same version (v{update_meta.get('installed_version')}). "
+                    "Use update mode for repair/reconfigure behavior." + f"{COLOR_RESET}"
+                )
+            print("Choose how to proceed:")
+            print("  1. Update existing install (recommended)")
+            print("  2. New install with a different Steam shortcut name")
+            print("  0. Cancel")
+            update_choice = input(f"{COLOR_PROMPT}Enter your selection (0-2): {COLOR_RESET}").strip()
+            if update_choice == "1":
+                self.context['update_existing_install'] = True
+                self.context['existing_shortcut_appid'] = existing_appid
+                self.logger.info("CLI update mode selected; reusing AppID %s", existing_appid)
+            elif update_choice == "2":
+                print(
+                    f"{COLOR_WARNING}For a new install, choose a different Modlist Name before proceeding.{COLOR_RESET}"
+                )
+                return None
+            else:
+                self.logger.info("User cancelled at CLI update detection prompt.")
+                return None
+
         if 'nexus_api_key' not in self.context or not self.context.get('nexus_api_key'):
             from jackify.backend.services.nexus_auth_service import NexusAuthService
             auth_service = NexusAuthService()

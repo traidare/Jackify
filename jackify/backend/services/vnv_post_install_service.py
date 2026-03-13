@@ -13,6 +13,7 @@ Uses native Linux tools (no Wine required) by downloading from Nexus with OAuth.
 
 import logging
 import os
+import json
 import shutil
 import subprocess
 import stat
@@ -83,6 +84,110 @@ class VNVPostInstallService:
         self.download_service = NexusDownloadService(auth_token)
         return True
 
+    def _ensure_download_service(self, progress_callback: Optional[Callable[[str], None]] = None) -> bool:
+        if self.download_service is not None:
+            return True
+        return self._ensure_auth(progress_callback)
+
+    def _find_cached_4gb_patcher(self) -> Optional[Path]:
+        for path in self.cache_dir.iterdir():
+            if path.is_file() and path.suffix.lower() == ".zip" and "4gb" in path.name.lower():
+                return path
+        for path in self.cache_dir.iterdir():
+            if path.is_dir() and path.name.lower().endswith("_extracted") and "4gb" in path.name.lower():
+                for child in path.iterdir():
+                    if child.is_file():
+                        return child
+        return None
+
+    def _find_cached_bsa_mpi(self) -> Optional[Path]:
+        for path in self.cache_dir.iterdir():
+            if path.is_file() and path.suffix.lower() == ".mpi" and "bsa" in path.name.lower():
+                return path
+        for path in self.cache_dir.iterdir():
+            if path.is_dir() and path.name.lower().endswith("_extracted") and "bsa" in path.name.lower():
+                for child in path.rglob("*.mpi"):
+                    if child.is_file():
+                        return child
+        return None
+
+    def _find_cached_bsa_package(self) -> Optional[Path]:
+        preferred = []
+        fallback = []
+        for path in self.cache_dir.iterdir():
+            if not path.is_file():
+                continue
+            lower = path.name.lower()
+            if "bsa" not in lower or path.suffix.lower() not in {".zip", ".7z"}:
+                continue
+            if path.suffix.lower() == ".zip":
+                preferred.append(path)
+            else:
+                fallback.append(path)
+        candidates = sorted(preferred) or sorted(fallback)
+        return candidates[0] if candidates else None
+
+    def _extract_bsa_package(self, archive_path: Path) -> tuple[bool, Optional[Path], str]:
+        extract_dir = self.cache_dir / f"{archive_path.stem}_extracted"
+        mpi_path = next((p for p in extract_dir.rglob("*.mpi") if p.is_file()), None) if extract_dir.exists() else None
+        if mpi_path:
+            return True, mpi_path, f"Using extracted BSA package from {archive_path.name}"
+
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            suffix = archive_path.suffix.lower()
+            if suffix == ".zip":
+                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+            elif suffix == ".7z":
+                result = subprocess.run(
+                    ["7z", "x", "-y", f"-o{extract_dir}", str(archive_path)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    return False, None, (result.stderr or result.stdout or "7z extraction failed").strip()
+            else:
+                return False, None, f"Unsupported BSA package format: {archive_path.name}"
+        except Exception as e:
+            return False, None, str(e)
+
+        mpi_path = next((p for p in extract_dir.rglob("*.mpi") if p.is_file()), None)
+        if not mpi_path:
+            return False, None, f"No .mpi file found in BSA package: {archive_path.name}"
+        return True, mpi_path, f"Extracted BSA package {archive_path.name}"
+
+    @staticmethod
+    def _select_manual_download_file(files: list[dict], mod_id: int) -> Optional[dict]:
+        def _active(entries: list[dict]) -> list[dict]:
+            return [f for f in entries if f.get("category_name") not in ("ARCHIVED", "REMOVED")]
+
+        active_files = _active(files)
+        if mod_id == VNVPostInstallService.LINUX_4GB_PATCHER_MOD_ID:
+            proton_files = [
+                f for f in active_files
+                if "proton" in f.get("file_name", "").lower() and f.get("file_name", "").lower().endswith(".zip")
+            ]
+            if proton_files:
+                proton_files.sort(key=lambda f: f.get("uploaded_timestamp", 0), reverse=True)
+                return proton_files[0]
+        if mod_id == VNVPostInstallService.FNV_BSA_DECOMPRESSOR_MOD_ID:
+            zip_files = [f for f in active_files if f.get("file_name", "").lower().endswith(".zip")]
+            if zip_files:
+                zip_files.sort(key=lambda f: f.get("uploaded_timestamp", 0), reverse=True)
+                return zip_files[0]
+
+        main_files = [f for f in active_files if f.get("category_name") == "MAIN"]
+        if main_files:
+            main_files.sort(key=lambda f: f.get("uploaded_timestamp", 0), reverse=True)
+            return main_files[0]
+
+        if active_files:
+            active_files.sort(key=lambda f: f.get("uploaded_timestamp", 0), reverse=True)
+            return active_files[0]
+        return None
+
     def should_run_automation(self, modlist_name: str) -> bool:
         """
         Check if this modlist should trigger VNV automation.
@@ -108,10 +213,59 @@ class VNVPostInstallService:
             "1. Copy root mods to game directory\n"
             "2. Download and run Linux 4GB patcher\n"
             "3. Download and run BSA decompressor (reduces loading times)\n\n"
-            "Premium users: Downloads happen automatically\n"
-            "Non-Premium users: You'll be prompted to download files manually\n\n"
+            "Jackify will download the required tools automatically where possible.\n"
+            "If you are not a Nexus Premium member, you will be prompted to\n"
+            "manually download any tools that cannot be fetched automatically.\n\n"
             "Would you like Jackify to automate these steps?"
         )
+
+    def get_manual_download_items(self, include_bsa: bool = False) -> list:
+        """
+        Query Nexus for the current MAIN file of each required VNV tool and return
+        a list of DownloadItem-compatible event dicts for use with ManualDownloadManager.
+        Works with any Nexus auth (not Premium-only).
+        Returns an empty list if auth is unavailable or queries fail.
+        """
+        import requests as _requests
+        token = self.auth_service.get_auth_token()
+        if not token:
+            return []
+        auth_method = self.auth_service.get_auth_method()
+        headers = {"Accept": "application/json"}
+        if auth_method == "oauth":
+            headers["Authorization"] = f"Bearer {token}"
+        else:
+            headers["apikey"] = token
+
+        tools = [(self.LINUX_4GB_PATCHER_MOD_ID, "4GB Patcher")]
+        if include_bsa:
+            tools.append((self.FNV_BSA_DECOMPRESSOR_MOD_ID, "BSA Decompressor"))
+        items = []
+        for mod_id, label in tools:
+            try:
+                resp = _requests.get(
+                    f"https://api.nexusmods.com/v1/games/newvegas/mods/{mod_id}/files.json",
+                    headers=headers, timeout=8,
+                )
+                resp.raise_for_status()
+                files = resp.json().get("files", [])
+                match = self._select_manual_download_file(files, mod_id)
+                if match is None:
+                    logger.warning(f"VNV tool lookup: no suitable file found for mod {mod_id} ({label})")
+                    continue
+                file_id = match["file_id"]
+                items.append({
+                    "file_name": match["file_name"],
+                    "mod_name": label,
+                    "nexus_url": f"https://www.nexusmods.com/newvegas/mods/{mod_id}?tab=files&file_id={file_id}",
+                    "expected_hash": "",
+                    "expected_size": match.get("size_kb", 0) * 1024,
+                    "mod_id": mod_id,
+                    "file_id": file_id,
+                })
+            except Exception as e:
+                logger.warning(f"VNV tool lookup failed for mod {mod_id} ({label}): {e}")
+        return items
 
     def check_already_completed(self) -> dict:
         """
@@ -158,11 +312,6 @@ class VNVPostInstallService:
             logger.info(msg)
 
         try:
-            # Ensure authentication
-            update_progress("Checking Nexus authentication...")
-            if not self._ensure_auth(progress_callback):
-                return False, "Nexus authentication required. Please authenticate in Settings."
-
             # Step 1: Copy root mods
             update_progress("Step 1/3: Copying root mods to game directory...")
             success, msg = self.copy_root_mods()
@@ -253,25 +402,15 @@ class VNVPostInstallService:
                 return True, "Game already patched (backup exists)"
 
             # Check cache first - look for extracted executable or zip
-            patcher_path = None
-            cached_extracted = list(self.cache_dir.glob("*4gb*_extracted/*"))
-            if cached_extracted:
-                # Use already extracted executable
-                for f in cached_extracted:
-                    if f.is_file():
-                        patcher_path = f
-                        logger.info(f"Using cached extracted 4GB patcher: {patcher_path}")
-                        break
-
-            if not patcher_path:
-                cached_files = list(self.cache_dir.glob("*4gb*.zip"))
-                if cached_files:
-                    patcher_path = cached_files[0]
-                    logger.info(f"Using cached 4GB patcher zip: {patcher_path}")
+            patcher_path = self._find_cached_4gb_patcher()
+            if patcher_path:
+                logger.info(f"Using cached 4GB patcher: {patcher_path}")
 
             if not patcher_path:
                 # Try to download from Nexus
                 # Linux version is named "FNV4GB for Proton", not "linux"
+                if not self._ensure_download_service(progress_callback):
+                    return False, "Nexus authentication required to download the 4GB patcher."
                 success, patcher_path, msg = self.download_service.download_latest_file(
                     self.GAME_DOMAIN,
                     self.LINUX_4GB_PATCHER_MOD_ID,
@@ -394,60 +533,58 @@ class VNVPostInstallService:
                 return True, "BSA decompression already completed"
 
             if not self.ttw_installer_path or not self.ttw_installer_path.exists():
-                logger.warning("TTW_Linux_Installer not found, skipping BSA decompression")
-                return True, "BSA decompression skipped (TTW_Linux_Installer not available)"
+                from .ttw_installer_service import ensure_ttw_installer_available
 
-            # Check cache first
-            cached_files = list(self.cache_dir.glob("*BSA*.mpi"))
-            if cached_files:
-                mpi_path = cached_files[0]
+                self.ttw_installer_path, message = ensure_ttw_installer_available(progress_callback)
+                if not self.ttw_installer_path:
+                    return False, f"TTW_Linux_Installer is required for BSA decompression: {message}"
+
+            mpi_path = self._find_cached_bsa_mpi()
+            if mpi_path:
                 logger.info(f"Using cached BSA Decompressor MPI: {mpi_path}")
             else:
-                # Also check for exact filename match (handles spaces in filename)
-                exact_path = self.cache_dir / "FNV BSA Decompressor.mpi"
-                if exact_path.exists():
-                    mpi_path = exact_path
-                    logger.info(f"Using cached BSA Decompressor MPI: {mpi_path}")
-                else:
-                    # Try to download from Nexus
-                    # Look for files with .mpi extension (TTW installer format)
-                    success, mpi_path, msg = self.download_service.download_latest_file(
+                package_path = self._find_cached_bsa_package()
+                if not package_path:
+                    if not self._ensure_download_service(progress_callback):
+                        return False, "Nexus authentication required to download the BSA Decompressor."
+                    success, package_path, msg = self.download_service.download_latest_file(
                         self.GAME_DOMAIN,
                         self.FNV_BSA_DECOMPRESSOR_MOD_ID,
                         self.cache_dir,
-                        file_name_filter=".mpi",
+                        file_name_filter=".zip",
                         progress_callback=progress_callback
                     )
-
                     if not success:
-                        # Download failed - offer manual download
                         logger.warning(f"Automatic download failed: {msg}")
-
                         if not manual_file_callback:
-                            return False, f"Failed to download BSA Decompressor MPI: {msg}\n\nPlease download manually from: https://www.nexusmods.com/newvegas/mods/65854"
+                            return False, f"Failed to download BSA Decompressor package: {msg}\n\nPlease download manually from: https://www.nexusmods.com/newvegas/mods/65854"
 
                         instructions = (
                             "Automatic download failed (requires Nexus Premium).\n\n"
-                            "Please download the FNV BSA Decompressor manually:\n"
+                            "Please download the FNV BSA Decompressor package manually:\n"
                             "1. Visit: https://www.nexusmods.com/newvegas/mods/65854\n"
-                            "2. Download the .mpi file\n"
-                            "3. Select the downloaded file below"
+                            "2. Download the zip package\n"
+                            "3. Select the downloaded archive below"
                         )
+                        selected_path = manual_file_callback("BSA Decompressor Required", instructions)
+                        if not selected_path or not selected_path.exists():
+                            return False, "BSA Decompressor package not provided"
+                        if selected_path.suffix.lower() not in {'.zip', '.7z', '.mpi'}:
+                            return False, f"Selected file is not a supported BSA package: {selected_path}"
+                        cached_path = self.cache_dir / selected_path.name
+                        shutil.copy2(selected_path, cached_path)
+                        package_path = cached_path
+                        logger.info(f"Using manually selected BSA package: {package_path}")
 
-                        mpi_path = manual_file_callback("BSA Decompressor Required", instructions)
-
-                        if not mpi_path or not mpi_path.exists():
-                            return False, "BSA Decompressor MPI file not provided"
-
-                        # Validate it's an MPI file
-                        if not mpi_path.suffix.lower() == '.mpi':
-                            return False, f"Selected file is not an MPI file: {mpi_path}"
-
-                        # Copy to cache for future use
-                        cached_path = self.cache_dir / mpi_path.name
-                        shutil.copy2(mpi_path, cached_path)
-                        mpi_path = cached_path
-                        logger.info(f"Using manually selected BSA Decompressor MPI: {mpi_path}")
+                if package_path.suffix.lower() == ".mpi":
+                    mpi_path = package_path
+                else:
+                    if progress_callback:
+                        progress_callback("Preparing BSA decompressor package...")
+                    success, mpi_path, msg = self._extract_bsa_package(package_path)
+                    if not success or not mpi_path:
+                        return False, f"Failed to prepare BSA Decompressor package: {msg}"
+                    logger.info(msg)
 
             # Create temp output directory
             with tempfile.TemporaryDirectory() as temp_output:
@@ -455,7 +592,6 @@ class VNVPostInstallService:
 
                 # Create config file for TTW_Linux_Installer (handles spaces in paths better)
                 config_file = self.ttw_installer_path.parent / "ttw-config.json"
-                import json
                 config_data = {
                     "FalloutNVRoot": str(self.game_root),
                     "MpiPackagePath": str(mpi_path),
@@ -467,6 +603,7 @@ class VNVPostInstallService:
 
                 # Run via TTW_Linux_Installer
                 if progress_callback:
+                    progress_callback("Ensuring TTW_Linux_Installer is available...")
                     progress_callback("Running BSA decompressor...")
 
                 cmd = [

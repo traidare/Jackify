@@ -11,6 +11,8 @@ import re
 import shutil
 import logging
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -31,10 +33,55 @@ class MO2SetupService:
     GITHUB_API = "https://api.github.com/repos/ModOrganizer2/modorganizer/releases/latest"
     ASSET_PATTERN = re.compile(r"Mod\.Organizer-\d+\.\d+(\.\d+)?\.7z$")
 
+    def _extract_archive(
+        self,
+        archive_path: Path,
+        install_dir: Path,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Extract the MO2 archive without interactive prompts and honor cancellation."""
+
+        process = None
+        try:
+            process = subprocess.Popen(
+                ['7z', 'x', '-y', '-aoa', str(archive_path), f'-o{install_dir}'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            while True:
+                if should_cancel and should_cancel():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    return False, "MO2 setup cancelled."
+
+                returncode = process.poll()
+                if returncode is not None:
+                    stdout, stderr = process.communicate()
+                    if returncode != 0:
+                        err = (stderr or stdout or "").strip()
+                        return False, f"Extraction failed: {err or '7z returned a non-zero exit code.'}"
+                    return True, None
+
+                time.sleep(0.1)
+        except Exception as e:
+            if process is not None:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            return False, f"Extraction failed: {e}"
+
     def setup_mo2(
         self,
         install_dir: Path,
         shortcut_name: str = "Mod Organizer 2",
+        existing_appid: Optional[int] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Tuple[bool, Optional[int], Optional[str]]:
@@ -88,16 +135,21 @@ class MO2SetupService:
             return False, None, "Could not find main MO2 .7z asset in latest release."
 
         # Download
-        archive_path = install_dir / asset['name']
         _progress(f"Downloading {asset['name']}...")
         if _cancel_requested():
             return False, None, "MO2 setup cancelled."
         try:
+            with tempfile.NamedTemporaryFile(prefix="jackify-mo2-", suffix=".7z", delete=False) as tmp_file:
+                archive_path = Path(tmp_file.name)
             with requests.get(asset['browser_download_url'], stream=True, timeout=120, verify=True) as r:
                 r.raise_for_status()
                 with open(archive_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         if _cancel_requested():
+                            try:
+                                archive_path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
                             return False, None, "MO2 setup cancelled."
                         f.write(chunk)
         except Exception as e:
@@ -107,18 +159,13 @@ class MO2SetupService:
         _progress(f"Extracting to {install_dir}...")
         if _cancel_requested():
             return False, None, "MO2 setup cancelled."
-        try:
-            result = subprocess.run(
-                ['7z', 'x', str(archive_path), f'-o{install_dir}'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=1200,
-            )
-            if result.returncode != 0:
-                err = result.stderr.decode(errors='ignore')
-                return False, None, f"Extraction failed: {err}"
-        except Exception as e:
-            return False, None, f"Extraction failed: {e}"
+        extract_ok, extract_error = self._extract_archive(archive_path, install_dir, should_cancel)
+        if not extract_ok:
+            try:
+                archive_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False, None, extract_error
 
         # Validate
         mo2_exe = install_dir / "ModOrganizer.exe"
@@ -149,12 +196,22 @@ class MO2SetupService:
         try:
             from .automated_prefix_service import AutomatedPrefixService
             svc = AutomatedPrefixService()
-            success, prefix_path, app_id, _last_ts = svc.run_working_workflow(
-                shortcut_name=shortcut_name,
-                modlist_install_dir=str(install_dir),
-                final_exe_path=str(mo2_exe),
-                progress_callback=_progress,
-            )
+            if existing_appid is not None:
+                app_id = int(existing_appid)
+                _progress(f"Reusing existing Steam shortcut with AppID: {app_id}")
+                prefix_path = svc.get_prefix_path(app_id)
+                if prefix_path is None:
+                    if not svc.create_prefix_with_proton_wrapper(app_id):
+                        return False, None, "Failed to create Proton prefix for existing shortcut."
+                    prefix_path = svc.get_prefix_path(app_id)
+                success = True
+            else:
+                success, prefix_path, app_id, _last_ts = svc.run_working_workflow(
+                    shortcut_name=shortcut_name,
+                    modlist_install_dir=str(install_dir),
+                    final_exe_path=str(mo2_exe),
+                    progress_callback=_progress,
+                )
         except Exception as e:
             logger.error(f"AutomatedPrefixService failed: {e}")
             return False, None, f"Prefix setup failed: {e}"

@@ -274,13 +274,20 @@ class SettingsDialog(SettingsDialogTabsMixin, SettingsDialogProtonMixin, QDialog
                         self.config_handler.set("proton_path", resolved_install_path)
                         self.config_handler.set("proton_version", resolved_install_version)
                     else:
-                        # No Proton found - don't write anything, let engine auto-detect
+                        # No Proton found - clear persisted selection so startup normalization
+                        # can auto-heal once a compatible Proton is installed.
                         logger.warning("Auto Proton selection failed: No Proton versions found")
-                        # Don't modify existing config values
+                        resolved_install_path = None
+                        resolved_install_version = None
+                        self.config_handler.set("proton_path", None)
+                        self.config_handler.set("proton_version", None)
                 except Exception as e:
-                    # Exception during detection - log it and don't write anything
+                    # Exception during detection - clear persisted selection to avoid stale path usage.
                     logger.error(f"Auto Proton selection failed with exception: {e}", exc_info=True)
-                    # Don't modify existing config values
+                    resolved_install_path = None
+                    resolved_install_version = None
+                    self.config_handler.set("proton_path", None)
+                    self.config_handler.set("proton_version", None)
             else:
                 # User selected specific Proton version
                 resolved_install_path = selected_install_proton_path
@@ -392,4 +399,3 @@ class SettingsDialog(SettingsDialogTabsMixin, SettingsDialogProtonMixin, QDialog
         label = QLabel(text)
         label.setStyleSheet("font-weight: bold; color: #fff;")
         return label
-

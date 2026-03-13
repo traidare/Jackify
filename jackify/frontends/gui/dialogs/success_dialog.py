@@ -86,6 +86,8 @@ class SuccessDialog(QDialog):
         modlist_name_html = f'<span style="color:#3fb7d6; font-size:17px; font-weight:500;">{self.modlist_name}</span>'
         if self.workflow_type == "install":
             suffix_text = "installed successfully!"
+        elif self.workflow_type == "update":
+            suffix_text = "updated successfully!"
         elif self.workflow_type == "configure_new":
             suffix_text = "configured successfully!"
         elif self.workflow_type == "configure_existing":
@@ -220,6 +222,7 @@ class SuccessDialog(QDialog):
         """
         workflow_messages = {
             "install": f"{self.modlist_name} installed successfully!",
+            "update": f"{self.modlist_name} updated successfully!",
             "configure_new": f"{self.modlist_name} configured successfully!",
             "configure_existing": f"{self.modlist_name} configuration updated successfully!",
             "tuxborn": f"Tuxborn installation completed successfully!",

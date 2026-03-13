@@ -1,10 +1,11 @@
 """Workflow management for ConfigureExistingModlistScreen (Mixin)."""
 from PySide6.QtCore import QThread, Signal
+from PySide6.QtWidgets import QMessageBox
 import os
 import time
 import logging
 from pathlib import Path
-from typing import Optional
+
 from jackify.shared.resolution_utils import get_resolution_fallback
 from jackify.shared.errors import configuration_failed
 
@@ -188,7 +189,10 @@ class ConfigureExistingModlistWorkflowMixin:
                         )
                         
                         if not success:
-                            self.error_occurred.emit("Configuration failed - check logs for details")
+                            self.error_occurred.emit(
+                                "Configuration did not complete successfully. "
+                                "Review the latest workflow output above for the failing step."
+                            )
                             
                     except Exception as e:
                         import traceback
@@ -206,89 +210,64 @@ class ConfigureExistingModlistWorkflowMixin:
             self._safe_append_text(f"[ERROR] Failed to start configuration: {e}")
             MessageService.show_error(self, configuration_failed(str(e)))
 
-    def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str):
-        """Check if VNV automation should run and execute if applicable
+    def _check_and_run_vnv_automation(self, modlist_name: str, install_dir: str) -> bool:
+        """Check if VNV automation should run and start it if applicable.
 
-        Args:
-            modlist_name: Name of the installed modlist
-            install_dir: Installation directory path
+        Returns:
+            True if VNV automation is starting (caller should defer success dialog)
+            False if no VNV needed (show success dialog immediately)
         """
-        try:
-            from pathlib import Path
-            from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable, should_offer_vnv_automation
-            from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
-            from jackify.backend.handlers.path_handler import PathHandler
+        from ..services.vnv_automation_controller import VNVAutomationController
 
-            # Get paths first (needed for VNV detection)
-            install_path = Path(install_dir)
-            
-            # Quick check before importing more (pass install location for ModOrganizer.ini check)
-            if not should_offer_vnv_automation(modlist_name, install_path):
-                return
-            game_paths = PathHandler().find_vanilla_game_paths()
-            game_root = game_paths.get('Fallout New Vegas')
+        self._vnv_controller = VNVAutomationController()
+        return self._vnv_controller.attempt(
+            parent=self,
+            modlist_name=modlist_name,
+            install_dir=install_dir,
+            on_progress=self._safe_append_text,
+            on_complete=self._on_vnv_complete,
+            begin_feedback=self._begin_post_install_feedback,
+            handle_feedback=self._handle_post_install_progress,
+        )
 
-            if not game_root:
-                logger.debug("DEBUG: VNV automation skipped - FNV game root not found")
-                return
-
-            # Confirmation callback - show dialog to user
-            def confirmation_callback(description: str) -> bool:
-                from ..services.message_service import MessageService
-                reply = MessageService.question(
-                    self,
-                    "VNV Post-Install Automation",
-                    description,
-                    critical=False,
-                    safety_level="medium"
-                )
-                return reply == QMessageBox.Yes
-
-            # Manual file callback for non-Premium users
-            def manual_file_callback(title: str, instructions: str) -> Optional[Path]:
-                from PySide6.QtWidgets import QFileDialog
-                from ..services.message_service import MessageService
-
-                # Show instructions
-                MessageService.information(self, title, instructions)
-
-                # Open file picker
-                file_path, _ = QFileDialog.getOpenFileName(
-                    self,
-                    title,
-                    str(Path.home() / "Downloads"),
-                    "All Files (*.*)"
-                )
-
-                if file_path:
-                    return Path(file_path).resolve()
-                return None
-
-            # Run automation
-            automation_ran, error = run_vnv_automation_if_applicable(
-                modlist_name=modlist_name,
-                modlist_install_location=install_path,
-                game_root=game_root,
-                ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
-                progress_callback=None,  # GUI doesn't need progress updates for post-install
-                manual_file_callback=manual_file_callback,
-                confirmation_callback=confirmation_callback
+    def _on_vnv_complete(self, success: bool, error: str):
+        """Handle VNV automation completion and show deferred success dialog."""
+        self._end_post_install_feedback(not bool(error))
+        if not success and error:
+            from ..services.message_service import MessageService
+            MessageService.warning(
+                self,
+                "VNV Automation Failed",
+                f"VNV post-install automation encountered an error:\n\n{error}\n\n"
+                "You can complete these steps manually by following the guide at:\n"
+                "https://vivanewvegas.moddinglinked.com/wabbajack.html"
             )
+        elif success:
+            self._safe_append_text("VNV post-install automation completed successfully.")
 
-            if error:
-                from ..services.message_service import MessageService
-                MessageService.warning(
-                    self,
-                    "VNV Automation Failed",
-                    f"VNV post-install automation encountered an error:\n\n{error}\n\n"
-                    "You can complete these steps manually by following the guide at:\n"
-                    "https://vivanewvegas.moddinglinked.com/wabbajack.html"
-                )
+        if hasattr(self, '_pending_success_dialog_params'):
+            params = self._pending_success_dialog_params
+            del self._pending_success_dialog_params
 
-        except Exception as e:
-            logger.debug(f"ERROR: Failed to run VNV automation: {e}")
-            import traceback
-            logger.debug(f"Traceback: {traceback.format_exc()}")
+            self.file_progress_list.clear()
+
+            from ..dialogs import SuccessDialog
+            success_dialog = SuccessDialog(
+                modlist_name=params['modlist_name'],
+                workflow_type=params['workflow_type'],
+                time_taken=params['time_taken'],
+                game_name=params['game_name'],
+                parent=self,
+            )
+            success_dialog.show()
+
+            if params.get('enb_detected'):
+                try:
+                    from ..dialogs.enb_proton_dialog import ENBProtonDialog
+                    enb_dialog = ENBProtonDialog(modlist_name=params['modlist_name'], parent=self)
+                    enb_dialog.exec()
+                except Exception as e:
+                    logger.warning("Failed to show ENB dialog: %s", e)
 
     def show_manual_steps_dialog(self, extra_warning=""):
         modlist_name = self.shortcut_combo.currentText().split('(')[0].strip() or "your modlist"
@@ -372,4 +351,3 @@ class ConfigureExistingModlistWorkflowMixin:
                 return f"{elapsed_minutes} minutes {elapsed_seconds_remainder} seconds"
         else:
             return f"{elapsed_seconds_remainder} seconds"
-

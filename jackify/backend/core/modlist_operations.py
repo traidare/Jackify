@@ -107,7 +107,7 @@ def get_jackify_engine_path():
         logger.warning(f"AppImage engine not found at expected path: {engine_path}")
     
     # Priority 3: Check if THIS process is actually running from Jackify AppImage
-    # (not just inheriting APPDIR from another AppImage like Cursor)
+    # (not just inheriting APPDIR from another AppImage context)
     appdir = os.environ.get('APPDIR')
     if appdir and sys.argv[0] and 'jackify' in sys.argv[0].lower() and '/tmp/.mount_' in sys.argv[0]:
         # Only use AppImage path if we're actually running a Jackify AppImage
@@ -178,6 +178,92 @@ class ModlistInstallCLI(
         
         # Initialize process tracking for cleanup
         self._current_process = None
+
+    @staticmethod
+    def _normalize_version_token(value: str | None) -> str | None:
+        if value is None:
+            return None
+        token = str(value).strip()
+        if not token:
+            return None
+        return token.lstrip("vV").lower()
+
+    @staticmethod
+    def _normalize_modlist_name(value: str | None) -> str:
+        return " ".join((value or "").strip().lower().split())
+
+    def _get_requested_modlist_version(self) -> str | None:
+        info = self.context.get("selected_modlist_info") or {}
+        return self._normalize_version_token(info.get("version"))
+
+    def _evaluate_update_candidate(
+        self,
+        modlist_name: str,
+        install_dir: str,
+        existing_appid: str | None,
+    ) -> tuple[bool, dict]:
+        from jackify.backend.utils.modlist_meta import read_modlist_meta
+
+        result = {
+            "eligible": False,
+            "reason": "unknown",
+            "requested_version": None,
+            "installed_version": None,
+            "version_relation": "unknown",
+            "installed_name": None,
+        }
+        if not existing_appid:
+            result["reason"] = "missing_shortcut_appid"
+            return False, result
+
+        meta = read_modlist_meta(install_dir)
+        if not meta:
+            result["reason"] = "missing_meta"
+            return False, result
+
+        installed_name = (meta.get("modlist_name") or "").strip()
+        result["installed_name"] = installed_name
+        if self._normalize_modlist_name(installed_name) != self._normalize_modlist_name(modlist_name):
+            result["reason"] = "modlist_name_mismatch"
+            return False, result
+
+        requested_version = self._get_requested_modlist_version()
+        installed_version = self._normalize_version_token(meta.get("modlist_version"))
+        result["requested_version"] = requested_version
+        result["installed_version"] = installed_version
+        if requested_version and installed_version:
+            result["version_relation"] = "same" if requested_version == installed_version else "different"
+
+        result["eligible"] = True
+        result["reason"] = "eligible"
+        return True, result
+
+    def _find_existing_shortcut_appid(self, modlist_name: str, install_dir: str) -> str | None:
+        try:
+            install_real = os.path.realpath(install_dir)
+            candidate_exes = [
+                os.path.join(install_real, "ModOrganizer.exe"),
+                os.path.join(install_real, "files", "ModOrganizer.exe"),
+            ]
+
+            for exe_path in candidate_exes:
+                if not os.path.exists(exe_path):
+                    continue
+                appid = self.shortcut_handler.get_appid_from_vdf(modlist_name, exe_path)
+                if appid:
+                    return appid
+
+            for shortcut in self.shortcut_handler.find_shortcuts_by_exe("ModOrganizer.exe"):
+                if (
+                    shortcut.get("AppName", "").strip() == modlist_name.strip()
+                    and os.path.realpath(shortcut.get("StartDir", "")) == install_real
+                ):
+                    raw_appid = shortcut.get("appid")
+                    if raw_appid is not None:
+                        return str(int(raw_appid) & 0xFFFFFFFF)
+        except Exception as e:
+            self.logger.warning("CLI update detection: failed shortcut lookup: %s", e)
+        return None
 
     def cleanup(self):
         """Clean up any running jackify-engine process"""

@@ -101,13 +101,15 @@ class UpdateService:
                             break
                 
                 if download_url:
-                    # Prefer Nexus CDN for Premium users when release embeds nexus_file_id
-                    release_body = release_data.get('body', '')
-                    nexus_url = self._try_nexus_download_url(release_body)
+                    # Prefer Nexus CDN for Premium users if this version is available there
+                    nexus_url = self._try_nexus_download_url(latest_version)
                     update_source = "github"
                     if nexus_url:
                         download_url = nexus_url
                         update_source = "nexus"
+                        logger.debug(f"UPD-1001 update_source_selected source=nexus version={latest_version}")
+                    else:
+                        logger.debug(f"UPD-1001 update_source_selected source=github version={latest_version}")
 
                     # Determine if this is a delta update
                     is_delta = '.delta' in download_url or 'delta' in download_url.lower()
@@ -152,54 +154,69 @@ class UpdateService:
             logger.error(f"Unexpected error checking for updates: {e}")
             return None
     
-    def _try_nexus_download_url(self, release_body: str) -> Optional[str]:
-        """
-        If the user is Nexus Premium and the release body embeds nexus_file_id,
-        return a Nexus CDN download URL. Returns None on any failure.
+    _NEXUS_MOD_ID = 1427
 
-        Release body format expected:
-            nexus_mod_id: 12345
-            nexus_file_id: 67890
+    def _try_nexus_download_url(self, target_version: str) -> Optional[str]:
         """
-        import re
+        If the user is Nexus Premium, query the Nexus files list for the mod
+        and return a CDN download URL for the file matching target_version.
+        Returns None on any failure or if the version is not yet on Nexus.
+        """
         try:
-            mod_match = re.search(r'nexus_mod_id:\s*(\d+)', release_body, re.IGNORECASE)
-            file_match = re.search(r'nexus_file_id:\s*(\d+)', release_body, re.IGNORECASE)
-            if not file_match:
-                return None
-            nexus_file_id = int(file_match.group(1))
-            nexus_mod_id = int(mod_match.group(1)) if mod_match else None
-
             from jackify.backend.services.nexus_auth_service import NexusAuthService
             auth_service = NexusAuthService()
             token = auth_service.get_auth_token()
             if not token:
+                logger.debug("UPD-1002 nexus_lookup_skipped reason=missing_auth_token")
                 return None
+            auth_method = auth_service.get_auth_method()
+            is_oauth = auth_method == "oauth"
 
             from jackify.backend.services.nexus_premium_service import NexusPremiumService
-            is_premium, _ = NexusPremiumService().check_premium_status(token)
+            is_premium, _ = NexusPremiumService().check_premium_status(token, is_oauth=is_oauth)
             if not is_premium:
-                logger.debug("Nexus download skipped: user is not Premium")
+                logger.debug("UPD-1002 nexus_lookup_skipped reason=not_premium")
                 return None
 
-            if nexus_mod_id is None:
+            auth_headers = {"Accept": "application/json"}
+            if is_oauth:
+                auth_headers["Authorization"] = f"Bearer {token}"
+            else:
+                auth_headers["apikey"] = token
+
+            files_url = f"https://api.nexusmods.com/v1/games/site/mods/{self._NEXUS_MOD_ID}/files.json"
+            resp = requests.get(files_url, headers=auth_headers, timeout=8)
+            resp.raise_for_status()
+            files = resp.json().get("files", [])
+
+            # Prefer MAIN category; accept any non-archived/removed file matching the version.
+            match = None
+            for f in files:
+                if f.get("version") != target_version:
+                    continue
+                if f.get("category_name") == "MAIN":
+                    match = f
+                    break
+                if f.get("category_name") not in ("ARCHIVED", "REMOVED"):
+                    match = match or f
+
+            if match is None:
+                logger.debug(f"UPD-1002 nexus_lookup_skipped reason=version_not_on_nexus version={target_version}")
                 return None
 
-            api_url = f"https://api.nexusmods.com/v1/games/site/mods/{nexus_mod_id}/files/{nexus_file_id}/download_link.json"
-            resp = requests.get(
-                api_url,
-                headers={"apikey": token, "Accept": "application/json"},
-                timeout=8,
-            )
+            nexus_file_id = match["file_id"]
+            dl_url = f"https://api.nexusmods.com/v1/games/site/mods/{self._NEXUS_MOD_ID}/files/{nexus_file_id}/download_link.json"
+            resp = requests.get(dl_url, headers=auth_headers, timeout=8)
             resp.raise_for_status()
             links = resp.json()
             if isinstance(links, list) and links:
                 cdn_url = links[0].get("URI")
                 if cdn_url:
-                    logger.debug(f"Using Nexus CDN URL for update")
+                    logger.debug(f"UPD-1003 nexus_lookup_success file_id={nexus_file_id} version={target_version}")
                     return cdn_url
+            logger.debug("UPD-1002 nexus_lookup_skipped reason=empty_download_links")
         except Exception as e:
-            logger.debug(f"Nexus download URL lookup failed: {e}")
+            logger.debug(f"UPD-1004 nexus_lookup_failed error={e}")
         return None
 
     def _is_newer_version(self, version: str) -> bool:

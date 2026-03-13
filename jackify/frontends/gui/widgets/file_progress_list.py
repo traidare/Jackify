@@ -342,7 +342,9 @@ class FileProgressList(QWidget):
         self._cpu_timer.stop()
         if self._cpu_worker and self._cpu_worker.isRunning():
             self._cpu_worker.quit()
-            self._cpu_worker.wait(500)
+            if not self._cpu_worker.wait(500):
+                self._cpu_worker.terminate()
+                self._cpu_worker.wait(1000)
             self._cpu_worker = None
 
     def _start_cpu_worker(self):

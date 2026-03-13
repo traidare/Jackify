@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 import vdf
+from jackify.shared.steam_utils import (
+    get_ordered_steam_roots,
+    STEAM_PREFERENCE_AUTO,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +27,7 @@ class PathHandlerSteamMixin:
     def find_steam_config_vdf() -> Optional[Path]:
         """Finds the active Steam config.vdf file."""
         logger.debug("Searching for Steam config.vdf...")
-        possible_steam_paths = [
-            Path.home() / ".steam/steam",
-            Path.home() / ".local/share/Steam",
-            Path.home() / ".steam/root"
-        ]
+        possible_steam_paths = get_ordered_steam_roots(STEAM_PREFERENCE_AUTO)
         for steam_path in possible_steam_paths:
             potential_path = steam_path / "config/config.vdf"
             if potential_path.is_file():
@@ -40,10 +40,9 @@ class PathHandlerSteamMixin:
     def find_steam_library() -> Optional[Path]:
         """Find the primary Steam library common directory containing games."""
         logger.debug("Attempting to find Steam library...")
+        ordered_roots = get_ordered_steam_roots(STEAM_PREFERENCE_AUTO)
         libraryfolders_vdf_paths = [
-            os.path.expanduser("~/.steam/steam/config/libraryfolders.vdf"),
-            os.path.expanduser("~/.local/share/Steam/config/libraryfolders.vdf"),
-            os.path.expanduser("~/.var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf"),
+            str(root / "config" / "libraryfolders.vdf") for root in ordered_roots
         ]
         for path in libraryfolders_vdf_paths:
             if os.path.exists(path):
@@ -92,14 +91,11 @@ class PathHandlerSteamMixin:
                 logger.info(f"Using Steam library common path: {library_paths[0]}")
                 return library_paths[0]
             logger.debug("No valid common paths found in VDF, checking default location...")
-            default_common_path = Path.home() / ".steam/steam/steamapps/common"
-            if default_common_path.is_dir():
-                logger.info(f"Using default Steam library common path: {default_common_path}")
-                return default_common_path
-            default_common_path_local = Path.home() / ".local/share/Steam/steamapps/common"
-            if default_common_path_local.is_dir():
-                logger.info(f"Using default local Steam library common path: {default_common_path_local}")
-                return default_common_path_local
+            for root in ordered_roots:
+                default_common_path = root / "steamapps" / "common"
+                if default_common_path.is_dir():
+                    logger.info(f"Using default Steam library common path: {default_common_path}")
+                    return default_common_path
             logger.error("No valid Steam library common path found in VDF or default locations.")
             return None
         except Exception as e:
@@ -181,12 +177,8 @@ class PathHandlerSteamMixin:
     def get_all_steam_library_paths() -> List[Path]:
         """Finds all Steam library paths listed in all known libraryfolders.vdf files (including Flatpak)."""
         logger.info("[DEBUG] Searching for all Steam libraryfolders.vdf files...")
-        vdf_paths = [
-            Path.home() / ".steam/steam/config/libraryfolders.vdf",
-            Path.home() / ".local/share/Steam/config/libraryfolders.vdf",
-            Path.home() / ".steam/root/config/libraryfolders.vdf",
-            Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf",
-        ]
+        ordered_roots = get_ordered_steam_roots(STEAM_PREFERENCE_AUTO)
+        vdf_paths = [root / "config" / "libraryfolders.vdf" for root in ordered_roots]
         library_paths = set()
         for vdf_path in vdf_paths:
             if vdf_path.is_file():

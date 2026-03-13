@@ -1,8 +1,10 @@
 import json
+import re
 from typing import Optional
 from jackify.shared.errors import (
     JackifyError, InstallError, OAuthError,
     oauth_expired, wabbajack_install_failed, format_technical_context,
+    game_not_found_for_modlist,
 )
 
 
@@ -12,7 +14,29 @@ def _ctx_detail(ctx: dict) -> Optional[str]:
     return format_technical_context(context=ctx)
 
 
+def _engine_error(msg: str, ctx: dict) -> InstallError:
+    """Map generic engine_error payloads to user-visible, actionable InstallError variants."""
+    text = (msg or "").strip()
+    match = re.search(r"can't find game\s+([A-Za-z0-9_:-]+)", text, flags=re.IGNORECASE)
+    if match:
+        game_name = match.group(1)
+        return game_not_found_for_modlist(game_name, detail=text)
+
+    return InstallError(
+        "Install Engine Error",
+        text or "An install engine error occurred.",
+        suggestion="Review the error message and retry after correcting the reported issue.",
+        solutions=[
+            "Check the exact error message shown above and fix the prerequisite it mentions.",
+            "Retry the install after restarting Steam.",
+            "If this persists, check Modlist_Install_workflow.log for the same error text.",
+        ],
+        technical=_ctx_detail(ctx),
+    )
+
+
 _TYPE_MAP = {
+    "engine_error": _engine_error,
     "auth_failed": lambda msg, ctx: oauth_expired(),
     "premium_required": lambda msg, ctx: InstallError(
         "Nexus Premium Required",

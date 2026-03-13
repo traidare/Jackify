@@ -150,16 +150,103 @@ class AdditionalMenuHandler:
         else:
             output_path = Path(output_path).expanduser()
 
+        # Check if output directory already has content — mirror GUI behaviour
+        if output_path.exists() and output_path.is_dir():
+            try:
+                has_files = any(output_path.iterdir())
+            except Exception:
+                has_files = False
+            if has_files:
+                print(f"\n{COLOR_WARNING}The TTW output directory already exists and contains files:{COLOR_RESET}")
+                print(f"  {output_path}")
+                print(f"{COLOR_WARNING}All files in this directory will be deleted before installation.{COLOR_RESET}")
+                print(f"{COLOR_WARNING}This action cannot be undone.{COLOR_RESET}")
+                confirm = input(f"{COLOR_PROMPT}Delete existing files and continue? (y/N): {COLOR_RESET}").strip().lower()
+                if confirm not in ('y', 'yes'):
+                    print(f"{COLOR_INFO}TTW installation cancelled.{COLOR_RESET}")
+                    input("Press Enter to return to menu...")
+                    return
+                import shutil
+                try:
+                    for item in output_path.iterdir():
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+                except Exception as e:
+                    print(f"{COLOR_ERROR}Failed to clear output directory: {e}{COLOR_RESET}")
+                    input("Press Enter to return to menu...")
+                    return
+
         # Run TTW installation
+        import re
+
+        phase_state = {"current": "Processing", "last_rendered": ""}
+        progress_line_active = {"value": False}
+
+        def _strip_ansi(text: str) -> str:
+            return re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text or '')
+
+        def _ttw_output_callback(line: str):
+            clean = _strip_ansi(line or "").strip()
+            if not clean:
+                return
+            lower = clean.lower()
+            rendered = ""
+            manifest_match = re.search(r'loading manifest:\s*(\d+)/(\d+)', lower)
+            if manifest_match:
+                current = int(manifest_match.group(1))
+                total = int(manifest_match.group(2))
+                phase_state["current"] = "Loading manifest"
+                percent = int((current / total) * 100) if total > 0 else 0
+                rendered = f"[TTW] {phase_state['current']}: {current:,}/{total:,} ({percent}%)"
+            else:
+                progress_match = re.search(r'\[(\d+)/(\d+)\]', clean)
+                if progress_match:
+                    current = int(progress_match.group(1))
+                    total = int(progress_match.group(2))
+                    percent = int((current / total) * 100) if total > 0 else 0
+                    rendered = f"[TTW] {phase_state['current']}: {current:,}/{total:,} ({percent}%)"
+                else:
+                    if 'manifest' in lower:
+                        phase_state["current"] = "Loading manifest"
+                    elif any(t in lower for t in ('extract', 'decompress', 'installing', 'copying', 'merge')):
+                        phase_state["current"] = clean
+                    is_milestone = any(t in lower for t in ('===', 'complete', 'finished', 'starting', 'valid'))
+                    is_error = 'error:' in lower
+                    is_warning = 'warning:' in lower
+                    if is_milestone or is_error or is_warning:
+                        rendered = f"[TTW] {clean}"
+
+            if not rendered or rendered == phase_state["last_rendered"]:
+                return
+            phase_state["last_rendered"] = rendered
+            if re.search(r'^\[TTW\] .+?: [\d,]+/[\d,]+ \(\d+%\)$', rendered):
+                print(f"\r{COLOR_INFO}{rendered}{COLOR_RESET}", end="", flush=True)
+                progress_line_active["value"] = True
+            else:
+                if progress_line_active["value"]:
+                    print()
+                    progress_line_active["value"] = False
+                print(f"{COLOR_INFO}{rendered}{COLOR_RESET}")
+
         print(f"\n{COLOR_INFO}Starting TTW installation workflow...{COLOR_RESET}")
-        success, message = ttw_installer_handler.install_ttw_backend(mpi_path, output_path)
-        
+        print(f"{COLOR_INFO}This may take 15-30 minutes.{COLOR_RESET}\n")
+        success, message = ttw_installer_handler.install_ttw_backend_with_output_stream(
+            mpi_path, output_path, output_callback=_ttw_output_callback
+        )
+        if progress_line_active["value"]:
+            print()
+
         if success:
             print(f"\n{COLOR_SUCCESS}TTW installation completed successfully!{COLOR_RESET}")
             print(f"{COLOR_INFO}TTW installed to: {output_path}{COLOR_RESET}")
+            print(f"{COLOR_INFO}Detailed log available at: ~/Jackify/logs/TTW_Install_workflow.log{COLOR_RESET}")
+            input("Press Enter to return to menu...")
         else:
             print(f"\n{COLOR_ERROR}TTW installation failed.{COLOR_RESET}")
             print(f"{COLOR_ERROR}Error: {message}{COLOR_RESET}")
+            print(f"{COLOR_INFO}Detailed log available at: ~/Jackify/logs/TTW_Install_workflow.log{COLOR_RESET}")
             input("Press Enter to return to menu...")
 
     def _execute_nexus_authorization(self, cli_instance):

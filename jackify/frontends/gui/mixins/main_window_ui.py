@@ -220,6 +220,10 @@ class MainWindowUIMixin:
             stacked_widget=self.stacked_widget, additional_tasks_index=3, system_info=self.system_info
         )
         self.install_mo2_screen = screen
+        try:
+            screen.resize_request.connect(self._on_child_resize_request)
+        except Exception:
+            pass
         return screen
 
     def _debug_screen_change(self, index):

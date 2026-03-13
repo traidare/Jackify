@@ -7,6 +7,7 @@ MO2SetupService. No Wabbajack modlist required.
 
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -18,11 +19,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QSize
 
 from jackify.backend.models.configuration import SystemInfo
+from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
 from jackify.shared.errors import mo2_setup_failed
 from jackify.shared.progress_models import FileProgress, OperationType
+from ..dialogs.existing_setup_dialog import prompt_existing_setup_dialog
 from ..services.message_service import MessageService
 from ..shared_theme import JACKIFY_COLOR_BLUE, DEBUG_BORDERS
 from ..utils import set_responsive_minimum
+from .screen_focus_reclaim import FocusReclaimMixin, STEAM_RESTART_SENTINEL
 from ..widgets.progress_indicator import OverallProgressIndicator
 from ..widgets.file_progress_list import FileProgressList
 from .screen_back_mixin import ScreenBackMixin
@@ -37,10 +41,11 @@ class MO2SetupWorker(QThread):
     log_output = Signal(str)
     setup_complete = Signal(bool, object, str)  # success, app_id (int|None), error_msg
 
-    def __init__(self, install_dir: Path, shortcut_name: str):
+    def __init__(self, install_dir: Path, shortcut_name: str, existing_appid: int | None = None):
         super().__init__()
         self.install_dir = install_dir
         self.shortcut_name = shortcut_name
+        self.existing_appid = existing_appid
 
     def run(self):
         from jackify.backend.services.mo2_setup_service import MO2SetupService
@@ -56,6 +61,7 @@ class MO2SetupWorker(QThread):
             success, app_id, error_msg = service.setup_mo2(
                 install_dir=self.install_dir,
                 shortcut_name=self.shortcut_name,
+                existing_appid=self.existing_appid,
                 progress_callback=_progress,
                 should_cancel=self.isInterruptionRequested,
             )
@@ -68,7 +74,7 @@ class MO2SetupWorker(QThread):
             self.setup_complete.emit(False, None, str(e))
 
 
-class InstallMO2Screen(ScreenBackMixin, QWidget):
+class InstallMO2Screen(ScreenBackMixin, FocusReclaimMixin, QWidget):
     """Standalone MO2 setup screen"""
 
     resize_request = Signal(str)
@@ -89,6 +95,10 @@ class InstallMO2Screen(ScreenBackMixin, QWidget):
 
         self._user_manually_scrolled = False
         self._was_at_bottom = True
+
+        from jackify.shared.paths import get_jackify_logs_dir
+        self.log_path = get_jackify_logs_dir() / "MO2_Install_workflow.log"
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
 
         self.progress_indicator = OverallProgressIndicator(show_progress_bar=False)
         self.progress_indicator.set_status("Ready", 0)
@@ -281,7 +291,16 @@ class InstallMO2Screen(ScreenBackMixin, QWidget):
 
     def _on_show_details_toggled(self, checked):
         self.console.setVisible(checked)
-        self.resize_request.emit("expand" if checked else "collapse")
+        if checked:
+            self.console.setMinimumHeight(200)
+            self.console.setMaximumHeight(16777215)
+            self.console.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.resize_request.emit("expand")
+        else:
+            self.console.setMinimumHeight(0)
+            self.console.setMaximumHeight(0)
+            self.console.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            self.resize_request.emit("compact")
 
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -339,15 +358,75 @@ class InstallMO2Screen(ScreenBackMixin, QWidget):
         if confirm != QMessageBox.Yes:
             return
 
+        existing_appid = None
+        candidate_exe = install_dir / "ModOrganizer.exe"
+        prefix_service = AutomatedPrefixService()
+        conflict_result = prefix_service.handle_existing_shortcut_conflict(
+            shortcut_name,
+            str(candidate_exe),
+            str(install_dir),
+        )
+        if isinstance(conflict_result, list):
+            action, new_name = prompt_existing_setup_dialog(
+                self,
+                window_title="Existing Modlist Setup Detected",
+                heading="Use Existing Setup or Create a New Shortcut",
+                body=(
+                    "Jackify found an existing Steam shortcut for this Mod Organizer 2 setup.\n\n"
+                    "Choose 'Use Existing Setup' to reuse the current Steam shortcut, or enter a "
+                    "different name to create a separate shortcut."
+                ),
+                existing_name=conflict_result[0].get("name", shortcut_name),
+                requested_name=shortcut_name,
+                install_dir=str(install_dir),
+                field_label="New shortcut name",
+                reuse_label="Use Existing Setup",
+                new_label="Create New Shortcut",
+                cancel_label="Cancel",
+            )
+            if action == "reuse":
+                existing_appid = conflict_result[0].get("appid")
+                if not existing_appid:
+                    MessageService.warning(self, "Existing Setup Not Found", "Jackify could not determine the Steam AppID for the existing shortcut.")
+                    return
+                self.console.append(f"Reusing existing Steam shortcut '{shortcut_name}'.")
+            elif action == "new":
+                if not new_name:
+                    MessageService.warning(self, "Invalid Name", "Please enter a valid shortcut name.")
+                    return
+                if new_name == shortcut_name:
+                    MessageService.warning(self, "Same Name", "Please enter a different name to create a separate shortcut.")
+                    return
+                shortcut_name = new_name
+                self.shortcut_name_edit.setText(new_name)
+            else:
+                self.console.append("Shortcut creation cancelled by user")
+                return
+
         self.console.clear()
         self.file_progress_list.clear()
         self.file_progress_list.start_cpu_tracking()
 
+        from jackify.backend.handlers.logging_handler import LoggingHandler
+        log_handler = LoggingHandler()
+        log_handler.rotate_log_file_per_run(self.log_path, backup_count=5)
+
+        self._write_to_log_file("=" * 60)
+        self._write_to_log_file("MO2 Setup Started")
+        self._write_to_log_file(f"Install directory: {install_dir}")
+        self._write_to_log_file(f"Shortcut name: {shortcut_name}")
+        if existing_appid:
+            self._write_to_log_file(f"Existing AppID: {existing_appid}")
+        self._write_to_log_file("=" * 60)
+
         self.start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("Cancel Setup")
+        self.shortcut_name_edit.setEnabled(False)
+        self.install_dir_edit.setEnabled(False)
         self.progress_indicator.set_status("Starting...", 0)
 
-        self.worker = MO2SetupWorker(install_dir, shortcut_name)
+        self.worker = MO2SetupWorker(install_dir, shortcut_name, int(existing_appid) if existing_appid else None)
         self.worker.progress_update.connect(self._on_progress_update)
         self.worker.progress_update.connect(self._on_activity_progress)
         self.worker.log_output.connect(self._on_log_output)
@@ -356,13 +435,24 @@ class InstallMO2Screen(ScreenBackMixin, QWidget):
 
     def _on_progress_update(self, message: str):
         self.progress_indicator.set_status(message, 0)
+        if STEAM_RESTART_SENTINEL in message:
+            self._start_focus_reclaim_retries()
 
     def _on_log_output(self, message: str):
+        self._write_to_log_file(message)
         scrollbar = self.console.verticalScrollBar()
         was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 1
         self.console.append(message)
         if was_at_bottom and not self._user_manually_scrolled:
             scrollbar.setValue(scrollbar.maximum())
+
+    def _write_to_log_file(self, message: str):
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(self.log_path, 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception:
+            pass
 
     def _on_setup_complete(self, success: bool, app_id, error_msg: str):
         self.file_progress_list.stop_cpu_tracking()
@@ -384,6 +474,9 @@ class InstallMO2Screen(ScreenBackMixin, QWidget):
 
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("Cancel")
+        self.shortcut_name_edit.setEnabled(True)
+        self.install_dir_edit.setEnabled(True)
         if self.worker is not None:
             try:
                 self.worker.deleteLater()
@@ -429,22 +522,11 @@ class InstallMO2Screen(ScreenBackMixin, QWidget):
         self.file_progress_list.clear()
         self.console.clear()
         self.progress_indicator.set_status("Ready", 0)
-        if self.show_details_checkbox.isChecked():
-            self.show_details_checkbox.blockSignals(True)
-            self.show_details_checkbox.setChecked(False)
-            self.show_details_checkbox.blockSignals(False)
-        self.console.setVisible(False)
-        self.resize_request.emit("collapse")
+        self.force_collapsed_details_state()
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Keep MO2 screen consistent with other workflows: details collapsed by default.
-        if self.show_details_checkbox.isChecked():
-            self.show_details_checkbox.blockSignals(True)
-            self.show_details_checkbox.setChecked(False)
-            self.show_details_checkbox.blockSignals(False)
-        self.console.setVisible(False)
-        self.resize_request.emit("collapse")
+        self.force_collapsed_details_state()
         try:
             main_window = self.window()
             if main_window:

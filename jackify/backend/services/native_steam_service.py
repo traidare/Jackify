@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
 from ..handlers.vdf_handler import VDFHandler
+from jackify.shared.steam_utils import get_ordered_steam_roots, STEAM_PREFERENCE_AUTO
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,14 @@ class NativeSteamService:
     """
     
     def __init__(self):
-        self.steam_paths = [
-            Path.home() / ".steam" / "steam",
-            Path.home() / ".local" / "share" / "Steam",
-            Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam",
-            Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
-            Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / "home" / ".local" / "share" / "Steam"
-        ]
+        preference = STEAM_PREFERENCE_AUTO
+        try:
+            from jackify.backend.handlers.config_handler import ConfigHandler
+
+            preference = ConfigHandler().get("steam_install_preference", STEAM_PREFERENCE_AUTO)
+        except Exception:
+            pass
+        self.steam_paths = get_ordered_steam_roots(preference=preference)
         self.steam_path = None
         self.userdata_path = None
         self.user_id = None

@@ -269,10 +269,8 @@ exit"""
     def get_ttw_installer_path() -> Optional[Path]:
         """Get path to TTW_Linux_Installer if available"""
         try:
-            from jackify.shared.paths import get_jackify_data_dir
-            ttw_path = get_jackify_data_dir() / "TTW_Linux_Installer" / "ttw_linux_gui"
-            if ttw_path.exists():
-                return ttw_path
+            from .ttw_installer_service import get_ttw_installer_path
+            return get_ttw_installer_path()
         except Exception:
             pass
         return None
@@ -405,4 +403,3 @@ exit"""
             return prefix_dir
         else:
             return None
-

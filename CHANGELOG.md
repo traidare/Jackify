@@ -1,5 +1,56 @@
 # Jackify Changelog
 
+## v0.5.0 - Non-Premium Support, Modlist Update Handling and Overall Reliability Improvements
+**Release Date:** 13/03/26
+
+### New in v0.5.0
+- Full non-premium install support in both GUI and CLI. Feedback is welcome on this new feature, both positive and negative
+- New Jackify Download Manager for Non-Premium accounts, or files Jackify cannot auto-download.
+- Improved modlist update handling so existing installs are detected more reliably and Jackify can reuse the existing setup instead of creating duplicate Steam shortcuts.
+- Improved Viva New Vegas automation across GUI and CLI paths.
+- Improved Wabbajack and Mod Organizer 2 standalone installation workflows.
+- Better guidance when Skyrim AE/CC content is missing.
+- Further improvements on user-facing logging and error handling
+
+### Manual Download Improvements
+- Handles manual downloads more smoothly from start to finish:
+  - opens required links for you in your system Browser
+  - watches your download folder
+  - verifies files and moves them to the correct location automatically,continues with the rest of the modlist install when ready
+- Better controls in both GUI and CLI:
+  - pause/resume download flows, or defer individual archives (useful if one is temporarily unavailable)
+  - retry deferred items
+  - reopen file links
+  - change concurrent browser tab count
+  - change watch folder
+- Deferred items (e.g temporarily unavailable) are retried correctly on later retry/recheck passes.
+
+### Update and Install Reliability
+- Worked to improve feature parity between the GUI and CLI frontends, tidying up a few edge cases where CLI behavior did not yet match GUI workflows closely enough.
+- Improved update messaging (clearer wording on success/failure).
+- Better cancellation handling so stopping a workflow is less likely to leave background processes running.
+- Better focus recovery after Steam restart in key workflows.
+- Better handling when both Flatpak and native Steam are installed: Jackify now prefers the Steam install that actually contains your installed games, with safe fallback rules if both look valid.
+- Install Proton selection now self-heals on startup if the configured Proton was removed, automatically falling back to the best available installed Proton.
+- For `/var/home`-based installs (for example Bazzite layouts), ModOrganizer.ini path basis is now aligned so executable/working/game paths resolve correctly.
+
+### Nexus Authentication
+- OAuth protocol handler desktop file is now updated if the registered AppImage path no longer matches the current location, preventing silent callback failures after the AppImage is moved or renamed.
+- OAuth waiting dialog now includes a "Paste callback URL" button for manual fallback if the browser does not dispatch the jackify:// callback automatically.
+
+### Logging and Error Quality
+- Better targeted guidance when required prerequisites or content are missing.
+- Improved logging around updater source selection (Nexus/GitHub fallback behavior).
+- Better error context while keeping sensitive tokens/keys redacted.
+- Install failure fallback now surfaces recent actionable engine output (and resource-limit warnings) instead of only a generic exit-code message.
+
+### Updated jackify-engine to 0.5.0:
+- Improved non-premium/manual-download support through a structured manual-download protocol that lets Jackify pause, guide the user, recheck files, and continue installation cleanly once required archives are present.
+- Better pre-flight validation before large downloads begin, including earlier checks for game availability, disk space, and filesystem path-length limits.
+- More accurate structured error handling for installation failures, with better classification of storage, permission, network, authentication, and validation issues.
+
+---
+
 ## v0.4.0 - Error Handling Rewrite
 **Release Date:** 2026-02-25
 

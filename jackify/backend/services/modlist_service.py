@@ -334,9 +334,9 @@ class ModlistService(ModlistServiceInstallationMixin):
                 
                 if completion_callback:
                     if success:
-                        debug_callback("Configuration completed successfully, calling completion callback")
+                        debug_callback("Core configuration complete, calling completion callback")
                         # Pass ENB detection status through callback
-                        completion_callback(True, "Configuration completed successfully!", context.name, enb_detected)
+                        completion_callback(True, "Core configuration complete", context.name, enb_detected)
                     else:
                         debug_callback("Configuration failed, calling completion callback with failure")
                         completion_callback(False, "Configuration failed", context.name, False)
@@ -439,7 +439,7 @@ class ModlistService(ModlistServiceInstallationMixin):
             if success:
                 logger.info("Modlist configuration completed successfully")
                 if completion_callback:
-                    completion_callback(True, "Configuration completed successfully", context.name, False)
+                    completion_callback(True, "Core configuration complete", context.name, False)
             else:
                 logger.warning("Modlist configuration had issues")
                 if completion_callback:

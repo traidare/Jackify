@@ -155,49 +155,6 @@ class ConsoleOutputMixin:
             self._write_to_log_file(message)
             return
         
-        # CRITICAL: Detect token/auth errors and ALWAYS show them (even when not in debug mode)
-        token_error_keywords = [
-            'token has expired',
-            'token expired',
-            'oauth token',
-            'authentication failed',
-            'unauthorized',
-            '401',
-            '403',
-            'refresh token',
-            'authorization failed',
-            'nexus.*premium.*required',
-            'premium.*required',
-        ]
-        
-        is_token_error = any(keyword in msg_lower for keyword in token_error_keywords)
-        if is_token_error:
-            if not self._token_error_notified:
-                self._token_error_notified = True
-                MessageService.critical(
-                    self,
-                    "Authentication Error",
-                    (
-                        "Nexus Mods authentication has failed. This may be due to:\n\n"
-                        "• OAuth token expired and refresh failed\n"
-                        "• Nexus Premium required for this modlist\n"
-                        "• Network connectivity issues\n\n"
-                        "Please check the console output (Show Details) for more information.\n"
-                        "You may need to re-authorize in Settings."
-                    ),
-                    safety_level="high"
-                )
-                # Also show in console
-                guidance = (
-                    "\n[Jackify] CRITICAL: Authentication/Token Error Detected!\n"
-                    "[Jackify] This may cause downloads to stop. Check the error message above.\n"
-                    "[Jackify] If OAuth token expired, go to Settings and re-authorize.\n"
-                )
-                self._safe_append_text(guidance)
-                # Force console to be visible so user can see the error
-                if not self.show_details_checkbox.isChecked():
-                    self.show_details_checkbox.setChecked(True)
-        
         # Detect known engine bugs and provide helpful guidance
         if 'destination array was not long enough' in msg_lower or \
            ('argumentexception' in msg_lower and 'downloadmachineurl' in msg_lower):

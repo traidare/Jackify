@@ -32,6 +32,7 @@ from .configure_existing_modlist_shortcuts import ConfigureExistingModlistShortc
 from .configure_existing_modlist_console import ConfigureExistingModlistConsoleMixin
 from .screen_back_mixin import ScreenBackMixin
 from .install_modlist_ttw import TTWIntegrationMixin
+from .install_modlist_postinstall import PostInstallFeedbackMixin
 
 class ConfigureExistingModlistScreen(
     ScreenBackMixin,
@@ -40,23 +41,35 @@ class ConfigureExistingModlistScreen(
     ConfigureExistingModlistWorkflowMixin,
     ConfigureExistingModlistShortcutsMixin,
     ConfigureExistingModlistConsoleMixin,
+    PostInstallFeedbackMixin,
     QWidget,
 ):
     resize_request = Signal(str)
 
     def cleanup_processes(self):
         """Clean up any running processes when the window closes or is cancelled"""
-        # Stop CPU tracking if active
         if hasattr(self, 'file_progress_list'):
             self.file_progress_list.stop_cpu_tracking()
 
-        # Clean up configuration thread if running
-        if hasattr(self, 'config_thread') and self.config_thread.isRunning():
-            self.config_thread.terminate()
-            self.config_thread.wait(1000)
+        from PySide6.QtCore import QThread
+        for attr_name, value in list(vars(self).items()):
+            try:
+                if isinstance(value, QThread) and value.isRunning():
+                    try:
+                        value.finished_signal.disconnect()
+                    except Exception:
+                        pass
+                    value.terminate()
+                    value.wait(2000)
+                    setattr(self, attr_name, None)
+            except Exception:
+                pass
 
     def cancel_and_cleanup(self):
         """Handle Cancel button - clean up processes and go back"""
+        if getattr(self, '_vnv_controller', None) is not None:
+            self._vnv_controller.cleanup()
+            self._vnv_controller = None
         self.cleanup_processes()
         self.collapse_show_details_before_leave()
         self.go_back()
@@ -65,16 +78,8 @@ class ConfigureExistingModlistScreen(
         """Called when the widget becomes visible - ensure collapsed state"""
         super().showEvent(event)
 
-        # Ensure initial collapsed layout first so UI is stable before async load
         try:
-            from PySide6.QtCore import Qt as _Qt
-            if self.show_details_checkbox.isChecked():
-                self.show_details_checkbox.blockSignals(True)
-                self.show_details_checkbox.setChecked(False)
-                self.show_details_checkbox.blockSignals(False)
-            self._toggle_console_visibility(False)
-            
-            # Only set minimum size - DO NOT RESIZE
+            self.force_collapsed_details_state()
             main_window = self.window()
             if main_window:
                 from PySide6.QtCore import QSize
@@ -118,8 +123,15 @@ class ConfigureExistingModlistScreen(
                         return
 
             # Check for VNV post-install automation after configuration
-            if install_dir:
-                self._check_and_run_vnv_automation(modlist_name, install_dir)
+            if install_dir and self._check_and_run_vnv_automation(modlist_name, install_dir):
+                self._pending_success_dialog_params = {
+                    'modlist_name': modlist_name,
+                    'workflow_type': 'configure_existing',
+                    'time_taken': self._calculate_time_taken(),
+                    'game_name': getattr(self, '_current_game_name', None),
+                    'enb_detected': enb_detected,
+                }
+                return
 
             # Calculate time taken
             time_taken = self._calculate_time_taken()
@@ -202,10 +214,15 @@ class ConfigureExistingModlistScreen(
 
         # Re-enable controls (in case they were disabled from previous errors)
         self._enable_controls_after_operation()
+        self.force_collapsed_details_state()
 
     def cleanup(self):
         """Clean up any running threads when the screen is closed"""
         logger.debug("DEBUG: cleanup called - cleaning up ConfigurationThread")
+
+        if getattr(self, '_vnv_controller', None) is not None:
+            self._vnv_controller.cleanup()
+            self._vnv_controller = None
         
         # Clean up config thread if running
         if hasattr(self, 'config_thread') and self.config_thread and self.config_thread.isRunning():

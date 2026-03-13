@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from .ui_colors import COLOR_PROMPT, COLOR_INFO, COLOR_ERROR, COLOR_RESET, COLOR_WARNING
+from jackify.shared.paths import get_jackify_logs_dir
 
 logger = logging.getLogger(__name__)
 
@@ -352,10 +353,16 @@ class ModlistInstallCLITTWMixin:
                 print(f"\nTTW has been installed to: {ttw_output_path}")
                 print(f"TTW has been integrated into '{modlist_name}' (modlist.txt + plugins.txt updated).")
                 print(f"The modlist '{modlist_name}' is now ready to use with TTW.")
+                print(f"Detailed log available at: {get_jackify_logs_dir() / 'TTW_Install_workflow.log'}")
+                input(f"\n{COLOR_PROMPT}Press Enter to continue...{COLOR_RESET}")
             else:
                 print(f"\n{COLOR_ERROR}TTW installation failed. Check the logs for details.{COLOR_RESET}")
                 print(f"{COLOR_ERROR}Error: {message}{COLOR_RESET}")
+                print(f"{COLOR_INFO}Detailed log available at: {get_jackify_logs_dir() / 'TTW_Install_workflow.log'}{COLOR_RESET}")
+                input(f"\n{COLOR_PROMPT}Press Enter to continue...{COLOR_RESET}")
 
         except Exception as e:
             self.logger.error(f"Error during TTW installation: {e}", exc_info=True)
             print(f"{COLOR_ERROR}Error during TTW installation: {e}{COLOR_RESET}")
+            print(f"{COLOR_INFO}Detailed log available at: {get_jackify_logs_dir() / 'TTW_Install_workflow.log'}{COLOR_RESET}")
+            input(f"\n{COLOR_PROMPT}Press Enter to continue...{COLOR_RESET}")

@@ -44,6 +44,12 @@ class MainWindowGeometryMixin:
 
     def _is_compact_mode(self) -> bool:
         try:
+            if hasattr(self, 'wabbajack_installer_screen') and hasattr(self.wabbajack_installer_screen, 'show_details_checkbox'):
+                if self.wabbajack_installer_screen.show_details_checkbox.isChecked():
+                    return False
+            if hasattr(self, 'install_mo2_screen') and hasattr(self.install_mo2_screen, 'show_details_checkbox'):
+                if self.install_mo2_screen.show_details_checkbox.isChecked():
+                    return False
             if hasattr(self, 'install_modlist_screen') and hasattr(self.install_modlist_screen, 'show_details_checkbox'):
                 if self.install_modlist_screen.show_details_checkbox.isChecked():
                     return False

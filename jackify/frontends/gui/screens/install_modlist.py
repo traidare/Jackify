@@ -415,6 +415,10 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
         """Clean up any running processes when the window closes or is cancelled"""
         logger.debug("DEBUG: cleanup_processes called - cleaning up InstallationThread and other processes")
 
+        if getattr(self, '_vnv_controller', None) is not None:
+            self._vnv_controller.cleanup()
+            self._vnv_controller = None
+
         def _stop_thread(attr_name: str, cancel_method: Optional[str] = None, cooperative_ms: int = 5000, force_ms: int = 10000):
             thread = getattr(self, attr_name, None)
             if thread is None:
@@ -470,12 +474,19 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
                 pass
             setattr(self, attr_name, None)
 
-        # Always stop installer thread first; this is the most likely source of QThread teardown aborts.
+        # Always stop installer thread first; it needs cancel() not terminate().
         _stop_thread('install_thread', cancel_method='cancel', cooperative_ms=15000, force_ms=10000)
 
-        # Stop remaining worker threads.
-        for thread_name in ('prefix_thread', 'config_thread', 'fetch_thread', '_gallery_cache_preload_thread'):
-            _stop_thread(thread_name)
+        # Stop any remaining QThread instances on this object, regardless of attribute name.
+        from PySide6.QtCore import QThread
+        for attr_name, value in list(vars(self).items()):
+            if attr_name == 'install_thread':
+                continue
+            try:
+                if isinstance(value, QThread):
+                    _stop_thread(attr_name)
+            except Exception:
+                pass
     
     def cancel_installation(self):
         """Cancel the currently running installation"""
@@ -498,6 +509,29 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
                     self.file_progress_list.clear()
                 if hasattr(self, 'progress_indicator'):
                     self.progress_indicator.set_status("Cancelled", None)
+
+                # Stop manual download manager and close dialog if active
+                if getattr(self, '_manual_dl_manager', None) is not None:
+                    try:
+                        self._manual_dl_manager.stop()
+                    except Exception:
+                        pass
+                    self._manual_dl_manager = None
+                if getattr(self, '_manual_dl_dialog', None) is not None:
+                    try:
+                        self._manual_dl_dialog.close()
+                    except Exception:
+                        pass
+                    self._manual_dl_dialog = None
+                if getattr(self, '_non_premium_info_dlg', None) is not None:
+                    try:
+                        self._non_premium_info_dlg.close()
+                    except Exception:
+                        pass
+                    self._non_premium_info_dlg = None
+                self._non_premium_gate_enabled = False
+                self._non_premium_info_acknowledged = False
+                self._pending_manual_download_events = None
 
                 # Cancel the installation thread if it exists
                 if hasattr(self, 'install_thread') and self.install_thread and self.install_thread.isRunning():

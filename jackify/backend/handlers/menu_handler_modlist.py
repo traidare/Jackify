@@ -279,46 +279,56 @@ class ModlistMenuHandler:
                     timestamp = f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
                     print(f"{COLOR_INFO}{timestamp} {message}{COLOR_RESET}")
                 
-                # Run the automated workflow
-                result = prefix_service.run_working_workflow(
-                    modlist_name, install_dir, mo2_path, progress_callback, steamdeck=self.steamdeck
-                )
-                
-                # Handle the result
-                if isinstance(result, tuple) and len(result) == 4:
-                    if result[0] == "CONFLICT":
-                        # Handle conflict - ask user what to do
-                        conflicts = result[1]
-                        print(f"\n{COLOR_WARNING}Found existing Steam shortcut(s) with the same name and path:{COLOR_RESET}")
-                        for i, conflict in enumerate(conflicts, 1):
-                            print(f"  {i}. Name: {conflict['name']}")
-                            print(f"     Executable: {conflict['exe']}")
-                            print(f"     Start Directory: {conflict['startdir']}")
-                        print(f"\n{COLOR_PROMPT}Options:{COLOR_RESET}")
-                        print("  1. Use existing shortcut (recommended)")
-                        print("  2. Create new shortcut anyway")
-                        choice = input(f"{COLOR_PROMPT}Enter choice (1-2): {COLOR_RESET}").strip()
-                        if choice == "1":
-                            # Use existing shortcut
-                            existing_appid = conflicts[0].get('appid')
-                            if existing_appid:
-                                context = {
-                                    "name": modlist_name,
-                                    "appid": str(existing_appid),
-                                    "path": mo2_dir,
-                                    "manual_steps_completed": True,
-                                    "resolution": None
-                                }
-                                return self.run_modlist_configuration_phase(context)
-                        elif choice == "2":
-                            # Create new shortcut - would need to handle this, but for now just fail
-                            print(f"{COLOR_ERROR}Creating new shortcut with same name not supported in this flow.{COLOR_RESET}")
-                            return True
-                        else:
+                while True:
+                    result = prefix_service.run_working_workflow(
+                        modlist_name, install_dir, mo2_path, progress_callback, steamdeck=self.steamdeck
+                    )
+
+                    if isinstance(result, tuple) and len(result) == 4:
+                        if result[0] == "CONFLICT":
+                            conflicts = result[1]
+                            print(f"\n{COLOR_WARNING}Found existing Steam shortcut(s) with the same name and path:{COLOR_RESET}")
+                            for i, conflict in enumerate(conflicts, 1):
+                                print(f"  {i}. Name: {conflict['name']}")
+                                print(f"     Executable: {conflict['exe']}")
+                                print(f"     Start Directory: {conflict['startdir']}")
+                            print(f"\n{COLOR_PROMPT}Options:{COLOR_RESET}")
+                            print("  1. Use existing shortcut (recommended)")
+                            print("  2. Choose a different shortcut name")
+                            choice = input(f"{COLOR_PROMPT}Enter choice (1-2): {COLOR_RESET}").strip()
+                            if choice == "1":
+                                existing_appid = conflicts[0].get('appid')
+                                if existing_appid:
+                                    context = {
+                                        "name": modlist_name,
+                                        "appid": str(existing_appid),
+                                        "path": mo2_dir,
+                                        "manual_steps_completed": True,
+                                        "resolution": None
+                                    }
+                                    return self.run_modlist_configuration_phase(context)
+                                print(f"{COLOR_ERROR}Could not determine existing shortcut AppID.{COLOR_RESET}")
+                                return True
+                            if choice == "2":
+                                print("")
+                                print(f"{COLOR_PROMPT}Enter a different shortcut name for this modlist.{COLOR_RESET}")
+                                print(f"{COLOR_INFO}(Current conflicting name: {modlist_name}){COLOR_RESET}")
+                                new_name = input(f"{COLOR_PROMPT}New shortcut name (or 'q' to cancel): {COLOR_RESET}").strip()
+                                if new_name.lower() == 'q':
+                                    print(f"{COLOR_INFO}Configuration cancelled by user.{COLOR_RESET}")
+                                    return True
+                                if not new_name:
+                                    print(f"{COLOR_ERROR}Name cannot be empty.{COLOR_RESET}")
+                                    continue
+                                if new_name == modlist_name:
+                                    print(f"{COLOR_ERROR}Please enter a different name to resolve the conflict.{COLOR_RESET}")
+                                    continue
+                                modlist_name = new_name
+                                print(f"{COLOR_INFO}Retrying Steam setup with shortcut name: {modlist_name}{COLOR_RESET}")
+                                continue
                             print(f"{COLOR_ERROR}Invalid choice.{COLOR_RESET}")
                             return True
-                    else:
-                        # Success - get the results
+
                         success, prefix_path, appid_int, last_timestamp = result
                         if success and appid_int:
                             context = {
@@ -330,10 +340,9 @@ class ModlistMenuHandler:
                             }
                             self.logger.debug(f"[DEBUG] New Modlist Context (automated workflow): {context}")
                             return self.run_modlist_configuration_phase(context)
-                        else:
-                            print(f"{COLOR_ERROR}Automated workflow completed but no AppID was returned.{COLOR_RESET}")
-                            return True
-                else:
+                        print(f"{COLOR_ERROR}Automated workflow completed but no AppID was returned.{COLOR_RESET}")
+                        return True
+
                     # Unexpected result format
                     print(f"{COLOR_ERROR}Automated workflow returned unexpected format.{COLOR_RESET}")
                     self.logger.error(f"Unexpected result format from automated workflow: {result}")
@@ -566,8 +575,18 @@ class ModlistMenuHandler:
         # Run modlist-specific post-install automation (e.g., VNV) before showing completion
         # Only in CLI mode - GUI handles this in install_modlist.py
         if not gui_mode:
-            from jackify.backend.services.vnv_integration_helper import run_vnv_automation_if_applicable
+            from jackify.backend.services.vnv_integration_helper import (
+                run_vnv_automation_if_applicable,
+                should_offer_vnv_automation,
+            )
             from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
+            from jackify.backend.services.vnv_post_install_service import VNVPostInstallService
+            from jackify.backend.handlers.path_handler import PathHandler
+            from jackify.frontends.cli.commands.vnv_manual_downloads import (
+                build_vnv_cli_manual_file_callback,
+                create_vnv_cli_progress_callback,
+                ensure_vnv_cli_manual_downloads,
+            )
             from pathlib import Path
 
             modlist_name = context.get('name', '')
@@ -581,33 +600,46 @@ class ModlistMenuHandler:
                     except (EOFError, KeyboardInterrupt):
                         return False
                     return user_input in ("", "y", "yes")
-
-                def _manual_vnv_file(title: str, instructions: str):
-                    print(f"\n{COLOR_WARNING}{title}{COLOR_RESET}")
-                    print(instructions)
-                    try:
-                        file_input = input(f"{COLOR_PROMPT}Path to downloaded file: {COLOR_RESET}").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        return None
-                    if not file_input:
-                        return None
-                    selected = Path(file_input).expanduser().resolve()
-                    return selected if selected.exists() else None
-
-                automation_ran, error = run_vnv_automation_if_applicable(
-                    modlist_name=modlist_name,
-                    modlist_install_location=modlist_path,
-                    game_root=None,  # Will be auto-detected
-                    ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
-                    progress_callback=lambda msg: print(msg),
-                    manual_file_callback=_manual_vnv_file,
-                    confirmation_callback=_confirm_vnv
-                )
-                if automation_ran and not error:
-                    print(f"{COLOR_INFO}VNV post-install automation completed.{COLOR_RESET}")
-                if error:
-                    print(f"{COLOR_WARNING}VNV automation encountered an error: {error}{COLOR_RESET}")
-                    print(f"{COLOR_INFO}You can complete these steps manually by following: https://vivanewvegas.moddinglinked.com/wabbajack.html{COLOR_RESET}")
+                if should_offer_vnv_automation(modlist_name, modlist_path):
+                    game_paths = PathHandler().find_vanilla_game_paths()
+                    resolved_game_root = game_paths.get('Fallout New Vegas')
+                    vnv_service = VNVPostInstallService(
+                        modlist_install_location=modlist_path,
+                        game_root=resolved_game_root or modlist_path,
+                        ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
+                    )
+                    completed = vnv_service.check_already_completed()
+                    all_vnv_steps_done = (
+                        completed['root_mods']
+                        and completed['4gb_patch']
+                        and completed['bsa_decompressed']
+                    )
+                    if all_vnv_steps_done:
+                        print(f"{COLOR_INFO}VNV post-install steps are already complete.{COLOR_RESET}")
+                    elif _confirm_vnv(vnv_service.get_automation_description()):
+                        if not ensure_vnv_cli_manual_downloads(vnv_service, output_callback=print):
+                            print(f"{COLOR_WARNING}VNV manual downloads were not completed. Skipping VNV automation.{COLOR_RESET}")
+                        else:
+                            progress_callback, close_progress = create_vnv_cli_progress_callback(print)
+                            try:
+                                automation_ran, error = run_vnv_automation_if_applicable(
+                                    modlist_name=modlist_name,
+                                    modlist_install_location=modlist_path,
+                                    game_root=None,  # Will be auto-detected
+                                    ttw_installer_path=AutomatedPrefixService.get_ttw_installer_path(),
+                                    progress_callback=progress_callback,
+                                    manual_file_callback=build_vnv_cli_manual_file_callback(vnv_service, output_callback=print),
+                                    confirmation_callback=lambda _description: True,
+                                )
+                            finally:
+                                close_progress()
+                            if automation_ran and not error:
+                                print(f"{COLOR_INFO}VNV post-install automation completed.{COLOR_RESET}")
+                            if error:
+                                print(f"{COLOR_WARNING}VNV automation encountered an error: {error}{COLOR_RESET}")
+                                print(f"{COLOR_INFO}You can complete these steps manually by following: https://vivanewvegas.moddinglinked.com/wabbajack.html{COLOR_RESET}")
+                    else:
+                        print(f"{COLOR_INFO}VNV automation skipped by user.{COLOR_RESET}")
             except Exception as e:
                 self.logger.debug(f"VNV automation check skipped: {e}")
                 # Not an error - just means VNV automation wasn't applicable
