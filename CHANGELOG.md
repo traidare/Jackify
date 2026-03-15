@@ -1,5 +1,12 @@
 # Jackify Changelog
 
+## v0.5.0.2 - Hotfix
+**Release Date:** 15/03/26
+
+- Disk space warning at install start is no longer a hard block. If the pre-flight check fires before any download or install progress has started, Jackify now shows a warning dialog with the required and available space, a note that modlist updates typically need far less space than a fresh install, and a "Continue Anyway" option. Cancelling still aborts normally.
+- Engine: fixed a false-positive in the pre-flight filename length check that could incorrectly trigger on modlist paths using backslash separators.
+- Engine: temp folder cleanup at the end of install no longer crashes an otherwise successful installation if a BSA or temp directory is still locked.
+
 ## v0.5.0.1 - Hotfix
 **Release Date:** 13/03/26
 

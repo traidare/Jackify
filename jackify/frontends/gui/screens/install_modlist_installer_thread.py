@@ -34,7 +34,8 @@ class InstallerThread(QThread):
     non_premium_detected = Signal()
 
     def __init__(self, modlist, install_dir, downloads_dir, api_key, modlist_name,
-                 install_mode='online', progress_state_manager=None, auth_service=None, oauth_info=None):
+                 install_mode='online', progress_state_manager=None, auth_service=None,
+                 oauth_info=None, skip_disk_check=False):
         super().__init__()
         self.modlist = modlist
         self.install_dir = install_dir
@@ -47,6 +48,7 @@ class InstallerThread(QThread):
         self.progress_state_manager = progress_state_manager
         self.auth_service = auth_service
         self.oauth_info = oauth_info
+        self.skip_disk_check = skip_disk_check
         self._premium_signal_sent = False
         self._non_premium_info_sent = False
         self._engine_output_buffer = []
@@ -56,6 +58,8 @@ class InstallerThread(QThread):
         self._raw_stdout_lines: list = []  # bounded ring buffer for non-JSON stdout
         self._pending_manual_downloads: list = []  # accumulates items until list_complete
         self._resource_limit_hint: Optional[str] = None
+        self._install_progress_started = False  # True once any [FILE_PROGRESS] output seen
+        self._last_error_raw_context: dict = {}  # raw context dict from structured engine errors
 
     @staticmethod
     def _is_generic_failure_text(message: Optional[str]) -> bool:
@@ -136,6 +140,12 @@ class InstallerThread(QThread):
                 error = parse_engine_error_line(line)
                 if error and self.last_error is None:
                     self.last_error = error
+                    try:
+                        obj = json.loads(line)
+                        if obj.get("type") == "disk_full":
+                            self._last_error_raw_context = obj.get("context") or {}
+                    except (json.JSONDecodeError, ValueError):
+                        pass
                 else:
                     if self.last_error is None and is_cc_content_error(line):
                         self.last_error = cc_content_missing(extract_cc_filename(line) or "")
@@ -265,6 +275,9 @@ class InstallerThread(QThread):
             if debug_mode:
                 cmd.append('--debug')
                 logger.debug("DEBUG: Added --debug flag to jackify-engine command")
+            if self.skip_disk_check:
+                cmd.append('--skip-disk-check')
+                logger.debug("DEBUG: Added --skip-disk-check flag to jackify-engine command")
             logger.debug(f"DEBUG: FULL Engine command: {' '.join(cmd)}")
             logger.debug(f"DEBUG: modlist value being passed: '{self.modlist}'")
             from jackify.backend.handlers.subprocess_utils import get_clean_subprocess_env
@@ -361,6 +374,7 @@ class InstallerThread(QThread):
                                     logger.debug(f"DEBUG: Parser detected {len(progress_state.active_files)} active files from line: {decoded[:80]}")
                                 self.progress_updated.emit(progress_state)
                         if '[FILE_PROGRESS]' in decoded:
+                            self._install_progress_started = True
                             parts = decoded.split('[FILE_PROGRESS]', 1)
                             if parts[0].strip():
                                 self.progress_received.emit(parts[0].rstrip())
@@ -427,6 +441,7 @@ class InstallerThread(QThread):
                             continue
                         self._remember_stdout_line(decoded)
                         if '[FILE_PROGRESS]' in decoded:
+                            self._install_progress_started = True
                             parts = decoded.split('[FILE_PROGRESS]', 1)
                             if parts[0].strip():
                                 self.output_received.emit(parts[0].rstrip())

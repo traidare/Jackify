@@ -384,7 +384,7 @@ class InstallWorkflowExecutionMixin:
             self.cancel_install_btn.setVisible(False)
             logger.debug(f"DEBUG: Controls re-enabled in exception handler")
 
-    def run_modlist_installer(self, modlist, install_dir, downloads_dir, api_key, install_mode='online', oauth_info=None):
+    def run_modlist_installer(self, modlist, install_dir, downloads_dir, api_key, install_mode='online', oauth_info=None, skip_disk_check=False):
         logger.debug('DEBUG: run_modlist_installer called - USING THREADED BACKEND WRAPPER')
         
         # Rotate log file at start of each workflow run (keep 5 backups)
@@ -408,7 +408,8 @@ class InstallWorkflowExecutionMixin:
             modlist, install_dir, downloads_dir, api_key, self.modlist_name_edit.text().strip(), install_mode,
             progress_state_manager=self.progress_state_manager,  # R&D: Pass progress state manager
             auth_service=self.auth_service,  # Fix Issue #127: Pass auth_service for Premium detection diagnostics
-            oauth_info=oauth_info  # Pass OAuth state for auto-refresh
+            oauth_info=oauth_info,  # Pass OAuth state for auto-refresh
+            skip_disk_check=skip_disk_check,
         )
         self.install_thread.output_received.connect(self.on_installation_output)
         self.install_thread.progress_received.connect(self.on_installation_progress)

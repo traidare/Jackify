@@ -406,6 +406,18 @@ class ProgressHandlersMixin:
             if self._premium_failure_active:
                 message = "Installation stopped because Nexus Premium is required for automated downloads."
 
+            if not self._premium_failure_active and not cancellation_detected:
+                thread = getattr(self, 'install_thread', None)
+                if (thread
+                        and not getattr(thread, '_install_progress_started', False)
+                        and getattr(getattr(thread, 'last_error', None), 'title', '') == "Disk Full"):
+                    ctx = getattr(thread, '_last_error_raw_context', {})
+                    if self._handle_preflight_disk_space(ctx):
+                        return
+                    self._installation_cancelled = True
+                    self.process_finished(130, QProcess.NormalExit)
+                    return
+
             if not self._premium_failure_active:
                 engine_error = getattr(self.install_thread, 'last_error', None)
                 if engine_error:
@@ -416,6 +428,68 @@ class ProgressHandlersMixin:
             if self.show_details_checkbox.isChecked():
                 self._safe_append_text(f"\nError: {message}")
             self.process_finished(1, QProcess.CrashExit)  # Simulate error
+
+    def _handle_preflight_disk_space(self, ctx: dict) -> bool:
+        """Show pre-flight disk space warning dialog. Returns True if user chose Continue Anyway."""
+        required_bytes = ctx.get('required_bytes', 0)
+        available_bytes = ctx.get('available_bytes', 0)
+
+        def _fmt(b):
+            if b >= 1024 ** 3:
+                return f"{b / 1024 ** 3:.1f} GB"
+            if b >= 1024 ** 2:
+                return f"{b / 1024 ** 2:.1f} MB"
+            return f"{b} bytes" if b else "unknown"
+
+        required_str = _fmt(required_bytes)
+        available_str = _fmt(available_bytes)
+
+        body = (
+            f"The disk space check reports that there may not be enough free space to complete "
+            f"this installation.\n\n"
+            f"Required:  {required_str}\n"
+            f"Available: {available_str}\n\n"
+            f"If this is a modlist update, the actual space needed is likely far less — most files "
+            f"are already present and will be reused rather than re-downloaded.\n\n"
+            f"You can continue and free up space while downloads are running, "
+            f"or cancel to resolve the space issue first."
+        )
+
+        from PySide6.QtWidgets import QMessageBox
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Disk Space Warning")
+        dlg.setText("Not enough free disk space detected.")
+        dlg.setInformativeText(body)
+        dlg.setIcon(QMessageBox.Warning)
+        continue_btn = dlg.addButton("Continue Anyway", QMessageBox.AcceptRole)
+        dlg.addButton("Cancel", QMessageBox.RejectRole)
+        dlg.setDefaultButton(continue_btn)
+        dlg.exec()
+
+        if dlg.clickedButton() is not continue_btn:
+            return False
+
+        thread = getattr(self, 'install_thread', None)
+        if not thread:
+            return False
+
+        modlist = getattr(thread, 'modlist', None)
+        install_dir = getattr(thread, 'install_dir', None)
+        downloads_dir = getattr(thread, 'downloads_dir', None)
+        api_key = getattr(thread, 'api_key', None)
+        install_mode = getattr(thread, 'install_mode', 'online')
+        oauth_info = getattr(thread, 'oauth_info', None)
+
+        if not (modlist and install_dir and downloads_dir and api_key):
+            return False
+
+        logger.info("Pre-flight disk space check bypassed by user — restarting with --skip-disk-check")
+        self._safe_append_text("\n[WARN] Disk space check bypassed. Continuing installation...\n")
+        self.run_modlist_installer(
+            modlist, install_dir, downloads_dir, api_key,
+            install_mode, oauth_info, skip_disk_check=True,
+        )
+        return True
 
     def process_finished(self, exit_code, exit_status):
         logger.debug(f"DEBUG: process_finished called with exit_code={exit_code}, exit_status={exit_status}")
