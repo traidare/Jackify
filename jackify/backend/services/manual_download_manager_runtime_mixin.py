@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -380,6 +381,13 @@ class ManualDownloadManagerRuntimeMixin:
                 stripped = name.lower().lstrip('.')
                 if stripped != name.lower():
                     exact = exact_map.get(stripped)
+            if exact is None:
+                # Numeric prefix normalization: engine may store filenames with a
+                # leading numeric prefix (e.g. "1_filename.zip") absent from the
+                # browser-saved file.
+                stripped_num = re.sub(r'^\d+_', '', name.lower())
+                if stripped_num != name.lower():
+                    exact = exact_map.get(stripped_num)
             if exact is None or exact in used_paths:
                 continue
             used_paths.add(exact)

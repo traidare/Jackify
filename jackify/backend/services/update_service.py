@@ -369,14 +369,69 @@ class UpdateService:
                         if progress_callback:
                             progress_callback(downloaded_size, total_size)
             
+            # Nexus delivers a 7z archive — extract the AppImage before handing off
+            if self._is_7z_archive(temp_file):
+                logger.info("Downloaded file is a 7z archive, extracting AppImage")
+                extracted = self._extract_appimage_from_7z(temp_file, update_dir, update_info.version)
+                temp_file.unlink(missing_ok=True)
+                if not extracted:
+                    logger.error("Failed to extract AppImage from 7z archive")
+                    return None
+                temp_file = extracted
+
             # Make executable
             temp_file.chmod(0o755)
-            
+
             logger.info("Update downloaded successfully: %s from %s -> %s", update_info.version, update_info.source, temp_file)
             return temp_file
-            
+
         except Exception as e:
             logger.error(f"Failed to download update manually: {e}")
+            return None
+
+    def _is_7z_archive(self, path: Path) -> bool:
+        """Detect 7z archive by magic bytes (37 7A BC AF 27 1C)."""
+        try:
+            with open(path, 'rb') as f:
+                magic = f.read(6)
+            return magic == b'7z\xbc\xaf\x27\x1c'
+        except Exception:
+            return False
+
+    def _get_bundled_7z_path(self) -> Optional[Path]:
+        """Return path to bundled 7z binary (AppImage or dev)."""
+        import os
+        candidates = []
+        appdir = os.environ.get('APPDIR')
+        if appdir:
+            candidates.append(Path(appdir) / 'opt' / 'jackify' / 'tools' / '7z')
+        candidates.append(Path(__file__).parent.parent.parent / 'tools' / '7z')
+        for p in candidates:
+            if p.exists() and os.access(p, os.X_OK):
+                return p
+        return None
+
+    def _extract_appimage_from_7z(self, archive: Path, dest_dir: Path, version: str) -> Optional[Path]:
+        """Extract Jackify.AppImage from a 7z archive into dest_dir."""
+        seven_z = self._get_bundled_7z_path()
+        if not seven_z:
+            logger.error("Bundled 7z not found, cannot extract update archive")
+            return None
+        out_path = dest_dir / f"Jackify-{version}.AppImage"
+        try:
+            result = subprocess.run(
+                [str(seven_z), 'e', str(archive), 'Jackify.AppImage', f'-o{dest_dir}', '-y'],
+                capture_output=True, text=True, timeout=120
+            )
+            extracted = dest_dir / 'Jackify.AppImage'
+            if result.returncode != 0 or not extracted.exists():
+                logger.error("7z extraction failed (rc=%d): %s", result.returncode, result.stderr.strip())
+                return None
+            extracted.rename(out_path)
+            logger.info("Extracted AppImage from archive: %s", out_path)
+            return out_path
+        except Exception as e:
+            logger.error("Exception during 7z extraction: %s", e)
             return None
     
     def apply_update(self, new_appimage_path: Path) -> bool:

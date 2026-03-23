@@ -13,8 +13,8 @@ from PySide6.QtCore import QThread, Signal
 import logging
 
 from jackify.backend.utils.engine_error_parser import parse_engine_error_line, error_from_exit_code
-from jackify.backend.utils.cc_content_detector import is_cc_content_error, extract_cc_filename
-from jackify.shared.errors import JackifyError, cc_content_missing
+from jackify.backend.utils.cc_content_detector import is_cc_content_error, extract_cc_filename, is_creation_kit_missing_error
+from jackify.shared.errors import JackifyError, cc_content_missing, creation_kit_missing
 
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,8 @@ class InstallerThread(QThread):
                 else:
                     if self.last_error is None and is_cc_content_error(line):
                         self.last_error = cc_content_missing(extract_cc_filename(line) or "")
+                    if self.last_error is None and is_creation_kit_missing_error(line):
+                        self.last_error = creation_kit_missing()
         except Exception as e:
             logger.debug(f"Stderr reader error: {e}")
 
@@ -366,6 +368,8 @@ class InstallerThread(QThread):
                             self._engine_output_buffer.pop(0)
                         if self.last_error is None and is_cc_content_error(decoded):
                             self.last_error = cc_content_missing(extract_cc_filename(decoded) or "")
+                        if self.last_error is None and is_creation_kit_missing_error(decoded):
+                            self.last_error = creation_kit_missing()
                         if self.progress_state_manager:
                             updated = self.progress_state_manager.process_line(decoded)
                             if updated:
@@ -427,6 +431,8 @@ class InstallerThread(QThread):
                             self._engine_output_buffer.pop(0)
                         if self.last_error is None and is_cc_content_error(decoded):
                             self.last_error = cc_content_missing(extract_cc_filename(decoded) or "")
+                        if self.last_error is None and is_creation_kit_missing_error(decoded):
+                            self.last_error = creation_kit_missing()
                         config_handler = ConfigHandler()
                         debug_mode = config_handler.get('debug_mode', False)
                         if self.progress_state_manager:

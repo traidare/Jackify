@@ -50,10 +50,20 @@ class ModlistConfigurationMixin:
             return True
 
     def _execute_configuration_steps(self, status_callback=None, manual_steps_completed=False, skip_manual_for_existing=False):
-        """Run the configuration steps for the selected modlist."""
+        """
+        Runs the actual configuration steps for the selected modlist.
+        Args:
+            status_callback (callable, optional): A function to call with status updates during configuration.
+            manual_steps_completed (bool): If True, skip the manual steps prompt (used for new modlist flow).
+            skip_manual_for_existing (bool): If True, always skip manual steps (for existing modlists that are already configured).
+        """
         try:
+            # Store status_callback for Configuration Summary
             self._current_status_callback = status_callback
+            
             self.logger.info("Executing configuration steps...")
+            
+            # Ensure required context is set
             if not all([self.modlist_dir, self.appid, self.game_var, self.steamdeck is not None]):
                 self.logger.error("Cannot execute configuration steps: Missing required context (modlist_dir, appid, game_var, steamdeck status).")
                 self.logger.error("Missing required information to start configuration.")
@@ -79,10 +89,14 @@ class ModlistConfigurationMixin:
             return False # Abort on failure
         self.logger.info("Step 1: Setting Protontricks permissions... Done")
 
+        # Step 2: Prompt user for manual steps and wait for compatdata
         skip_manual_prompt = skip_manual_for_existing  # Existing modlists skip manual steps
         if not manual_steps_completed and not skip_manual_for_existing:
+            # Check if Proton Experimental is already set and compatdata exists
             proton_ok = False
             compatdata_ok = False
+            
+            # Check Proton version
             self.logger.debug(f"[MANUAL STEPS DEBUG] Checking Proton version for AppID {self.appid}")
             if self._detect_proton_version():
                 self.logger.debug(f"[MANUAL STEPS DEBUG] Detected Proton version: {self.proton_ver}")
@@ -92,6 +106,7 @@ class ModlistConfigurationMixin:
             else:
                 self.logger.debug("[MANUAL STEPS DEBUG] Could not detect Proton version")
                 
+            # Check compatdata/prefix
             prefix_path_str = self.path_handler.find_compat_data(str(self.appid))
             self.logger.debug(f"[MANUAL STEPS DEBUG] Compatdata path search result: {prefix_path_str}")
 
@@ -158,6 +173,9 @@ class ModlistConfigurationMixin:
             self.logger.error(f"Failed to download or apply curated user.reg.modlist or system.reg.modlist: {e}")
             self.logger.error(f"Failed to download or apply curated user.reg.modlist or system.reg.modlist. {e}")
             return False
+        self.logger.info("Step 3: Curated user.reg.modlist and system.reg.modlist applied successfully.")
+        # The curated registry files overwrite the entire Wine registry, so any
+        # game-specific entries injected earlier must be re-applied immediately after.
         special_game_type = self.detect_special_game_type(self.modlist_dir)
         if special_game_type in ["fnv", "fo3", "enderal"]:
             self.logger.info(
@@ -166,7 +184,6 @@ class ModlistConfigurationMixin:
             )
             try:
                 from jackify.backend.services.automated_prefix_service import AutomatedPrefixService
-
                 AutomatedPrefixService()._inject_game_registry_entries(prefix_path_str, special_game_type)
             except Exception as e:
                 self.logger.error(
@@ -176,7 +193,6 @@ class ModlistConfigurationMixin:
                 )
                 self.logger.error("Could not restore required game registry entries after applying curated registry files.")
                 return False
-        self.logger.info("Step 3: Curated user.reg.modlist and system.reg.modlist applied successfully.")
 
         # Step 4: Install Wine Components
         if status_callback:
@@ -546,7 +562,9 @@ class ModlistConfigurationMixin:
             status_callback("")  # Blank line after final Prefix Configuration step
         self.logger.info("Step 12: Checking for modlist-specific steps...")
 
-        # Step 13: Launch options for special games are now set during automated workflow
+        # Step 13: Launch options for special games are now set during automated prefix workflow (before Steam restart)
+        # Avoids a second Steam restart
+        special_game_type = self.detect_special_game_type(self.modlist_dir)
         if special_game_type:
             self.logger.info(f"Step 13: Launch options for {special_game_type.upper()} were set during automated workflow")
         else:
@@ -569,12 +587,18 @@ class ModlistConfigurationMixin:
         return True # Return True on success
 
     def run_modlist_configuration_phase(self, context: dict = None) -> bool:
-        """Run the full modlist configuration sequence."""
+        """
+        Main entry point to run the full modlist configuration sequence.
+        This orchestrates all the individual steps.
+        """
         self.logger.info(f"Starting configuration phase for modlist: {self.game_name}")
+        # Call the private method that contains the actual steps
+        # Pass along the status_callback if it was provided in the context
         status_callback = context.get('status_callback') if context else None
         return self._execute_configuration_steps(status_callback=status_callback)
 
     def _prompt_or_set_resolution(self):
+        # If on Steam Deck, set 1280x800 automatically
         if self._is_steam_deck():
             self.selected_resolution = "1280x800"
             self.logger.info("Steam Deck detected: setting resolution to 1280x800.")

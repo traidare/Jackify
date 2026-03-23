@@ -28,7 +28,7 @@ def main():
     # Set up signal handlers
     signal.signal(signal.SIGTERM, terminate_children)
     signal.signal(signal.SIGINT, terminate_children)
-    
+
     try:
         cli = JackifyCLI()
         exit_code = cli.run()

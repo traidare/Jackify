@@ -121,6 +121,9 @@ class ModlistOperationsConfigurationCLIMixin:
             if debug_mode:
                 cmd.append('--debug')
                 self.logger.info("Adding --debug flag to jackify-engine")
+            if self.context.get('skip_disk_check'):
+                cmd.append('--skip-disk-check')
+                self.logger.info("Adding --skip-disk-check flag to jackify-engine")
 
             original_env_values = {
                 'NEXUS_API_KEY': os.environ.get('NEXUS_API_KEY'),

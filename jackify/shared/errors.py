@@ -374,6 +374,25 @@ def cc_content_missing(filename: str = "") -> InstallError:
     )
 
 
+def creation_kit_missing() -> InstallError:
+    return InstallError(
+        title="Creation Kit Files Missing",
+        message=(
+            "This modlist requires the Skyrim Special Edition Creation Kit, "
+            "but its files were not found in your game installation."
+        ),
+        suggestion="Install the Creation Kit from Steam and open it once to register its files.",
+        solutions=[
+            "In Steam, search for 'Skyrim Special Edition: Creation Kit' and install it.",
+            "Right-click it in Steam > Properties > Compatibility and set a Proton version.",
+            "Click Play to launch the Creation Kit.",
+            "When asked whether to unzip Scripts.zip, select NO — unzipping will cause the CK to crash.",
+            "Once the Creation Kit opens successfully, close it.",
+            "Re-run the modlist install in Jackify — the required files will now be in place.",
+        ],
+    )
+
+
 def mo2_setup_failed(detail: str) -> InstallError:
     return InstallError(
         title="Mod Organizer 2 Setup Failed",

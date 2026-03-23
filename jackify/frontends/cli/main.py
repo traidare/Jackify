@@ -411,6 +411,7 @@ class JackifyCLI:
         parser.add_argument('--restart-steam', action='store_true', help='Restart Steam (native, for GUI integration)')
         parser.add_argument('--dev', action='store_true', help='Enable development features (show hidden menu items)')
         parser.add_argument('--update', action='store_true', help='Check for and install updates')
+        parser.add_argument('--skip-disk-check', action='store_true', help='Skip the pre-flight disk space check (use when retrying after a disk-full warning)')
         
         # Add command-specific arguments
         self.commands['install_modlist'].add_top_level_args(parser)

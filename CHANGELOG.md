@@ -1,5 +1,18 @@
 # Jackify Changelog
 
+## v0.5.0.3 - Hotfix
+**Release Date:** 23/03/26
+
+- Engine updated to 0.5.2.
+- Fixed manual downloads getting stuck on "Browser Opened" when the expected filename has a leading numeric prefix (e.g. `1_filename.zip`) that is absent from the browser-saved file. Both the live download watcher and the startup precheck scan now handle this correctly.
+- Fixed "Continue Anyway" on the disk space warning having no effect. The flag was missing from the CLI argument parser, and a separate engine-level registration bug caused it to be rejected regardless. Both are now resolved. The dialog also correctly displays separate download and install space requirements and notes when both paths share the same drive.
+- Fixed FNV, FO3, and Enderal modlists losing their game registry paths after configuration. The curated registry files applied during the configuration phase overwrite the Wine prefix registry entirely, wiping the game install paths injected earlier. Jackify now re-injects the correct paths immediately after the curated files are applied.
+- Improved detection and guidance for modlists that require the Skyrim Special Edition Creation Kit. If the engine reports missing Creation Kit files, Jackify now surfaces step-by-step instructions for installing and first-launching the Creation Kit via Steam so the required files are in place before retrying.
+- Filesystem filename length limit (NAME_MAX) no longer hard-blocks installation on standard filesystems. The check previously triggered incorrectly on ext4/btrfs/XFS. For users on encrypted home directories where the limit is genuinely reduced, Jackify now shows a warning dialog listing the affected files with a "Continue Anyway" option.
+- Archive index errors now produce an actionable failure message identifying the specific archive to delete and re-download, rather than a bare engine exception.
+- TTW installer temporary working files are now cleaned up after each TTW installation run. These files were previously never removed and could accumulate several GB per install attempt.
+- Each GitHub release now includes a `SHA256SUMS` file for verifying your download. See the README for instructions.
+
 ## v0.5.0.2 - Hotfix
 **Release Date:** 15/03/26
 

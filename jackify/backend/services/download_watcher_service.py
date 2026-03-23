@@ -4,6 +4,7 @@ list of pending manual download items by lax filename comparison.
 """
 
 import os
+import re
 import time
 import logging
 from dataclasses import dataclass, field
@@ -104,6 +105,14 @@ class DownloadWatcherService:
         for expected_name, item in self._pending_exact:
             if expected_name.lstrip('.') == candidate_name:
                 logger.debug(f"Candidate dot-normalized match: {path.name} -> {expected_name}")
+                self._debounce_and_emit(path, item)
+                return
+        # Some modlist metadata stores filenames with a leading numeric prefix
+        # (e.g. "1_filename.zip") that is absent from the browser-saved file.
+        for expected_name, item in self._pending_exact:
+            stripped = re.sub(r'^\d+_', '', expected_name)
+            if stripped != expected_name and stripped == candidate_name:
+                logger.debug(f"Candidate numeric-prefix match: {path.name} -> {expected_name}")
                 self._debounce_and_emit(path, item)
                 return
 

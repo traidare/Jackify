@@ -60,6 +60,14 @@ chmod +x Jackify.AppImage
 
 For CLI mode: `./Jackify.AppImage --cli`
 
+To verify your download, each release includes a `SHA256SUMS` file on the [GitHub releases page](https://github.com/Omni-guides/Jackify/releases/latest). Download it into the same folder as the AppImage, then run:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+You should see `Jackify.AppImage: OK`. If you see a failure, do not run the file.
+
 For a full step-by-step guide with screenshots, see the [User Guide](https://github.com/Omni-guides/Jackify/wiki/User-Guide).
 
 ## Supported Games

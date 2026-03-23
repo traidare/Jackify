@@ -209,6 +209,7 @@ class InstallModlistCommand:
             'modlist_value': getattr(args, 'modlist_value', None),
             'skip_confirmation': True,
             'resolution': getattr(args, 'resolution', None),
+            'skip_disk_check': getattr(args, 'skip_disk_check', False),
         }
     
     def _validate_install_context(self, context: dict) -> bool:

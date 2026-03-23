@@ -91,6 +91,9 @@ class TTWInstallerBackendMixin:
         except Exception as e:
             self.logger.error("Error executing TTW_Linux_Installer: %s", e, exc_info=True)
             return False, f"Error executing TTW_Linux_Installer: {e}"
+        finally:
+            from jackify.shared.paths import cleanup_stale_tmp
+            cleanup_stale_tmp()
 
     def start_ttw_installation(self, ttw_mpi_path: Path, ttw_output_path: Path, output_file: Path):
         """Start TTW installation process (non-blocking). Returns (process, error_message)."""
@@ -168,6 +171,8 @@ class TTWInstallerBackendMixin:
                         process.kill()
                     except Exception:
                         pass
+        from jackify.shared.paths import cleanup_stale_tmp
+        cleanup_stale_tmp()
 
     def install_ttw_backend_with_output_stream(self, ttw_mpi_path: Path, ttw_output_path: Path, output_callback=None):
         """Install TTW with streaming output (DEPRECATED - use start_ttw_installation instead)."""
@@ -251,6 +256,9 @@ class TTWInstallerBackendMixin:
         except Exception as e:
             self.logger.error("Error executing TTW_Linux_Installer: %s", e, exc_info=True)
             return False, f"Error executing TTW_Linux_Installer: {e}"
+        finally:
+            from jackify.shared.paths import cleanup_stale_tmp
+            cleanup_stale_tmp()
 
     @staticmethod
     def integrate_ttw_into_modlist(ttw_output_path: Path, modlist_install_dir: Path, ttw_version: str, skip_copy: bool = False) -> bool:

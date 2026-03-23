@@ -430,37 +430,67 @@ class ProgressHandlersMixin:
             self.process_finished(1, QProcess.CrashExit)  # Simulate error
 
     def _handle_preflight_disk_space(self, ctx: dict) -> bool:
-        """Show pre-flight disk space warning dialog. Returns True if user chose Continue Anyway."""
-        required_bytes = ctx.get('required_bytes', 0)
-        available_bytes = ctx.get('available_bytes', 0)
-
-        def _fmt(b):
-            if b >= 1024 ** 3:
-                return f"{b / 1024 ** 3:.1f} GB"
-            if b >= 1024 ** 2:
-                return f"{b / 1024 ** 2:.1f} MB"
-            return f"{b} bytes" if b else "unknown"
-
-        required_str = _fmt(required_bytes)
-        available_str = _fmt(available_bytes)
-
-        body = (
-            f"The disk space check reports that there may not be enough free space to complete "
-            f"this installation.\n\n"
-            f"Required:  {required_str}\n"
-            f"Available: {available_str}\n\n"
-            f"If this is a modlist update, the actual space needed is likely far less — most files "
-            f"are already present and will be reused rather than re-downloaded.\n\n"
-            f"You can continue and free up space while downloads are running, "
-            f"or cancel to resolve the space issue first."
-        )
-
+        """Show pre-flight filesystem warning dialog. Returns True if user chose Continue Anyway."""
         from PySide6.QtWidgets import QMessageBox
-        dlg = QMessageBox(self)
-        dlg.setWindowTitle("Disk Space Warning")
-        dlg.setText("Not enough free disk space detected.")
-        dlg.setInformativeText(body)
-        dlg.setIcon(QMessageBox.Warning)
+
+        if ctx.get('offending_names'):
+            name_max = ctx.get('name_max', 255)
+            offending_names = ctx.get('offending_names') or []
+            examples = "\n".join(f"  {n}" for n in offending_names[:3])
+            if len(offending_names) > 3:
+                examples += f"\n  ...and {len(offending_names) - 3} more"
+            body = (
+                f"Your filesystem limits filenames to {name_max} characters, but this modlist "
+                f"contains files with longer names.\n\n"
+                f"Affected files:\n{examples}\n\n"
+                f"Installation may fail for those files. Using ext4, btrfs, or XFS on a "
+                f"non-encrypted mount is recommended.\n\n"
+                f"You can attempt to continue — some files may not extract correctly."
+            )
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("Filename Length Warning")
+            dlg.setText("Filesystem filename length limit detected.")
+            dlg.setInformativeText(body)
+            dlg.setIcon(QMessageBox.Warning)
+        else:
+            archive_bytes = ctx.get('archive_bytes', 0)
+            install_bytes = ctx.get('install_bytes', 0)
+            same_drive = ctx.get('same_drive', False)
+
+            def _fmt(b):
+                if b >= 1024 ** 3:
+                    return f"{b / 1024 ** 3:.1f} GB"
+                if b >= 1024 ** 2:
+                    return f"{b / 1024 ** 2:.1f} MB"
+                return f"{b} bytes" if b else "unknown"
+
+            if same_drive:
+                space_lines = (
+                    f"Downloads and install are on the same drive.\n"
+                    f"Archives require: {_fmt(archive_bytes)}\n"
+                    f"Installed files require: {_fmt(install_bytes)}"
+                )
+            else:
+                space_lines = (
+                    f"Download space required: {_fmt(archive_bytes)}\n"
+                    f"Install space required: {_fmt(install_bytes)}"
+                )
+
+            body = (
+                f"The disk space check reports that there may not be enough free space to complete "
+                f"this installation.\n\n"
+                f"{space_lines}\n\n"
+                f"If this is a modlist update, the actual space needed is likely far less — most files "
+                f"are already present and will be reused rather than re-downloaded.\n\n"
+                f"You can continue and free up space while downloads are running, "
+                f"or cancel to resolve the space issue first."
+            )
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("Disk Space Warning")
+            dlg.setText("Not enough free disk space detected.")
+            dlg.setInformativeText(body)
+            dlg.setIcon(QMessageBox.Warning)
+
         continue_btn = dlg.addButton("Continue Anyway", QMessageBox.AcceptRole)
         dlg.addButton("Cancel", QMessageBox.RejectRole)
         dlg.setDefaultButton(continue_btn)
@@ -483,8 +513,8 @@ class ProgressHandlersMixin:
         if not (modlist and install_dir and downloads_dir and api_key):
             return False
 
-        logger.info("Pre-flight disk space check bypassed by user — restarting with --skip-disk-check")
-        self._safe_append_text("\n[WARN] Disk space check bypassed. Continuing installation...\n")
+        logger.info("Pre-flight filesystem check bypassed by user — restarting with --skip-disk-check")
+        self._safe_append_text("\n[WARN] Filesystem check bypassed. Continuing installation...\n")
         self.run_modlist_installer(
             modlist, install_dir, downloads_dir, api_key,
             install_mode, oauth_info, skip_disk_check=True,

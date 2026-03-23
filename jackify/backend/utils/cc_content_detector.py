@@ -32,3 +32,28 @@ def extract_cc_filename(line: str) -> Optional[str]:
     """Return the CC filename from a line, or None if not found."""
     m = _CC_FILE_RE.search(line)
     return m.group(0) if m else None
+
+
+# Files that only exist inside the Skyrim SE Creation Kit install.
+# Used to detect modlists that require the CK as a game file source.
+_CK_INDICATORS = (
+    'creationkit',
+    'papyrus compiler',
+    'scriptcompile',
+    'lipgen',
+    'assetwatcher',
+    'havokbehaviorpostprocess',
+    'skyrimreservedaddonindexes',
+    'p4com64',
+    'lex_ssce',
+)
+
+
+def is_creation_kit_missing_error(line: str) -> bool:
+    """Return True if line indicates a missing Creation Kit file (GameFileSource)."""
+    if not line:
+        return False
+    normalized = line.strip().lower()
+    if 'gamefilesource' not in normalized:
+        return False
+    return any(ind in normalized for ind in _CK_INDICATORS)

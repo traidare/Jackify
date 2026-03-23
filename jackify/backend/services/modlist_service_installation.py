@@ -145,6 +145,8 @@ class ModlistServiceInstallationMixin:
             elif context.get('machineid'):
                 cmd += ['-m', context['machineid']]
             cmd += ['-o', install_dir_str, '-d', download_dir_str]
+            if context.get('skip_disk_check'):
+                cmd.append('--skip-disk-check')
 
             original_env_values = {
                 'NEXUS_API_KEY': os.environ.get('NEXUS_API_KEY'),
@@ -199,9 +201,10 @@ class ModlistServiceInstallationMixin:
                     except (OSError, BrokenPipeError):
                         return False
 
-                from jackify.backend.utils.cc_content_detector import is_cc_content_error, extract_cc_filename
+                from jackify.backend.utils.cc_content_detector import is_cc_content_error, extract_cc_filename, is_creation_kit_missing_error
                 import json as _json
                 _cc_filename = None
+                _ck_missing = False
                 _pending_manual: list = []
                 buffer = b''
                 while True:
@@ -263,6 +266,8 @@ class ModlistServiceInstallationMixin:
                             output_callback(decoded)
                         if _cc_filename is None and is_cc_content_error(decoded):
                             _cc_filename = extract_cc_filename(decoded) or ""
+                        if not _ck_missing and is_creation_kit_missing_error(decoded):
+                            _ck_missing = True
 
                 if buffer:
                     line = buffer.decode('utf-8', errors='replace')
@@ -271,6 +276,8 @@ class ModlistServiceInstallationMixin:
                         output_callback(decoded)
                     if _cc_filename is None and is_cc_content_error(decoded):
                         _cc_filename = extract_cc_filename(decoded) or ""
+                    if not _ck_missing and is_creation_kit_missing_error(decoded):
+                        _ck_missing = True
 
                 proc.wait()
                 if proc.returncode != 0:
@@ -285,6 +292,16 @@ class ModlistServiceInstallationMixin:
                         output_callback("  - If specific files are still missing, search for and download them from the Creations menu.")
                         output_callback("  - If problems persist, uninstall and reinstall Skyrim, then launch once to trigger the AE download.")
                         output_callback("  - Note: Skyrim AE via Steam Family Sharing does not transfer DLC content.")
+                    if _ck_missing and output_callback:
+                        output_callback("")
+                        output_callback("[WARN] Creation Kit Files Missing")
+                        output_callback("  This modlist requires the Skyrim Special Edition Creation Kit.")
+                        output_callback("  - In Steam, search for 'Skyrim Special Edition: Creation Kit' and install it.")
+                        output_callback("  - Right-click it in Steam > Properties > Compatibility and set a Proton version.")
+                        output_callback("  - Click Play to launch the Creation Kit.")
+                        output_callback("  - When asked whether to unzip Scripts.zip, select NO.")
+                        output_callback("  - Once the Creation Kit opens successfully, close it.")
+                        output_callback("  - Re-run the modlist install in Jackify.")
                     return False
                 if output_callback:
                     output_callback("Installation completed successfully")
