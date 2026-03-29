@@ -8,6 +8,31 @@ import shutil
 import logging
 import threading
 
+logger = logging.getLogger(__name__)
+
+
+def suspend_baloo() -> bool:
+    """Suspend KDE Baloo file indexer. Safe to call on non-KDE or headless systems."""
+    if not shutil.which("balooctl"):
+        return False
+    try:
+        subprocess.run(["balooctl", "suspend"], capture_output=True, timeout=5)
+        logger.debug("Baloo file indexer suspended")
+        return True
+    except Exception:
+        return False
+
+
+def resume_baloo() -> None:
+    """Resume KDE Baloo file indexer. No-op if balooctl is not present."""
+    if not shutil.which("balooctl"):
+        return
+    try:
+        subprocess.run(["balooctl", "resume"], capture_output=True, timeout=5)
+        logger.debug("Baloo file indexer resumed")
+    except Exception:
+        pass
+
 def get_safe_python_executable():
     """
     Get a safe Python executable for subprocess calls.

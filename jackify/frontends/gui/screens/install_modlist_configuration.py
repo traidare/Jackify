@@ -44,9 +44,7 @@ class ConfigurationPhaseMixin(FocusReclaimMixin, InstallModlistShortcutDialogMix
                 pass
             finally:
                 self.steam_restart_progress = None
-        # Controls are managed by the proper control management system.
-        # Reclaim focus with bounded retries because Steam restart timing varies.
-        self._start_focus_reclaim_retries()
+        pass
 
     def _detect_game_type_from_mo2_ini(self, install_dir: str) -> str:
         """Detect game type by checking ModOrganizer.ini for loader executables."""

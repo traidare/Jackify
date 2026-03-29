@@ -59,11 +59,16 @@ class ModlistServiceInstallationMixin:
                     logger.error("Discovery phase failed or was cancelled")
                     return False
 
-                success = self._run_installation_only(
-                    confirmed_context,
-                    progress_callback=progress_callback,
-                    output_callback=output_callback
-                )
+                from ..handlers.subprocess_utils import suspend_baloo, resume_baloo
+                suspend_baloo()
+                try:
+                    success = self._run_installation_only(
+                        confirmed_context,
+                        progress_callback=progress_callback,
+                        output_callback=output_callback
+                    )
+                finally:
+                    resume_baloo()
 
                 if success:
                     logger.info("Modlist installation completed successfully (configuration done separately)")

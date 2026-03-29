@@ -257,6 +257,8 @@ class ModlistService(ModlistServiceInstallationMixin):
             original_gui_mode = os.environ.get('JACKIFY_GUI_MODE')
             original_stdout = None
             
+            from ..handlers.subprocess_utils import suspend_baloo, resume_baloo
+            suspend_baloo()
             try:
                 # Force GUI mode to prevent input prompts
                 os.environ['JACKIFY_GUI_MODE'] = '1'
@@ -344,6 +346,7 @@ class ModlistService(ModlistServiceInstallationMixin):
                 return success
                 
             finally:
+                resume_baloo()
                 # Always restore stdout and environment
                 if original_stdout:
                     sys.stdout = original_stdout

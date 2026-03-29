@@ -1,5 +1,16 @@
 # Jackify Changelog
 
+## v0.5.0.4 - Hotfix
+**Release Date:** 29/03/26
+
+- Fixed self-update failing silently due to the downloaded archive overwriting the extraction target before the update helper could apply it.
+- Engine updated to 0.5.3. NAME_MAX pre-flight check removed — was incorrectly blocking installs on standard filesystems. eCryptFS/fscrypt users still receive an error at the point of failure.
+- Fixed Google Drive downloads failing. The Wabbajack CDN proxy was returning a cached broken response for some files; the engine now detects the hash mismatch, retries direct, and constructs a `drive.usercontent.google.com` URL with `confirm=t` to bypass the virus-scan warning page.
+- Fixed focus stealing from other windows during the Wine component install phase.
+- Fixed a crash on window close from a leaked focus-reclaim timer.
+- Baloo file indexer suspended during install and config phases on KDE. No-op elsewhere.
+- Fixed Flatpak protontricks install failing on fresh Steam Decks due to Flathub not being registered at user scope.
+
 ## v0.5.0.3 - Hotfix
 **Release Date:** 23/03/26
 

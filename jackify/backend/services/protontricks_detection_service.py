@@ -132,13 +132,24 @@ class ProtontricksDetectionService:
                 logger.error(error_msg)
                 return False, error_msg
             
+            # Use clean environment
+            env = handler._get_clean_subprocess_env()
+
+            # Register flathub at user level if not already present.
+            # Fresh Steam Decks only have flathub at system scope; --user install can't see it.
+            try:
+                subprocess.run(
+                    ["flatpak", "remote-add", "--if-not-exists", "--user",
+                     "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"],
+                    check=True, text=True, env=env, capture_output=True, timeout=30,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Could not register flathub remote: {e.stderr.strip()}")
+
             # Install command - use --user flag for user-level installation (works on Steam Deck)
             # Avoids system-wide installation permissions
             install_cmd = ["flatpak", "install", "--user", "-y", "--noninteractive", "flathub", "com.github.Matoking.protontricks"]
-            
-            # Use clean environment
-            env = handler._get_clean_subprocess_env()
-            
+
             # Log the command for debugging
             logger.debug(f"Running flatpak install command: {' '.join(install_cmd)}")
             

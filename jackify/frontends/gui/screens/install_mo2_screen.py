@@ -501,6 +501,7 @@ class InstallMO2Screen(ScreenBackMixin, FocusReclaimMixin, QWidget):
 
     def cleanup_processes(self):
         """Stop active MO2 worker and CPU tracking before screen/app shutdown."""
+        self._stop_focus_reclaim()
         try:
             self.file_progress_list.stop_cpu_tracking()
         except Exception:

@@ -624,6 +624,9 @@ class WabbajackInstallerScreen(ScreenBackMixin, FocusReclaimMixin, QWidget):
         self.collapse_show_details_before_leave()
         self.go_back()
 
+    def cleanup_processes(self):
+        self._stop_focus_reclaim()
+
     def showEvent(self, event):
         """Called when widget becomes visible"""
         super().showEvent(event)

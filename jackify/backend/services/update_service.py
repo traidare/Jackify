@@ -5,14 +5,11 @@ This service handles checking for updates via GitHub releases API
 and coordinating the update process.
 """
 
-import json
 import logging
 import os
 import subprocess
-import tempfile
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Callable
 import requests
@@ -358,26 +355,31 @@ class UpdateService:
             update_dir = get_jackify_data_dir() / "updates"
             update_dir.mkdir(parents=True, exist_ok=True)
             
+            # Nexus delivers a .7z archive; GitHub delivers the AppImage directly.
+            # Detect which we have after download, then handle accordingly.
+            # Saving as .7z avoids any path collision with the final .AppImage name.
+            archive_file = update_dir / f"Jackify-{update_info.version}.7z"
             temp_file = update_dir / f"Jackify-{update_info.version}.AppImage"
-            
-            with open(temp_file, 'wb') as f:
+
+            with open(archive_file, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
                         downloaded_size += len(chunk)
-                        
+
                         if progress_callback:
                             progress_callback(downloaded_size, total_size)
-            
-            # Nexus delivers a 7z archive — extract the AppImage before handing off
-            if self._is_7z_archive(temp_file):
+
+            if self._is_7z_archive(archive_file):
                 logger.info("Downloaded file is a 7z archive, extracting AppImage")
-                extracted = self._extract_appimage_from_7z(temp_file, update_dir, update_info.version)
-                temp_file.unlink(missing_ok=True)
+                extracted = self._extract_appimage_from_7z(archive_file, update_dir, update_info.version)
+                archive_file.unlink(missing_ok=True)
                 if not extracted:
                     logger.error("Failed to extract AppImage from 7z archive")
                     return None
                 temp_file = extracted
+            else:
+                archive_file.rename(temp_file)
 
             # Make executable
             temp_file.chmod(0o755)
@@ -437,80 +439,56 @@ class UpdateService:
     def apply_update(self, new_appimage_path: Path) -> bool:
         """
         Apply update by replacing current AppImage.
-        
-        This creates a helper script that waits for Jackify to exit,
+
+        Creates a helper script that waits for Jackify to exit,
         then replaces the AppImage and restarts it.
-        
-        Args:
-            new_appimage_path: Path to downloaded update
-            
-        Returns:
-            bool: True if update application was initiated successfully
         """
         current_appimage = get_appimage_path()
         if not current_appimage:
             logger.error("Cannot determine current AppImage path")
             return False
-        
+
         try:
-            # Create update helper script
             helper_script = self._create_update_helper(current_appimage, new_appimage_path)
-            
+
             if helper_script:
                 logger.info("Applying update: replacing %s with %s", current_appimage, new_appimage_path)
-                subprocess.Popen(['nohup', 'bash', str(helper_script)], 
-                               stdout=subprocess.DEVNULL, 
-                               stderr=subprocess.DEVNULL)
+                subprocess.Popen(['nohup', 'bash', str(helper_script)],
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
                 return True
-            
+
             return False
-            
+
         except Exception as e:
             logger.error(f"Failed to apply update: {e}")
             return False
-    
+
     def _create_update_helper(self, current_appimage: Path, new_appimage: Path) -> Optional[Path]:
-        """
-        Create helper script for update replacement.
-        
-        Args:
-            current_appimage: Path to current AppImage
-            new_appimage: Path to new AppImage
-            
-        Returns:
-            Path to helper script, or None if creation failed
-        """
+        """Create helper script that replaces the AppImage after Jackify exits."""
         try:
-            # Create update directory in user's data directory
             from jackify.shared.paths import get_jackify_data_dir
             update_dir = get_jackify_data_dir() / "updates"
             update_dir.mkdir(parents=True, exist_ok=True)
-            
+
             helper_script = update_dir / "update_helper.sh"
-            
+
             script_content = f'''#!/bin/bash
 # Jackify Update Helper Script
-# Safely replaces current AppImage with new version
-
 CURRENT_APPIMAGE="{current_appimage}"
 NEW_APPIMAGE="{new_appimage}"
 TEMP_NAME="$CURRENT_APPIMAGE.updating"
 
 echo "Jackify Update Helper"
 echo "Waiting for Jackify to exit..."
-
-# Wait longer for Jackify to fully exit and unmount
 sleep 5
 
 echo "Validating new AppImage..."
-
-# Validate new AppImage exists and is executable
 if [ ! -f "$NEW_APPIMAGE" ]; then
     echo "ERROR: New AppImage not found: $NEW_APPIMAGE"
     exit 1
 fi
 
-# Test that new AppImage can execute --version
 if ! timeout 10 "$NEW_APPIMAGE" --version >/dev/null 2>&1; then
     echo "ERROR: New AppImage failed validation test"
     exit 1
@@ -519,34 +497,24 @@ fi
 echo "New AppImage validated successfully"
 echo "Performing safe replacement..."
 
-# Backup current version
 if [ -f "$CURRENT_APPIMAGE" ]; then
     cp "$CURRENT_APPIMAGE" "$CURRENT_APPIMAGE.backup"
 fi
 
-# Safe replacement: copy to temp name first, then atomic move
 if cp "$NEW_APPIMAGE" "$TEMP_NAME"; then
     chmod +x "$TEMP_NAME"
-    
-    # Atomic move to replace
     if mv "$TEMP_NAME" "$CURRENT_APPIMAGE"; then
         echo "Update completed successfully!"
-        
-        # Clean up
         rm -f "$NEW_APPIMAGE"
         rm -f "$CURRENT_APPIMAGE.backup"
-        
-        # Restart Jackify
         echo "Restarting Jackify..."
         sleep 1
         exec "$CURRENT_APPIMAGE"
     else
         echo "ERROR: Failed to move updated AppImage"
         rm -f "$TEMP_NAME"
-        # Restore backup
         if [ -f "$CURRENT_APPIMAGE.backup" ]; then
             mv "$CURRENT_APPIMAGE.backup" "$CURRENT_APPIMAGE"
-            echo "Restored original AppImage"
         fi
         exit 1
     fi
@@ -555,19 +523,16 @@ else
     exit 1
 fi
 
-# Clean up this script
 rm -f "{helper_script}"
 '''
-            
+
             with open(helper_script, 'w') as f:
                 f.write(script_content)
-            
-            # Make executable
+
             helper_script.chmod(0o755)
-            
             logger.debug(f"Created update helper script: {helper_script}")
             return helper_script
-            
+
         except Exception as e:
             logger.error(f"Failed to create update helper script: {e}")
             return None

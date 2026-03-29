@@ -419,6 +419,9 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
             self._vnv_controller.cleanup()
             self._vnv_controller = None
 
+        self._stop_focus_reclaim()
+
+
         def _stop_thread(attr_name: str, cancel_method: Optional[str] = None, cooperative_ms: int = 5000, force_ms: int = 10000):
             thread = getattr(self, attr_name, None)
             if thread is None:

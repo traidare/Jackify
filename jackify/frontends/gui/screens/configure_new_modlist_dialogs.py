@@ -86,6 +86,7 @@ class ConfigureNewModlistDialogsMixin:
 
     def cleanup_processes(self):
         """Clean up any running processes when the window closes or is cancelled"""
+        self._stop_focus_reclaim()
         if hasattr(self, 'file_progress_list'):
             self.file_progress_list.stop_cpu_tracking()
 
