@@ -44,7 +44,7 @@ Jackify is a Linux application for installing and configuring Wabbajack modlists
   - Non-Premium accounts are supported, but some downloads may require manual browser steps
   - See the [User Guide](https://github.com/Omni-guides/Jackify/wiki/User-Guide) for full details on the options available
 - **FUSE2 compatibility (libfuse.so.2) is required for AppImage execution**
-- **IF YOU ARE USING a Ubuntu/Debian-based distros ** (Ubuntu, Kubuntu, Linux Mint, Pop!_OS, Zorin OS, elementary OS, and others): Qt platform plugin library
+- **IF YOU ARE USING a Ubuntu/Debian-based distros** (Ubuntu, Kubuntu, Linux Mint, Pop!_OS, Zorin OS, elementary OS, and others): Qt platform plugin library
   - `sudo apt install libxcb-cursor-dev`
 
 ## Installation Quick Start
