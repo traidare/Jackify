@@ -38,16 +38,10 @@ class MainWindowDialogsMixin:
             pass
 
         try:
-            thread.terminate()
+            print(f"WARNING: {thread_name} still running during shutdown; leaving it alive to avoid unsafe terminate()")
         except Exception:
             pass
-
-        try:
-            if not thread.wait(10000):
-                print(f"WARNING: {thread_name} still running during shutdown")
-        except Exception:
-            pass
-        return None
+        return thread
 
     def open_settings_dialog(self):
         try:

@@ -25,6 +25,35 @@ class ConfigurationPhaseMixin(FocusReclaimMixin, InstallModlistShortcutDialogMix
         self._safe_append_text(progress_msg)
         self._handle_post_install_progress(progress_msg)
 
+    def _start_or_defer_config_thread(self, start_callback):
+        """Start a config QThread, or defer until prior config-thread cleanup completes."""
+        if getattr(self, 'config_thread', None) is not None:
+            logger.info("Deferring config thread start until previous config-thread cleanup completes")
+            self._pending_config_start = start_callback
+            self._cleanup_config_thread()
+            return
+        start_callback()
+
+    def _on_config_thread_done(self):
+        """Delete the finished config thread only after Qt delivers finished on the main thread."""
+        thread = self.sender()
+        if thread is None:
+            return
+
+        if thread is self.config_thread:
+            self.config_thread = None
+
+        try:
+            thread.deleteLater()
+        except RuntimeError:
+            pass
+
+        pending_start = getattr(self, '_pending_config_start', None)
+        if pending_start and self.config_thread is None:
+            self._pending_config_start = None
+            logger.info("Starting deferred config thread after previous config-thread cleanup")
+            pending_start()
+
     def show_steam_restart_progress(self, message):
         """Show Steam restart progress dialog"""
         self.steam_restart_progress = QProgressDialog(message, None, 0, 0, self)
@@ -239,23 +268,40 @@ class ConfigurationPhaseMixin(FocusReclaimMixin, InstallModlistShortcutDialogMix
         self._cleanup_config_thread()
 
     def _cleanup_config_thread(self):
-        """Safely stop and release the configuration worker thread."""
-        if not hasattr(self, 'config_thread') or self.config_thread is None:
+        """Request config-thread shutdown; finished-slot cleanup owns deletion."""
+        thread = getattr(self, 'config_thread', None)
+        if thread is None:
             return
 
         try:
-            self.config_thread.progress_update.disconnect()
-            self.config_thread.configuration_complete.disconnect()
-            self.config_thread.error_occurred.disconnect()
+            thread.progress_update.disconnect()
+            thread.configuration_complete.disconnect()
+            thread.error_occurred.disconnect()
         except (RuntimeError, TypeError):
             pass
 
-        if self.config_thread.isRunning():
-            self.config_thread.quit()
-            self.config_thread.wait(5000)
+        try:
+            running = thread.isRunning()
+        except RuntimeError:
+            return
 
-        self.config_thread.deleteLater()
-        self.config_thread = None
+        if running:
+            try:
+                thread.requestInterruption()
+            except Exception:
+                pass
+            try:
+                thread.quit()
+            except Exception:
+                pass
+            try:
+                if not thread.wait(5000):
+                    logger.warning(
+                        "config_thread still running after cooperative shutdown; "
+                        "leaving reference alive until finished"
+                    )
+            except Exception:
+                pass
 
     def show_manual_steps_dialog(self, extra_warning=""):
         modlist_name = self.modlist_name_edit.text().strip() or "your modlist"
@@ -509,12 +555,15 @@ class ConfigurationPhaseMixin(FocusReclaimMixin, InstallModlistShortcutDialogMix
                     except Exception as e:
                         self.error_occurred.emit(str(e))
             
-            # Start configuration thread
-            self.config_thread = ConfigThread(updated_context, is_steamdeck, detect_game_type_func)
-            self.config_thread.progress_update.connect(self.on_configuration_progress)
-            self.config_thread.configuration_complete.connect(self.on_configuration_complete)
-            self.config_thread.error_occurred.connect(self.on_configuration_error)
-            self.config_thread.start()
+            def _start_config_thread():
+                self.config_thread = ConfigThread(updated_context, is_steamdeck, detect_game_type_func)
+                self.config_thread.progress_update.connect(self.on_configuration_progress)
+                self.config_thread.configuration_complete.connect(self.on_configuration_complete)
+                self.config_thread.error_occurred.connect(self.on_configuration_error)
+                self.config_thread.finished.connect(self._on_config_thread_done)
+                self.config_thread.start()
+
+            self._start_or_defer_config_thread(_start_config_thread)
             
         except Exception as e:
             self._safe_append_text(f"Error continuing configuration: {e}")
@@ -539,27 +588,15 @@ class ConfigurationPhaseMixin(FocusReclaimMixin, InstallModlistShortcutDialogMix
             
             logger.debug(f"Updated context with new AppID: {new_appid}")
             
-            # Clean up old thread if exists and wait for it to finish
-            if hasattr(self, 'config_thread') and self.config_thread is not None:
-                # Disconnect all signals to prevent "Internal C++ object already deleted" errors
-                try:
-                    self.config_thread.progress_update.disconnect()
-                    self.config_thread.configuration_complete.disconnect()
-                    self.config_thread.error_occurred.disconnect()
-                except (RuntimeError, TypeError):
-                    pass  # Ignore errors if already disconnected
-                if self.config_thread.isRunning():
-                    self.config_thread.quit()
-                    self.config_thread.wait(5000)  # Wait up to 5 seconds
-                self.config_thread.deleteLater()
-                self.config_thread = None
-            
-            # Start new config thread
-            self.config_thread = self._create_config_thread(updated_context)
-            self.config_thread.progress_update.connect(self.on_configuration_progress)
-            self.config_thread.configuration_complete.connect(self.on_configuration_complete)
-            self.config_thread.error_occurred.connect(self.on_configuration_error)
-            self.config_thread.start()
+            def _start_config_thread():
+                self.config_thread = self._create_config_thread(updated_context)
+                self.config_thread.progress_update.connect(self.on_configuration_progress)
+                self.config_thread.configuration_complete.connect(self.on_configuration_complete)
+                self.config_thread.error_occurred.connect(self.on_configuration_error)
+                self.config_thread.finished.connect(self._on_config_thread_done)
+                self.config_thread.start()
+
+            self._start_or_defer_config_thread(_start_config_thread)
             
         except Exception as e:
             self._safe_append_text(f"Error continuing configuration: {e}")

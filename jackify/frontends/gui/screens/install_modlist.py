@@ -421,22 +421,23 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
 
         self._stop_focus_reclaim()
 
+        managed_thread_attrs = {'install_thread', 'prefix_thread', 'config_thread'}
 
         def _stop_thread(attr_name: str, cancel_method: Optional[str] = None,
                          cooperative_ms: int = 5000, force_ms: int = 10000,
-                         allow_terminate: bool = True):
+                         allow_terminate: bool = False):
             thread = getattr(self, attr_name, None)
             if thread is None:
                 return
             try:
                 running = thread.isRunning()
             except RuntimeError:
-                if attr_name != 'install_thread':
+                if attr_name not in managed_thread_attrs:
                     setattr(self, attr_name, None)
                 return
 
             if not running:
-                if attr_name != 'install_thread':
+                if attr_name not in managed_thread_attrs:
                     setattr(self, attr_name, None)
                 return
 
@@ -459,36 +460,17 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
 
             try:
                 if thread.wait(cooperative_ms):
-                    if attr_name != 'install_thread':
+                    if attr_name not in managed_thread_attrs:
                         setattr(self, attr_name, None)
                     return
             except Exception:
                 pass
 
-            if not allow_terminate:
-                logger.error(
-                    "ERROR: %s still running after %sms cooperative shutdown; leaving it alive to avoid unsafe terminate()",
-                    attr_name,
-                    cooperative_ms,
-                )
-                return
-
-            logger.warning(f"WARNING: {attr_name} did not stop in {cooperative_ms}ms, forcing terminate")
-            try:
-                if cancel_method and hasattr(thread, cancel_method):
-                    getattr(thread, cancel_method)()
-            except Exception:
-                pass
-            try:
-                thread.terminate()
-            except Exception:
-                pass
-            try:
-                if not thread.wait(force_ms):
-                    logger.error(f"ERROR: {attr_name} still running after forced shutdown window")
-            except Exception:
-                pass
-            setattr(self, attr_name, None)
+            logger.error(
+                "ERROR: %s still running after %sms cooperative shutdown; leaving it alive to avoid unsafe terminate()",
+                attr_name,
+                cooperative_ms,
+            )
 
         # Always stop installer thread first; never force terminate a Python QThread.
         _stop_thread(
@@ -566,19 +548,22 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
 
                 # Cancel the automated prefix thread if it exists
                 if hasattr(self, 'prefix_thread') and self.prefix_thread and self.prefix_thread.isRunning():
-                    self.prefix_thread.terminate()
-                    self.prefix_thread.wait(3000)  # Wait up to 3 seconds for graceful shutdown
-                    if self.prefix_thread.isRunning():
-                        self.prefix_thread.terminate()  # Force terminate if needed
-                        self.prefix_thread.wait(1000)
+                    try:
+                        self.prefix_thread.requestInterruption()
+                    except Exception:
+                        pass
+                    try:
+                        self.prefix_thread.quit()
+                    except Exception:
+                        pass
+                    if not self.prefix_thread.wait(4000):
+                        logger.warning("WARNING: prefix_thread still running after 4s cancel wait; leaving it alive")
 
                 # Cancel the configuration thread if it exists
-                if hasattr(self, 'config_thread') and self.config_thread and self.config_thread.isRunning():
-                    self.config_thread.terminate()
-                    self.config_thread.wait(3000)  # Wait up to 3 seconds for graceful shutdown
-                    if self.config_thread.isRunning():
-                        self.config_thread.terminate()  # Force terminate if needed
-                        self.config_thread.wait(1000)
+                if hasattr(self, 'config_thread') and self.config_thread:
+                    self._cleanup_config_thread()
+                    if self.config_thread and self.config_thread.isRunning():
+                        logger.warning("WARNING: config_thread still running after cooperative cancel cleanup")
 
                 # Cleanup any remaining processes
                 self.cleanup_processes()

@@ -15,6 +15,20 @@ logger = logging.getLogger(__name__)
 class AutomatedPrefixHandlersMixin:
     """Mixin providing automated prefix workflow event handlers for InstallModlistScreen."""
 
+    def _on_prefix_thread_done(self):
+        """Delete the finished prefix thread only after Qt delivers finished on the main thread."""
+        thread = self.sender()
+        if thread is None:
+            return
+
+        if thread is self.prefix_thread:
+            self.prefix_thread = None
+
+        try:
+            thread.deleteLater()
+        except RuntimeError:
+            pass
+
     def start_automated_prefix_workflow(self):
         """Start the automated prefix creation workflow"""
         # CRITICAL: Reload config from disk to pick up any settings changes from Settings dialog
@@ -157,6 +171,7 @@ class AutomatedPrefixHandlersMixin:
             self.prefix_thread.show_progress_dialog.connect(self.show_steam_restart_progress)
             self.prefix_thread.hide_progress_dialog.connect(self.hide_steam_restart_progress)
             self.prefix_thread.conflict_detected.connect(self.show_shortcut_conflict_dialog)
+            self.prefix_thread.finished.connect(self._on_prefix_thread_done)
             self.prefix_thread.start()
             
         except Exception as e:
@@ -209,4 +224,3 @@ class AutomatedPrefixHandlersMixin:
         """Handle progress updates from automated prefix creation"""
         self._safe_append_text(progress_msg)
         self._handle_post_install_progress(progress_msg)
-

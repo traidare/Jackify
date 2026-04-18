@@ -339,6 +339,15 @@ class NexusAuthMixin:
                     self.finished_signal.emit(success)
 
             oauth_thread = OAuthThread(self.auth_service, self)
+            self._oauth_thread_hold = oauth_thread
+
+            def _release_oauth_thread():
+                if getattr(self, '_oauth_thread_hold', None) is oauth_thread:
+                    self._oauth_thread_hold = None
+                try:
+                    oauth_thread.deleteLater()
+                except RuntimeError:
+                    pass
 
             def update_progress_message(msg):
                 if not oauth_cancelled[0]:
@@ -359,6 +368,7 @@ class NexusAuthMixin:
                 oauth_success[0] = success
 
             oauth_thread.finished_signal.connect(on_oauth_finished)
+            oauth_thread.finished.connect(_release_oauth_thread)
             oauth_thread.start()
 
             while oauth_thread.isRunning():
@@ -367,7 +377,7 @@ class NexusAuthMixin:
                 if oauth_cancelled[0]:
                     oauth_thread.wait(2000)
                     if oauth_thread.isRunning():
-                        oauth_thread.terminate()
+                        logger.warning("OAuthThread still running after cancel wait; leaving it alive to avoid unsafe terminate()")
                     break
 
             wait_dialog.close()

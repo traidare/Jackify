@@ -369,7 +369,7 @@ class VNVAutomationController(QObject):
         )
         self._worker.progress_update.connect(self._on_worker_progress)
         self._worker.completed.connect(self._on_worker_done)
-        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
     @Slot(str)
@@ -381,13 +381,23 @@ class VNVAutomationController(QObject):
 
     @Slot(bool, str)
     def _on_worker_done(self, success: bool, error: str):
-        self._worker = None
         cb = self._on_complete_cb
         self._on_complete_cb = None
         self._on_progress_cb = None
         self._handle_feedback_cb = None
         if cb:
             cb(success, error)
+
+    def _on_worker_finished(self):
+        thread = self.sender()
+        if thread is None:
+            return
+        if thread is self._worker:
+            self._worker = None
+        try:
+            thread.deleteLater()
+        except RuntimeError:
+            pass
 
     def cleanup(self):
         """Stop worker if running. Call from screen cleanup/hideEvent."""
@@ -397,6 +407,13 @@ class VNVAutomationController(QObject):
         self._pending_worker_start = None
         self._stop_manual_download_flow()
         if self._worker and self._worker.isRunning():
-            self._worker.terminate()
-            self._worker.wait(2000)
-            self._worker = None
+            try:
+                self._worker.requestInterruption()
+            except Exception:
+                pass
+            try:
+                self._worker.quit()
+            except Exception:
+                pass
+            if not self._worker.wait(2000):
+                logger.warning("VNV worker still running after cooperative shutdown; leaving reference alive")
