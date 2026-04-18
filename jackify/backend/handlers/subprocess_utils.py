@@ -8,6 +8,54 @@ import shutil
 import logging
 import threading
 
+
+def find_shared_lib_dirs(*lib_names):
+    """
+    Find directories containing the given shared library names (e.g. 'libz.so.1').
+
+    Tries ldconfig, then scans directories already in LD_LIBRARY_PATH.
+    Returns a list of unique existing directories (may be empty).
+    """
+    dirs = []
+    seen = set()
+
+    def _add(path):
+        d = os.path.dirname(path) if not os.path.isdir(path) else path
+        if d and d not in seen and os.path.isdir(d):
+            dirs.append(d)
+            seen.add(d)
+
+    # Method 1: ldconfig -p (works on traditional Linux distros)
+    try:
+        result = subprocess.run(
+            ['ldconfig', '-p'],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            for name in lib_names:
+                if name in line and '=>' in line:
+                    path = line.split('=>')[-1].strip()
+                    if os.path.isfile(path):
+                        _add(path)
+    except Exception:
+        pass
+
+    # Method 2: scan existing LD_LIBRARY_PATH entries
+    for ld_dir in os.environ.get('LD_LIBRARY_PATH', '').split(':'):
+        if not ld_dir or not os.path.isdir(ld_dir):
+            continue
+        try:
+            entries = os.listdir(ld_dir)
+        except OSError:
+            continue
+        for name in lib_names:
+            basename = name.split('.')[0]  # e.g. 'libz' from 'libz.so.1'
+            if any(f.startswith(basename) for f in entries):
+                _add(ld_dir)
+                break
+
+    return dirs
+
 logger = logging.getLogger(__name__)
 
 

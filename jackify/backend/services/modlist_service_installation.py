@@ -183,6 +183,7 @@ class ModlistServiceInstallationMixin:
                 from jackify.backend.handlers.subprocess_utils import (
                     increase_file_descriptor_limit,
                     get_clean_subprocess_env,
+                    find_shared_lib_dirs,
                 )
                 success, old_limit, new_limit, message = increase_file_descriptor_limit()
                 if output_callback:
@@ -192,6 +193,18 @@ class ModlistServiceInstallationMixin:
                         output_callback(f"File descriptor limit warning: {message}")
 
                 clean_env = get_clean_subprocess_env()
+
+                # Ensure the engine directory is on LD_LIBRARY_PATH so bundled .so files
+                # (including SQLite.Interop.dll, which is actually a Linux ELF library) are
+                # found by the dynamic linker.  Also look for libz.so.1 which
+                # SQLite.Interop.dll depends on but may not be at FHS paths (e.g. NixOS).
+                ld_extra = [engine_dir]
+                ld_extra.extend(find_shared_lib_dirs('libz.so.1', 'libz.so'))
+                existing_ld = clean_env.get('LD_LIBRARY_PATH', '')
+                clean_env['LD_LIBRARY_PATH'] = ':'.join(
+                    ld_extra + ([existing_ld] if existing_ld else [])
+                )
+
                 proc = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=False, env=clean_env, cwd=engine_dir
@@ -210,6 +223,7 @@ class ModlistServiceInstallationMixin:
                 import json as _json
                 _cc_filename = None
                 _ck_missing = False
+                _sqlite_interop_error = False
                 _pending_manual: list = []
                 buffer = b''
                 while True:
@@ -273,6 +287,8 @@ class ModlistServiceInstallationMixin:
                             _cc_filename = extract_cc_filename(decoded) or ""
                         if not _ck_missing and is_creation_kit_missing_error(decoded):
                             _ck_missing = True
+                        if not _sqlite_interop_error and 'SQLite.Interop.dll' in decoded:
+                            _sqlite_interop_error = True
 
                 if buffer:
                     line = buffer.decode('utf-8', errors='replace')
@@ -283,6 +299,8 @@ class ModlistServiceInstallationMixin:
                         _cc_filename = extract_cc_filename(decoded) or ""
                     if not _ck_missing and is_creation_kit_missing_error(decoded):
                         _ck_missing = True
+                    if not _sqlite_interop_error and 'SQLite.Interop.dll' in decoded:
+                        _sqlite_interop_error = True
 
                 proc.wait()
                 if proc.returncode != 0:
@@ -307,6 +325,11 @@ class ModlistServiceInstallationMixin:
                         output_callback("  - When asked whether to unzip Scripts.zip, select NO.")
                         output_callback("  - Once the Creation Kit opens successfully, close it.")
                         output_callback("  - Re-run the modlist install in Jackify.")
+                    if _sqlite_interop_error and output_callback:
+                        output_callback("")
+                        output_callback("[WARN] Missing system library: libz.so.1 (zlib)")
+                        output_callback("  The engine's SQLite native library depends on zlib, which was not found.")
+                        output_callback("  Install zlib: 'apt install zlib1g' / 'dnf install zlib' / 'pacman -S zlib'.")
                     return False
                 if output_callback:
                     output_callback("Installation completed successfully")
