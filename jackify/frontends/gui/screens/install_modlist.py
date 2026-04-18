@@ -422,18 +422,22 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
         self._stop_focus_reclaim()
 
 
-        def _stop_thread(attr_name: str, cancel_method: Optional[str] = None, cooperative_ms: int = 5000, force_ms: int = 10000):
+        def _stop_thread(attr_name: str, cancel_method: Optional[str] = None,
+                         cooperative_ms: int = 5000, force_ms: int = 10000,
+                         allow_terminate: bool = True):
             thread = getattr(self, attr_name, None)
             if thread is None:
                 return
             try:
                 running = thread.isRunning()
             except RuntimeError:
-                setattr(self, attr_name, None)
+                if attr_name != 'install_thread':
+                    setattr(self, attr_name, None)
                 return
 
             if not running:
-                setattr(self, attr_name, None)
+                if attr_name != 'install_thread':
+                    setattr(self, attr_name, None)
                 return
 
             logger.debug(f"DEBUG: Stopping {attr_name}")
@@ -455,10 +459,19 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
 
             try:
                 if thread.wait(cooperative_ms):
-                    setattr(self, attr_name, None)
+                    if attr_name != 'install_thread':
+                        setattr(self, attr_name, None)
                     return
             except Exception:
                 pass
+
+            if not allow_terminate:
+                logger.error(
+                    "ERROR: %s still running after %sms cooperative shutdown; leaving it alive to avoid unsafe terminate()",
+                    attr_name,
+                    cooperative_ms,
+                )
+                return
 
             logger.warning(f"WARNING: {attr_name} did not stop in {cooperative_ms}ms, forcing terminate")
             try:
@@ -477,8 +490,14 @@ class InstallModlistScreen(ScreenBackMixin, InstallModlistUISetupMixin, ConsoleO
                 pass
             setattr(self, attr_name, None)
 
-        # Always stop installer thread first; it needs cancel() not terminate().
-        _stop_thread('install_thread', cancel_method='cancel', cooperative_ms=15000, force_ms=10000)
+        # Always stop installer thread first; never force terminate a Python QThread.
+        _stop_thread(
+            'install_thread',
+            cancel_method='cancel',
+            cooperative_ms=15000,
+            force_ms=10000,
+            allow_terminate=False,
+        )
 
         # Stop any remaining QThread instances on this object, regardless of attribute name.
         from PySide6.QtCore import QThread

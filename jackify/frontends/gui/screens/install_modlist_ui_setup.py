@@ -67,6 +67,8 @@ class InstallModlistUISetupMixin:
         self.progress_state_manager = ProgressStateManager()
         self.progress_indicator = OverallProgressIndicator(show_progress_bar=True)
         self.file_progress_list = FileProgressList()  # Shows all active files (scrolls if needed)
+        self.install_thread = None
+        self._pending_install_restart = None
         self._premium_notice_shown = False
         self._premium_failure_active = False
         self._installation_cancelled = False

@@ -60,6 +60,7 @@ class InstallerThread(QThread):
         self._resource_limit_hint: Optional[str] = None
         self._install_progress_started = False  # True once any [FILE_PROGRESS] output seen
         self._last_error_raw_context: dict = {}  # raw context dict from structured engine errors
+        self._stderr_thread: Optional[threading.Thread] = None
 
     @staticmethod
     def _is_generic_failure_text(message: Optional[str]) -> bool:
@@ -153,6 +154,27 @@ class InstallerThread(QThread):
                         self.last_error = creation_kit_missing()
         except Exception as e:
             logger.debug(f"Stderr reader error: {e}")
+
+    def _join_stderr_reader(self, timeout: float = 5.0) -> None:
+        stderr_thread = self._stderr_thread
+        if stderr_thread is None:
+            return
+
+        stderr_thread.join(timeout=timeout)
+        if stderr_thread.is_alive():
+            proc = getattr(self.process_manager, 'proc', None)
+            if proc and proc.stderr:
+                try:
+                    proc.stderr.close()
+                except Exception:
+                    pass
+            stderr_thread.join(timeout=1.0)
+
+        if stderr_thread.is_alive():
+            logger.warning("Installer stderr reader thread still alive after shutdown timeout")
+            return
+
+        self._stderr_thread = None
 
     def _remember_stdout_line(self, line: str) -> None:
         """Keep a bounded tail of meaningful stdout lines for failure diagnostics."""
@@ -308,8 +330,8 @@ class InstallerThread(QThread):
 
             from jackify.backend.handlers.subprocess_utils import ProcessManager
             self.process_manager = ProcessManager(cmd, env=env, text=False, separate_stderr=True, enable_stdin=True)
-            stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
-            stderr_thread.start()
+            self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
+            self._stderr_thread.start()
             ansi_escape = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
             buffer = b''
             last_was_blank = False
@@ -470,8 +492,8 @@ class InstallerThread(QThread):
                 else:
                     self._remember_stdout_line(decoded)
                     self.output_received.emit(decoded)
-            stderr_thread.join(timeout=5)
             returncode = self.process_manager.wait()
+            self._join_stderr_reader(timeout=5.0)
             if self.process_manager.proc and self.process_manager.proc.stdout:
                 try:
                     remaining = self.process_manager.proc.stdout.read()
@@ -524,3 +546,4 @@ class InstallerThread(QThread):
         finally:
             if self.cancelled and self.process_manager:
                 self.process_manager.cancel()
+            self._join_stderr_reader(timeout=2.0)

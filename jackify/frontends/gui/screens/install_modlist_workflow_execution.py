@@ -14,6 +14,39 @@ logger = logging.getLogger(__name__)
 
 class InstallWorkflowExecutionMixin:
     """Mixin containing install-run and manual-download dialog execution methods."""
+    @staticmethod
+    def _build_install_request(modlist, install_dir, downloads_dir, api_key,
+                               install_mode='online', oauth_info=None, skip_disk_check=False):
+        return {
+            'modlist': modlist,
+            'install_dir': install_dir,
+            'downloads_dir': downloads_dir,
+            'api_key': api_key,
+            'install_mode': install_mode,
+            'oauth_info': oauth_info,
+            'skip_disk_check': skip_disk_check,
+        }
+
+    def _on_install_thread_done(self):
+        """Delete the finished InstallerThread only after Qt delivers finished on the main thread."""
+        thread = self.sender()
+        if thread is None:
+            return
+
+        if thread is self.install_thread:
+            self.install_thread = None
+
+        try:
+            thread.deleteLater()
+        except RuntimeError:
+            pass
+
+        pending_request = getattr(self, '_pending_install_restart', None)
+        if pending_request and self.install_thread is None:
+            self._pending_install_restart = None
+            logger.info("Starting deferred install after previous InstallerThread cleanup")
+            self.run_modlist_installer(**pending_request)
+
     def validate_and_start_install(self):
         import time
         self._install_workflow_start_time = time.time()
@@ -385,6 +418,31 @@ class InstallWorkflowExecutionMixin:
             logger.debug(f"DEBUG: Controls re-enabled in exception handler")
 
     def run_modlist_installer(self, modlist, install_dir, downloads_dir, api_key, install_mode='online', oauth_info=None, skip_disk_check=False):
+        install_request = self._build_install_request(
+            modlist,
+            install_dir,
+            downloads_dir,
+            api_key,
+            install_mode=install_mode,
+            oauth_info=oauth_info,
+            skip_disk_check=skip_disk_check,
+        )
+
+        existing_thread = getattr(self, 'install_thread', None)
+        if existing_thread is not None:
+            try:
+                is_running = existing_thread.isRunning()
+            except RuntimeError:
+                self.install_thread = None
+            else:
+                self._pending_install_restart = install_request
+                logger.info(
+                    "Deferring install start until previous InstallerThread cleanup completes | running=%s",
+                    is_running,
+                )
+                return
+
+        self._pending_install_restart = None
         logger.debug('DEBUG: run_modlist_installer called - USING THREADED BACKEND WRAPPER')
         
         # Rotate log file at start of each workflow run (keep 5 backups)
@@ -420,7 +478,7 @@ class InstallWorkflowExecutionMixin:
         self.install_thread.manual_download_list_received.connect(self.on_manual_download_list_received)
         # R&D: Pass progress state manager to thread
         self.install_thread.progress_state_manager = self.progress_state_manager
-        self.install_thread.finished.connect(self.install_thread.deleteLater)
+        self.install_thread.finished.connect(self._on_install_thread_done)
         self.install_thread.start()
 
     def on_manual_download_list_received(self, events: list) -> None:

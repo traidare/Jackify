@@ -340,21 +340,43 @@ class FileProgressList(QWidget):
 
     def stop_cpu_tracking(self):
         self._cpu_timer.stop()
-        if self._cpu_worker and self._cpu_worker.isRunning():
-            self._cpu_worker.quit()
-            if not self._cpu_worker.wait(500):
-                self._cpu_worker.terminate()
-                self._cpu_worker.wait(1000)
-            self._cpu_worker = None
+        if self._cpu_worker is None:
+            return
+        if shiboken6.isValid(self._cpu_worker):
+            if self._cpu_worker.isRunning():
+                self._cpu_worker.quit()
+                if not self._cpu_worker.wait(500):
+                    # Avoid force-terminating a Python QThread: let finished drive cleanup.
+                    return
+            self._cpu_worker.deleteLater()
+        self._cpu_worker = None
 
     def _start_cpu_worker(self):
-        # Skip if a worker is already running to avoid pileup
-        if self._cpu_worker and self._cpu_worker.isRunning():
+        # If a worker exists (running or finished but not yet cleaned up), skip.
+        # _on_cpu_worker_done clears self._cpu_worker once the finished signal is
+        # delivered and deleteLater has been scheduled, ensuring the C++ QThread
+        # object is not destroyed by Python GC while Qt still has queued events for it.
+        if self._cpu_worker is not None:
             return
-        self._cpu_worker = _CpuWorker(self._last_cpu_percent, self._cpu_process_cache, self._child_process_cache)
-        self._cpu_worker.result.connect(self._on_cpu_result)
-        self._cpu_worker.caches_updated.connect(self._on_cpu_caches)
-        self._cpu_worker.start()
+        worker = _CpuWorker(self._last_cpu_percent, self._cpu_process_cache, self._child_process_cache)
+        worker.result.connect(self._on_cpu_result)
+        worker.caches_updated.connect(self._on_cpu_caches)
+        worker.finished.connect(self._on_cpu_worker_done)
+        self._cpu_worker = worker
+        worker.start()
+
+    def _on_cpu_worker_done(self):
+        """Slot called (on the main thread) when a _CpuWorker finishes.
+
+        Schedules Qt-safe deletion of the C++ QThread object via deleteLater,
+        then clears the Python reference so the next timer tick can start a
+        fresh worker.  Using deleteLater rather than letting Python GC destroy
+        the wrapper prevents a SIGSEGV caused by Qt processing still-queued
+        signals (result/caches_updated) for an already-freed C++ object.
+        """
+        if self._cpu_worker is not None:
+            self._cpu_worker.deleteLater()
+            self._cpu_worker = None
 
     def _on_cpu_result(self, text: str):
         self.cpu_label.setText(text)
@@ -416,4 +438,3 @@ class FileProgressList(QWidget):
         transition_item.setData(Qt.UserRole, "__transition__")
         self.list_widget.addItem(transition_item)
         self.list_widget.setItemWidget(transition_item, self._transition_label)
-
