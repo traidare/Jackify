@@ -1,0 +1,25 @@
+--- a/jackify/backend/handlers/wabbajack_installer_handler.py
++++ b/jackify/backend/handlers/wabbajack_installer_handler.py
+@@ -349,7 +349,7 @@
+         self.logger.info(f"Initializing Wine prefix for AppID {app_id}...")
+         result = subprocess.run(
+-            [str(proton_bin), 'run', 'wineboot', '-u'],
++            ["/run/current-system/sw/bin/steam-run", str(proton_bin), 'run', 'wineboot', '-u'],
+             env=env,
+             capture_output=True,
+             text=True,
+             timeout=120
+@@ -384,4 +384,4 @@
+         proton_bin = proton_path / "proton"
+-        cmd = [str(proton_bin), 'run', str(exe_path)]
++        cmd = ["/run/current-system/sw/bin/steam-run", str(proton_bin), 'run', str(exe_path)]
+         if args:
+             cmd.extend(args)
+--- a/jackify/backend/services/automated_prefix_creation.py
++++ b/jackify/backend/services/automated_prefix_creation.py
+@@ -247,4 +247,4 @@
+
+             # Run proton run wineboot -u to initialize the prefix
+-            cmd = [str(proton_path), 'run', 'wineboot', '-u']
++            cmd = ["/run/current-system/sw/bin/steam-run", str(proton_path), 'run', 'wineboot', '-u']
+             logger.info(f"Running: {' '.join(cmd)}")

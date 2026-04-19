@@ -1,0 +1,21 @@
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100644
+--- /dev/null
++++ b/pyproject.toml
+@@ -0,0 +1,16 @@
++[build-system]
++requires = ["setuptools", "wheel"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "jackify"
++version = "0.5.0.4"
++description = "Wabbajack modlist installation and configuration tool for Linux"
++requires-python = ">=3.10"
++
++[project.scripts]
++jackify = "jackify.__main__:main"
++
++[tool.setuptools.packages.find]
++where = ["."]
++include = ["jackify*"]

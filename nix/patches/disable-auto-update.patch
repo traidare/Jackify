@@ -1,0 +1,12 @@
+--- a/jackify/frontends/gui/mixins/main_window_startup.py
++++ b/jackify/frontends/gui/mixins/main_window_startup.py
+@@ -68,6 +68,10 @@
+     def _check_for_updates_on_startup(self):
+         try:
++            # Skip update check on NixOS - updates are managed by the package manager
++            if not self.update_service.can_update():
++                logger.debug("Skipping update check (not running as AppImage)")
++                return
+             logger.debug("Checking for updates on startup...")
+
+             class UpdateCheckThread(QThread):

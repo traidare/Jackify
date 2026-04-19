@@ -1,0 +1,15 @@
+--- a/jackify/__main__.py
++++ b/jackify/__main__.py
+@@ -13,6 +13,12 @@
+     sys.path.insert(0, src_dir)
+
+ def main():
++    # Check if launched with jackify:// protocol URL (OAuth callback)
++    if len(sys.argv) > 1 and sys.argv[1].startswith("jackify://"):
++        from jackify.frontends.gui.__main__ import handle_protocol_url
++        handle_protocol_url(sys.argv[1])
++        return
++
+     """Main entry point - launch GUI by default"""
+     from jackify.frontends.gui.main import main as gui_main
+     return gui_main()
