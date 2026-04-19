@@ -1,4 +1,5 @@
 """Detailed view of a modlist with install option."""
+import shiboken6
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTextEdit, QSizePolicy
@@ -368,6 +369,8 @@ class ModlistDetailDialog(QDialog):
     
     def _on_banner_loaded(self, pixmap: QPixmap):
         """Callback when banner image is loaded"""
+        if not shiboken6.isValid(self):
+            return
         if pixmap and not pixmap.isNull():
             self._display_banner(pixmap)
     
@@ -385,6 +388,9 @@ class ModlistDetailDialog(QDialog):
     
     def _display_banner(self, pixmap: QPixmap):
         """Display banner image with proper 16:9 aspect ratio (like Wabbajack)"""
+        if not shiboken6.isValid(self) or not shiboken6.isValid(self.banner_label):
+            return
+
         # Store pixmap for resize events
         self._current_banner_pixmap = pixmap
         

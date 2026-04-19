@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QSize, QThread, QUrl, QTimer, QObject
 from PySide6.QtGui import QPixmap, QFont, QPainter, QColor, QTextOption, QPalette
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from pathlib import Path
 from typing import List, Optional, Dict
 from collections import deque
@@ -52,13 +51,14 @@ class ModlistGalleryDialog(ModlistGalleryFiltersMixin, ModlistGalleryLoadingMixi
         self._apply_initial_size()
 
         self.gallery_service = ModlistGalleryService()
-        self.image_manager = ImageManager(self.gallery_service)
+        self.image_manager = ImageManager(self.gallery_service, self)
         self.all_modlists: List[ModlistMetadata] = []
         self.filtered_modlists: List[ModlistMetadata] = []
         self.game_filter = game_filter
         self.selected_metadata: Optional[ModlistMetadata] = None
         self.all_cards: Dict[str, ModlistCard] = {}  # Dict keyed by machineURL for quick lookup
         self._validation_update_timer = None  # Timer for background validation updates
+        self._gallery_resources_cleaned = False
 
         self._setup_ui()
         # Disable filter controls during initial load to prevent race conditions
@@ -248,6 +248,36 @@ class ModlistGalleryDialog(ModlistGalleryFiltersMixin, ModlistGalleryLoadingMixi
         self.modlist_selected.emit(metadata)
         self.accept()
 
+    def _cleanup_gallery_resources(self):
+        """Shut down async image work before the dialog goes away."""
+        if self._gallery_resources_cleaned:
+            return
+        self._gallery_resources_cleaned = True
+
+        for timer_attr in (
+            '_loading_dot_timer',
+            '_loading_overlay_position_timer',
+            '_preload_cached_images_timer',
+        ):
+            timer = getattr(self, timer_attr, None)
+            if timer:
+                timer.stop()
+
+        if hasattr(self, '_loading_overlay') and self._loading_overlay:
+            self._loading_overlay.hide()
+            self._loading_overlay.deleteLater()
+            self._loading_overlay = None
+
+        if hasattr(self, 'image_manager') and self.image_manager:
+            self.image_manager.cleanup()
+
+    def done(self, result):
+        self._cleanup_gallery_resources()
+        super().done(result)
+
+    def closeEvent(self, event):
+        self._cleanup_gallery_resources()
+        super().closeEvent(event)
+
 # Re-export for backward compatibility
 __all__ = ['ImageManager', 'ModlistCard', 'ModlistDetailDialog', 'ModlistGalleryDialog']
-

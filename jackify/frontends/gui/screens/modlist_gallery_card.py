@@ -1,4 +1,5 @@
 """Visual card representing a single modlist."""
+import shiboken6
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap, QPainter, QColor, QFont
@@ -137,11 +138,15 @@ class ModlistCard(QFrame):
     
     def _on_image_loaded(self, pixmap: QPixmap):
         """Callback when image is loaded from network"""
+        if not shiboken6.isValid(self):
+            return
         if pixmap and not pixmap.isNull():
             self._display_image(pixmap)
     
     def _display_image(self, pixmap: QPixmap):
         """Display image - use best method based on aspect ratio"""
+        if not shiboken6.isValid(self) or not shiboken6.isValid(self.image_label):
+            return
         if pixmap.isNull():
             return
         

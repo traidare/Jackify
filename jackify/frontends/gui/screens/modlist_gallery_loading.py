@@ -1,4 +1,5 @@
 """Loading and data management for ModlistGalleryDialog (Mixin)."""
+import shiboken6
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QApplication
 from PySide6.QtGui import QFont
@@ -14,6 +15,40 @@ logger = logging.getLogger(__name__)
 
 class ModlistGalleryLoadingMixin:
     """Mixin providing loading and data management for ModlistGalleryDialog."""
+
+    def _get_or_create_single_shot_timer(self, attr_name: str, slot):
+        timer = getattr(self, attr_name, None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(slot)
+            setattr(self, attr_name, timer)
+        return timer
+
+    def _position_loading_overlay(self):
+        """Center the loading overlay once the content area has been laid out."""
+        if not hasattr(self, '_loading_overlay') or not self._loading_overlay:
+            return
+        if not shiboken6.isValid(self._loading_overlay):
+            return
+        if hasattr(self, 'content_area') and self.content_area.isVisible():
+            content_width = self.content_area.width()
+            content_height = self.content_area.height()
+            x = (content_width - 300) // 2
+            y = (content_height - 120) // 2
+            self._loading_overlay.move(x, y)
+            self._loading_overlay.show()
+            self._loading_overlay.raise_()
+
+    def _schedule_loading_overlay_position(self):
+        """Schedule a safe, dialog-owned loading-overlay reposition pass."""
+        timer = self._get_or_create_single_shot_timer('_loading_overlay_position_timer', self._position_loading_overlay)
+        timer.start(50)
+
+    def _schedule_cached_image_preload(self):
+        """Schedule cached-image preload without leaving orphaned callbacks behind."""
+        timer = self._get_or_create_single_shot_timer('_preload_cached_images_timer', self._preload_cached_images_async)
+        timer.start(0)
 
     def _load_modlists_async(self):
         """Load modlists in background thread for instant dialog appearance"""
@@ -52,23 +87,12 @@ class ModlistGalleryLoadingMixin:
         
         # Animate dots in loading message
         self._loading_dot_count = 0
-        self._loading_dot_timer = QTimer()
+        self._loading_dot_timer = QTimer(self)
         self._loading_dot_timer.timeout.connect(self._animate_loading_dots)
         self._loading_dot_timer.start(500)  # Update every 500ms
-        
-        # Position overlay in center of content area
-        def position_overlay():
-            if hasattr(self, 'content_area') and self.content_area.isVisible():
-                content_width = self.content_area.width()
-                content_height = self.content_area.height()
-                x = (content_width - 300) // 2
-                y = (content_height - 120) // 2
-                self._loading_overlay.move(x, y)
-                self._loading_overlay.show()
-                self._loading_overlay.raise_()
-        
-        # Delay slightly to ensure content_area is laid out
-        QTimer.singleShot(50, position_overlay)
+
+        # Delay slightly to ensure content_area is laid out.
+        self._schedule_loading_overlay_position()
 
         class ModlistLoaderThread(QThread):
             """Background thread to load modlist metadata"""
@@ -182,7 +206,7 @@ class ModlistGalleryLoadingMixin:
 
             # Preload cached images in background (non-blocking)
             self.status_label.setText("Loading images...")
-            QTimer.singleShot(0, self._preload_cached_images_async)
+            self._schedule_cached_image_preload()
 
             # Reconnect filter handler
             self.game_combo.currentIndexChanged.connect(self._apply_filters)
@@ -256,7 +280,7 @@ class ModlistGalleryLoadingMixin:
                 # Preload cached images in background (non-blocking)
                 # Images will appear as they're loaded
                 self.status_label.setText("Loading images...")
-                QTimer.singleShot(0, self._preload_cached_images_async)
+                self._schedule_cached_image_preload()
 
                 # Reconnect filter handler
                 self.game_combo.currentIndexChanged.connect(self._apply_filters)
@@ -275,7 +299,10 @@ class ModlistGalleryLoadingMixin:
     def _preload_cached_images_async(self):
         """Preload cached images asynchronously - images appear as they load"""
         from PySide6.QtWidgets import QApplication
-        
+
+        if getattr(self, '_gallery_resources_cleaned', False):
+            return
+
         preloaded = 0
         total = len(self.all_modlists)
         
@@ -295,10 +322,10 @@ class ModlistGalleryLoadingMixin:
                         cache_key_large = f"{cache_key}_large"
                         self.image_manager.pixmap_cache[cache_key_large] = pixmap
                         preloaded += 1
-                        
+
                         # Update card immediately if it exists
                         card = self.all_cards.get(cache_key)
-                        if card:
+                        if card and shiboken6.isValid(card):
                             card._display_image(pixmap)
                 except Exception:
                     pass
@@ -397,5 +424,3 @@ class ModlistGalleryLoadingMixin:
         # Re-apply filters to update availability filtering
         if updated_count > 0:
             self._apply_filters()
-
-
