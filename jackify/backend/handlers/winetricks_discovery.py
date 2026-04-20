@@ -8,6 +8,7 @@ Extracted from winetricks_handler for file-size and domain separation.
 import os
 import subprocess
 import logging
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +17,7 @@ class WinetricksDiscoveryMixin:
     """Mixin providing winetricks path discovery and availability checks."""
 
     def _get_bundled_winetricks_path(self) -> Optional[str]:
-        """Get the path to the bundled winetricks script (AppImage and dev)."""
+        """Get the bundled winetricks script, or fall back to PATH-provided winetricks."""
         possible_paths = []
         if os.environ.get('APPDIR'):
             appdir_path = os.path.join(os.environ['APPDIR'], 'opt', 'jackify', 'tools', 'winetricks')
@@ -28,7 +29,11 @@ class WinetricksDiscoveryMixin:
             if os.path.exists(path) and os.access(path, os.X_OK):
                 self.logger.debug(f"Found bundled winetricks at: {path}")
                 return str(path)
-        self.logger.error(f"Bundled winetricks not found. Tried paths: {possible_paths}")
+        system_winetricks = shutil.which('winetricks')
+        if system_winetricks:
+            self.logger.debug(f"Using system winetricks from PATH: {system_winetricks}")
+            return system_winetricks
+        self.logger.error(f"Winetricks not found. Tried bundled paths: {possible_paths}")
         return None
 
     def _get_bundled_tool(self, tool_name: str, fallback_to_system: bool = True) -> Optional[str]:
@@ -63,7 +68,7 @@ class WinetricksDiscoveryMixin:
     def is_available(self) -> bool:
         """Check if winetricks is available and ready to use."""
         if not self.winetricks_path:
-            self.logger.error("Bundled winetricks not found")
+            self.logger.error("Winetricks executable not found")
             return False
         try:
             env = os.environ.copy()

@@ -109,6 +109,7 @@ class WinetricksHandler(
             try:
                 cmd = [self.winetricks_path, '--unattended'] + components_to_install
                 run_env = env
+                run_cwd = self._get_safe_proton_subprocess_cwd(run_env)
 
                 # Log full command for advanced users to reproduce manually (debug mode only)
                 cmd_str = ' '.join(cmd)
@@ -120,6 +121,7 @@ class WinetricksHandler(
                 self.logger.debug(f"  WINEPREFIX={env.get('WINEPREFIX', 'NOT SET')}")
                 self.logger.debug(f"  WINE={env.get('WINE', 'NOT SET')}")
                 self.logger.debug(f"  WINESERVER={env.get('WINESERVER', 'NOT SET')}")
+                self.logger.debug(f"  CWD={run_cwd}")
                 self.logger.debug("=" * 80)
 
                 # Enhanced diagnostics for bundled winetricks
@@ -152,12 +154,14 @@ class WinetricksHandler(
 
                 self.logger.debug(f"DISPLAY: {env.get('DISPLAY', 'NOT SET')}")
                 self.logger.debug(f"WINETRICKS_CACHE: {env.get('WINETRICKS_CACHE', 'NOT SET')}")
+                self.logger.debug(f"W_CACHE: {env.get('W_CACHE', 'NOT SET')}")
                 self.logger.debug(f"Components to install: {components_to_install}")
                 self.logger.debug("==========================================")
 
                 result = subprocess.run(
                     cmd,
                     env=run_env,
+                    cwd=run_cwd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -249,7 +253,12 @@ class WinetricksHandler(
                     # Log which diagnostic category matches
                     diagnostic_found = False
 
-                    if "command not found" in stderr_lower or "no such file" in stderr_lower:
+                    if "bwrap: can't chdir" in stderr_lower:
+                        self.logger.error("DIAGNOSTIC: steam-run inherited an inaccessible working directory")
+                        self.logger.error("  - The current cwd is not mounted inside steam-run's bubblewrap sandbox")
+                        self.logger.error("  - Jackify should launch winetricks from a safe cwd such as the prefix or /")
+                        diagnostic_found = True
+                    elif "command not found" in stderr_lower or "no such file" in stderr_lower:
                         self.logger.error("DIAGNOSTIC: Winetricks or dependency binary not found")
                         self.logger.error("  - Bundled winetricks may be missing dependencies")
                         self.logger.error("  - Check dependency check output above for missing tools")
@@ -448,12 +457,23 @@ class WinetricksHandler(
             subprocess.run(
                 [wineserver, '-k'],
                 env=env,
+                cwd=self._get_safe_proton_subprocess_cwd(env),
                 timeout=10,
                 capture_output=True,
             )
             self.logger.debug("Killed wineserver for prefix so winetricks can start a fresh one")
         except Exception as e:
             self.logger.debug("Wineserver -k failed (non-fatal): %s", e)
+
+    def _get_safe_proton_subprocess_cwd(self, env: dict) -> str:
+        """
+        Choose a cwd that exists both on the host and inside steam-run's bubblewrap sandbox.
+        The caller's repo/build directory may not be mounted inside steam-run on NixOS.
+        """
+        wineprefix = env.get('WINEPREFIX')
+        if wineprefix and os.path.isdir(wineprefix):
+            return wineprefix
+        return os.sep
 
     def _cleanup_wine_processes(self):
         """Clean up winetricks processes only during component installation."""

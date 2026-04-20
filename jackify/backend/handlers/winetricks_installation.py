@@ -14,6 +14,16 @@ from typing import Optional, List, Callable
 logger = logging.getLogger(__name__)
 
 
+def _get_safe_proton_subprocess_cwd(handler, env: dict) -> str:
+    """Use the handler's safe cwd helper when available, otherwise fall back to the prefix or /."""
+    if hasattr(handler, "_get_safe_proton_subprocess_cwd"):
+        return handler._get_safe_proton_subprocess_cwd(env)
+    wineprefix = env.get('WINEPREFIX')
+    if wineprefix and os.path.isdir(wineprefix):
+        return wineprefix
+    return os.sep
+
+
 class WinetricksInstallationMixin:
     """Mixin providing winetricks environment setup and component installation strategies."""
 
@@ -70,6 +80,7 @@ class WinetricksInstallationMixin:
             jackify_cache_dir = get_jackify_data_dir() / 'winetricks_cache'
             jackify_cache_dir.mkdir(parents=True, exist_ok=True)
             env['WINETRICKS_CACHE'] = str(jackify_cache_dir)
+            env['W_CACHE'] = str(jackify_cache_dir)
             return env
         except Exception as e:
             self.logger.error(f"Failed to prepare winetricks environment: {e}")
@@ -88,6 +99,7 @@ class WinetricksInstallationMixin:
                 result = subprocess.run(
                     cmd,
                     env=env,
+                    cwd=_get_safe_proton_subprocess_cwd(self, env),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -118,6 +130,7 @@ class WinetricksInstallationMixin:
             result = subprocess.run(
                 [self.winetricks_path, '-q', 'win10'],
                 env=env,
+                cwd=_get_safe_proton_subprocess_cwd(self, env),
                 capture_output=True,
                 text=True,
                 timeout=300
@@ -156,6 +169,7 @@ class WinetricksInstallationMixin:
                     result = subprocess.run(
                         cmd,
                         env=env,
+                        cwd=_get_safe_proton_subprocess_cwd(self, env),
                         capture_output=True,
                         text=True,
                         timeout=600

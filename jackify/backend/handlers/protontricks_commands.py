@@ -19,6 +19,61 @@ logger = logging.getLogger(__name__)
 class ProtontricksCommandsMixin:
     """Mixin providing run_protontricks and run_protontricks_launch."""
 
+    def _add_jackify_proton_wrapper_env(self, env: dict) -> dict:
+        """
+        Override protontricks' cached proxy wrappers with Jackify's wrappers.
+        This keeps Proton inside steam-run on NixOS while preserving stdout for
+        winetricks' early cmd.exe/winepath probes.
+        """
+        try:
+            from .config_handler import ConfigHandler
+            from .wine_utils import WineUtils
+            from .wine_wrapper import WineWrapperManager
+
+            config = ConfigHandler()
+            user_proton_path = config.get_proton_path()
+            wine_binary = None
+
+            if user_proton_path and user_proton_path != 'auto' and os.path.exists(user_proton_path):
+                resolved_proton_path = os.path.realpath(user_proton_path)
+                for candidate in (
+                    os.path.join(resolved_proton_path, 'dist', 'bin', 'wine'),
+                    os.path.join(resolved_proton_path, 'files', 'bin', 'wine'),
+                ):
+                    if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+                        wine_binary = candidate
+                        break
+
+            if not wine_binary:
+                best_proton = WineUtils.select_best_proton()
+                if best_proton:
+                    wine_binary = WineUtils.find_proton_binary(best_proton['name'])
+
+            if not wine_binary or not (os.path.exists(wine_binary) and os.access(wine_binary, os.X_OK)):
+                return env
+
+            proton_dist_path = os.path.dirname(os.path.dirname(wine_binary))
+            wineserver_bin = os.path.join(proton_dist_path, 'bin', 'wineserver')
+            wrapper_dir = WineWrapperManager().create_wrappers(proton_dist_path)
+            if not wrapper_dir:
+                return env
+
+            wine_wrapper = wrapper_dir / "wine"
+            wineserver_wrapper = wrapper_dir / "wineserver"
+            env['WINE'] = str(wine_wrapper)
+            env['WINELOADER'] = str(wine_wrapper)
+            env['WINESERVER'] = str(wineserver_wrapper)
+            env['WINE_BIN'] = str(wine_binary)
+            env['WINE_BINDIR'] = f"{proton_dist_path}/bin"
+            if os.path.exists(wineserver_bin) and os.access(wineserver_bin, os.X_OK):
+                env['WINESERVER_BIN'] = wineserver_bin
+            env['PATH'] = f"{wrapper_dir}{os.pathsep}{proton_dist_path}/bin{os.pathsep}{env.get('PATH', '')}"
+            self.logger.debug(f"Using Jackify Proton wrappers for protontricks: {wrapper_dir}")
+        except Exception as e:
+            self.logger.warning(f"Could not prepare Jackify Proton wrappers for protontricks: {e}")
+
+        return env
+
     def run_protontricks(self, *args, **kwargs):
         """
         Run protontricks with the given arguments and keyword arguments.
@@ -46,6 +101,12 @@ class ProtontricksCommandsMixin:
                 try:
                     cache_val = str(Path(kwargs['env']['WINETRICKS_CACHE']).resolve())
                     cmd.append(f'--env=WINETRICKS_CACHE={cache_val}')
+                except Exception:
+                    pass
+            if kwargs.get('env') and kwargs['env'].get('W_CACHE'):
+                try:
+                    cache_val = str(Path(kwargs['env']['W_CACHE']).resolve())
+                    cmd.append(f'--env=W_CACHE={cache_val}')
                 except Exception:
                     pass
             cmd.append("com.github.Matoking.protontricks")
@@ -96,6 +157,7 @@ class ProtontricksCommandsMixin:
                 self.logger.debug(f"Added bundled cabextract to PATH for native protontricks: {cabextract_dir}")
             else:
                 self.logger.warning("Bundled cabextract not found - native protontricks will use system cabextract")
+            env = self._add_jackify_proton_wrapper_env(env)
         else:
             self.logger.debug(f"Using {self.which_protontricks} protontricks - it has its own winetricks (cannot access AppImage mounts)")
 

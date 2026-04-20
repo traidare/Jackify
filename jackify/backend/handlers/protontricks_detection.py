@@ -54,7 +54,7 @@ class ProtontricksDetectionMixin:
         return None
 
     def _get_bundled_winetricks_path(self) -> Optional[Path]:
-        """Get path to bundled winetricks (AppImage and dev)."""
+        """Get bundled winetricks path, or fall back to PATH-provided winetricks."""
         possible_paths = []
         if os.environ.get('APPDIR'):
             possible_paths.append(Path(os.environ['APPDIR']) / 'opt' / 'jackify' / 'tools' / 'winetricks')
@@ -64,11 +64,16 @@ class ProtontricksDetectionMixin:
             if path.exists() and os.access(path, os.X_OK):
                 self.logger.debug(f"Found bundled winetricks at: {path}")
                 return path
-        self.logger.warning(f"Bundled winetricks not found. Tried paths: {possible_paths}")
+        system_winetricks = shutil.which("winetricks")
+        if system_winetricks:
+            system_path = Path(system_winetricks)
+            self.logger.debug(f"Using system winetricks from PATH: {system_path}")
+            return system_path
+        self.logger.warning(f"Winetricks not found. Tried bundled paths: {possible_paths}")
         return None
 
     def _get_bundled_cabextract_path(self) -> Optional[Path]:
-        """Get path to bundled cabextract (AppImage and dev)."""
+        """Get bundled cabextract path, or fall back to PATH-provided cabextract."""
         possible_paths = []
         if os.environ.get('APPDIR'):
             possible_paths.append(Path(os.environ['APPDIR']) / 'opt' / 'jackify' / 'tools' / 'cabextract')
@@ -78,7 +83,12 @@ class ProtontricksDetectionMixin:
             if path.exists() and os.access(path, os.X_OK):
                 self.logger.debug(f"Found bundled cabextract at: {path}")
                 return path
-        self.logger.warning(f"Bundled cabextract not found. Tried paths: {possible_paths}")
+        system_cabextract = shutil.which("cabextract")
+        if system_cabextract:
+            system_path = Path(system_cabextract)
+            self.logger.debug(f"Using system cabextract from PATH: {system_path}")
+            return system_path
+        self.logger.warning(f"Cabextract not found. Tried bundled paths: {possible_paths}")
         return None
 
     def _get_bundled_protontricks_wrapper_path(self) -> Optional[str]:

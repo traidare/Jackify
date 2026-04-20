@@ -112,6 +112,7 @@ class WinetricksEnvMixin:
 
             proton_dist_path = os.path.dirname(os.path.dirname(wine_binary))
             self.logger.debug(f"Proton dist path: {proton_dist_path}")
+            wineserver_bin = os.path.join(proton_dist_path, 'bin', 'wineserver')
 
             # Create wine wrapper scripts (like protontricks does) to ensure proper
             # LD_LIBRARY_PATH setup when winetricks spawns wine subprocesses
@@ -125,6 +126,10 @@ class WinetricksEnvMixin:
                 env['WINE'] = str(wine_wrapper)
                 env['WINELOADER'] = str(wine_wrapper)
                 env['WINESERVER'] = str(wineserver_wrapper)
+                env['WINE_BIN'] = str(wine_binary)
+                env['WINE_BINDIR'] = f"{proton_dist_path}/bin"
+                if os.path.exists(wineserver_bin) and os.access(wineserver_bin, os.X_OK):
+                    env['WINESERVER_BIN'] = wineserver_bin
                 # Put wrapper dir first in PATH so winetricks finds our wrappers
                 env['PATH'] = f"{wrapper_dir}:{proton_dist_path}/bin:{env.get('PATH', '')}"
                 self.logger.info(f"Using wine wrappers for winetricks: {wrapper_dir}")
@@ -134,9 +139,11 @@ class WinetricksEnvMixin:
                 self.logger.warning("Wine wrapper creation failed, using direct binary paths")
                 env['WINE'] = str(wine_binary)
                 env['WINELOADER'] = str(wine_binary)
-                wineserver_bin = os.path.join(proton_dist_path, 'bin', 'wineserver')
+                env['WINE_BIN'] = str(wine_binary)
+                env['WINE_BINDIR'] = f"{proton_dist_path}/bin"
                 if os.path.exists(wineserver_bin) and os.access(wineserver_bin, os.X_OK):
                     env['WINESERVER'] = wineserver_bin
+                    env['WINESERVER_BIN'] = wineserver_bin
                 env['PATH'] = f"{proton_dist_path}/bin:{env.get('PATH', '')}"
 
             env['WINEDLLPATH'] = f"{proton_dist_path}/lib64/wine:{proton_dist_path}/lib/wine"
@@ -280,6 +287,9 @@ class WinetricksEnvMixin:
         jackify_cache_dir = get_jackify_data_dir() / 'winetricks_cache'
         jackify_cache_dir.mkdir(parents=True, exist_ok=True)
         env['WINETRICKS_CACHE'] = str(jackify_cache_dir)
+        # Current winetricks uses W_CACHE rather than WINETRICKS_CACHE.
+        # Keep both for compatibility so downloads land in a path steam-run can access.
+        env['W_CACHE'] = str(jackify_cache_dir)
 
         if specific_components is not None:
             all_components = specific_components

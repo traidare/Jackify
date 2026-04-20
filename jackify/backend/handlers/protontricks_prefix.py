@@ -188,6 +188,7 @@ class ProtontricksPrefixMixin:
         jackify_cache_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_flatpak_cache_access(jackify_cache_dir)
         env['WINETRICKS_CACHE'] = str(jackify_cache_dir)
+        env['W_CACHE'] = str(jackify_cache_dir)
         self.logger.info(f"Using winetricks cache: {jackify_cache_dir}")
 
         if specific_components is not None:
